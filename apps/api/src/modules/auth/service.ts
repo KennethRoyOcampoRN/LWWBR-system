@@ -126,27 +126,60 @@ export async function login(
   };
 }
 
-// Reissues an access token from a still-valid refresh token. The refresh
-// token itself is NOT rotated on every call — Session is a one-row-per-
-// login-device model (spec §3.1.1's "sign out all other devices"), and
-// rotating it on every silent renewal would either multiply session rows
-// or require chaining them, both of which complicate that UX for no
-// benefit here (the refresh token never leaves an httpOnly cookie, so
-// it isn't exposed to the theft scenario rotation-with-reuse-detection
-// defends against). It still has a fixed 7-day absolute lifetime and is
-// fully revocable.
-export async function refresh(refreshToken: string): Promise<{ accessToken: string }> {
-  const session = await prisma.session.findFirst({
-    where: {
-      refreshTokenHash: hashRefreshToken(refreshToken),
-      revokedAt: null,
-      deletedAt: null,
-    },
+// Reissues an access token AND rotates the refresh token, while keeping
+// Session as a one-row-per-login-device model (spec §3.1.1's "sign out
+// all other devices" needs exactly that — one row to list, one row to
+// revoke). Rotation moves within the same row rather than creating a new
+// one: the row's current refreshTokenHash becomes previousRefreshTokenHash,
+// and the newly issued token's hash becomes the new current one.
+//
+// This is what makes reuse detection possible: if a request presents a
+// hash matching a row's *previous* hash rather than its current one, that
+// token was already rotated past by the legitimate client — someone else
+// is replaying a stolen refresh token. Treat that as a compromise signal:
+// revoke the session immediately (forcing that device to log in again)
+// and audit it distinctly, rather than silently accepting or silently
+// rejecting it as if it were just an expired token.
+export async function refresh(
+  refreshToken: string,
+  meta: RequestMeta = {},
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const incomingHash = hashRefreshToken(refreshToken);
+
+  const currentMatch = await prisma.session.findFirst({
+    where: { refreshTokenHash: incomingHash, revokedAt: null, deletedAt: null },
   });
-  if (!session || session.expiresAt < new Date()) {
-    throw new ApiError(401, 'SESSION_EXPIRED', 'Session expired or revoked — please log in again.');
+  if (currentMatch) {
+    if (currentMatch.expiresAt < new Date()) {
+      throw new ApiError(401, 'SESSION_EXPIRED', 'Session expired or revoked — please log in again.');
+    }
+    const newRefreshToken = generateRefreshToken();
+    await prisma.session.update({
+      where: { id: currentMatch.id },
+      data: {
+        previousRefreshTokenHash: currentMatch.refreshTokenHash,
+        refreshTokenHash: hashRefreshToken(newRefreshToken),
+      },
+    });
+    return { accessToken: signAccessToken(currentMatch.userId), refreshToken: newRefreshToken };
   }
-  return { accessToken: signAccessToken(session.userId) };
+
+  const reusedMatch = await prisma.session.findFirst({
+    where: { previousRefreshTokenHash: incomingHash, revokedAt: null, deletedAt: null },
+  });
+  if (reusedMatch) {
+    await prisma.session.update({ where: { id: reusedMatch.id }, data: { revokedAt: new Date() } });
+    await logAudit({
+      actorId: reusedMatch.userId,
+      action: 'REFRESH_TOKEN_REUSE_DETECTED',
+      entity: 'Session',
+      entityId: reusedMatch.id,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+  }
+
+  throw new ApiError(401, 'SESSION_EXPIRED', 'Session expired or revoked — please log in again.');
 }
 
 export async function logout(refreshToken: string): Promise<void> {

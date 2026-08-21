@@ -4,7 +4,7 @@ import { hashPassword } from '../../../src/modules/auth/passwords.js';
 
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
-  session: { create: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
+  session: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   auditLog: { create: vi.fn() },
 };
 
@@ -62,6 +62,40 @@ describe('POST /api/v1/auth/login', () => {
     const res = await request(createApp()).post('/api/v1/auth/login').send({ employeeCode: '' });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('POST /api/v1/auth/refresh', () => {
+  it('rotates both cookies on a successful refresh', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+
+    let createdSession: { id: string; refreshTokenHash: string; expiresAt: Date } | undefined;
+    mockPrisma.session.create.mockImplementation(
+      ({ data }: { data: { refreshTokenHash: string; expiresAt: Date } }) => {
+        createdSession = { id: 'session_1', ...data };
+        return Promise.resolve(createdSession);
+      },
+    );
+
+    const agent = request.agent(createApp());
+    await agent.post('/api/v1/auth/login').send({ employeeCode: 'LWW-001', password: 'Waku2026!' });
+
+    mockPrisma.session.findFirst.mockImplementation(
+      ({ where }: { where: { refreshTokenHash?: string } }) => {
+        if (where.refreshTokenHash === createdSession?.refreshTokenHash) {
+          return Promise.resolve(createdSession);
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const res = await agent.post('/api/v1/auth/refresh');
+    expect(res.status).toBe(200);
+    const cookies = res.headers['set-cookie'] as unknown as string[];
+    expect(cookies.some((c) => c.startsWith('lwwbr_access=') && c.includes('HttpOnly'))).toBe(true);
+    expect(cookies.some((c) => c.startsWith('lwwbr_refresh=') && c.includes('HttpOnly'))).toBe(true);
+    expect(mockPrisma.session.update).toHaveBeenCalledOnce();
   });
 });
 

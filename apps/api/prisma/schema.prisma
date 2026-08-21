@@ -159,16 +159,22 @@ model RolePermission {
 }
 
 model Session {
-  id               String    @id @default(cuid())
-  userId           String
-  refreshTokenHash String
-  expiresAt        DateTime
-  revokedAt        DateTime?
-  userAgent        String?
-  ip               String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  deletedAt        DateTime?
+  id                       String    @id @default(cuid())
+  userId                   String
+  refreshTokenHash         String
+  // Set on each rotation to the hash the row previously held, so a
+  // replayed pre-rotation token can be told apart from a plain garbage
+  // one — see apps/api/src/modules/auth/service.ts refresh(). One row
+  // still means one logged-in device; rotation just moves which hash(es)
+  // it remembers, it never creates a second row for the same login.
+  previousRefreshTokenHash String?
+  expiresAt                DateTime
+  revokedAt                DateTime?
+  userAgent                String?
+  ip                       String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  deletedAt                DateTime?
 
   user User @relation(fields: [userId], references: [id])
 

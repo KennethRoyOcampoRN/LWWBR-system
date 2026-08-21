@@ -29,8 +29,12 @@ authRouter.post(
     if (!refreshToken) {
       throw new ApiError(401, 'UNAUTHENTICATED', 'No refresh token present');
     }
-    const result = await refresh(refreshToken);
+    const result = await refresh(refreshToken, {
+      ip: req.ip ?? null,
+      userAgent: req.get('user-agent') ?? null,
+    });
     setAccessCookie(res, result.accessToken);
+    setRefreshCookie(res, result.refreshToken);
     res.status(200).json({ ok: true });
   }),
 );

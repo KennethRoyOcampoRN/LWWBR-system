@@ -98,6 +98,51 @@ an actual failure rather than a log line.
   `package.json#engines`). `npm install` warns (`EBADENGINE`) but every
   command still ran correctly. Confirm on Node 24 before relying on this.
 
-## M1 and beyond
+## M1 — Auth, RBAC & hardening — in progress
 
-Not started. See `spec.md` §11 for the milestone plan.
+### What works so far
+
+- `packages/shared`: all 55 permission keys (spec §5.3), the 14-role
+  permission matrix (spec §5.4, parsed directly from `spec.md`'s table
+  rather than hand-retyped), and `getEffectivePermissions()` implementing
+  the union-of-roles rule (spec §5.1). 9 tests.
+- Auth core (spec §3/§9): argon2 password hashing, JWT access tokens (15
+  min) + opaque refresh tokens (7 days) in httpOnly `SameSite=Lax`
+  cookies, `POST /auth/login|refresh|logout`, `GET /auth/me`. Password-
+  only for now — TOTP 2FA, login rate limiting/lockout, and the session-
+  list/revocation UI are a separate task, not deferred out of M1.
+- Refresh tokens rotate on every use, with reuse detection: `Session`
+  gained a `previousRefreshTokenHash` column so a replayed pre-rotation
+  token can be told apart from a plain invalid one — replay revokes that
+  session immediately and writes a distinct `REFRESH_TOKEN_REUSE_DETECTED`
+  audit entry, while still keeping one `Session` row per logged-in device
+  (needed for the "sign out all other devices" UX in spec §3.1.1).
+- 29 new tests across `packages/shared` and `apps/api` (permission
+  matrix invariants; password/JWT unit tests; service-level
+  login/refresh/logout/getMe against a mocked Prisma client; router-level
+  tests via supertest confirming real httpOnly cookies and the spec
+  §4.8 error shape). Full lint/typecheck/build clean.
+
+### Known risk flagged for M7, not yet tested
+
+`argon2` (used for password hashing) is a native addon — a prebuilt
+N-API binary, not pure JS. This is a known pitfall for serverless
+bundlers: esbuild (the bundler `netlify.toml` configures) needs a native
+binary either marked external or otherwise handled correctly, or the
+Netlify Function can fail to bundle or fail at runtime. This cannot be
+verified until a real Netlify deploy exists (M7, or the M2 milestone if
+an earlier preview deploy happens) — flagging it now so it isn't
+rediscovered cold at launch. If it turns out to be a real problem, the
+fallback is `bcrypt`/`bcryptjs` (pure JS, no native step, more common in
+serverless deployments) instead of argon2 — a deliberate trade to revisit
+only if needed, not a default to switch to preemptively.
+
+### Schema change needs syncing to the hosted project
+
+`Session.previousRefreshTokenHash` (nullable `String?`) was added for
+refresh-token rotation. This session's sandbox can't reach the hosted
+Supabase project to push it (same network block noted under M0). Run
+`npx prisma db push` (from `apps/api`) against the real database before
+relying on login/refresh working end-to-end.
+
+See `spec.md` §11 for the full M1 acceptance criteria — not all met yet.

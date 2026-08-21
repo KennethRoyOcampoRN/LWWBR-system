@@ -4,7 +4,7 @@ import { verifyAccessToken } from '../../../src/modules/auth/tokens.js';
 
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
-  session: { create: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
+  session: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   auditLog: { create: vi.fn() },
 };
 
@@ -95,27 +95,73 @@ describe('login', () => {
 });
 
 describe('refresh', () => {
-  it('issues a new access token for a valid, unexpired session', async () => {
+  it('rotates the refresh token and issues a new access token for a valid, unexpired session', async () => {
     mockPrisma.session.findFirst.mockResolvedValue({
+      id: 'session_1',
       userId: 'user_1',
+      refreshTokenHash: 'old-hash-placeholder',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60),
     });
 
     const result = await refresh('some-refresh-token');
     expect(verifyAccessToken(result.accessToken)?.sub).toBe('user_1');
+    expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
+    expect(result.refreshToken).not.toBe('some-refresh-token');
+
+    expect(mockPrisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session_1' },
+      data: {
+        previousRefreshTokenHash: 'old-hash-placeholder',
+        refreshTokenHash: expect.any(String),
+      },
+    });
   });
 
-  it('rejects a missing or already-revoked session', async () => {
+  it('rejects a token matching neither a current nor a previously-rotated hash', async () => {
     mockPrisma.session.findFirst.mockResolvedValue(null);
     await expect(refresh('unknown-token')).rejects.toMatchObject({ status: 401, code: 'SESSION_EXPIRED' });
+    expect(mockPrisma.session.update).not.toHaveBeenCalled();
   });
 
-  it('rejects an expired session', async () => {
+  it('rejects an expired session even when the current hash matches', async () => {
     mockPrisma.session.findFirst.mockResolvedValue({
+      id: 'session_1',
       userId: 'user_1',
+      refreshTokenHash: 'old-hash-placeholder',
       expiresAt: new Date(Date.now() - 1000),
     });
     await expect(refresh('expired-token')).rejects.toMatchObject({ status: 401, code: 'SESSION_EXPIRED' });
+  });
+
+  it('detects replay of a rotated-out token, revokes the session, and audits it distinctly', async () => {
+    mockPrisma.session.findFirst.mockImplementation(
+      ({ where }: { where: { refreshTokenHash?: string; previousRefreshTokenHash?: string } }) => {
+        if (where.refreshTokenHash) return Promise.resolve(null);
+        if (where.previousRefreshTokenHash) {
+          return Promise.resolve({ id: 'session_1', userId: 'user_1' });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    await expect(refresh('stolen-old-token', { ip: '1.2.3.4' })).rejects.toMatchObject({
+      status: 401,
+      code: 'SESSION_EXPIRED',
+    });
+
+    expect(mockPrisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session_1' },
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'REFRESH_TOKEN_REUSE_DETECTED',
+          actorId: 'user_1',
+          entityId: 'session_1',
+        }),
+      }),
+    );
   });
 });
 
