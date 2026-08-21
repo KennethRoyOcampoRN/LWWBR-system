@@ -11,8 +11,11 @@
     "packages/*"
   ],
   "scripts": {
+    "prepare": "npm run build -w packages/shared",
+    "predev": "npm run build -w packages/shared",
     "dev": "concurrently -k -n api,web -c blue,green \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
     "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/web",
+    "pretest": "npm run build -w packages/shared",
     "test": "npm run test -w packages/shared --if-present && npm run test -w apps/api && npm run test -w apps/web",
     "lint": "eslint .",
     "format": "prettier --write .",
