@@ -13,16 +13,18 @@ export class SupabaseRealtimeAdapter implements RealtimeAdapter {
     event: string,
     payload: RealtimeEventPayload,
   ): Promise<void> {
+    // httpSend() delivers over REST explicitly rather than falling back to
+    // it implicitly from send() (which logs a deprecation warning) — this
+    // adapter never needs a websocket subscription of its own to emit.
     const rtChannel = this.client.channel(channel);
-    const response = await rtChannel.send({
-      type: 'broadcast',
-      event,
-      payload,
-    });
-    await this.client.removeChannel(rtChannel);
-
-    if (response !== 'ok') {
-      throw new Error(`Realtime broadcast to "${channel}" failed: ${response}`);
+    try {
+      await rtChannel.httpSend(event, payload);
+    } catch (error) {
+      throw new Error(
+        `Realtime broadcast to "${channel}" failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      await this.client.removeChannel(rtChannel);
     }
   }
 }
