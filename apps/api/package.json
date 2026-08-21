@@ -5,11 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "predev": "npm --prefix ../../packages/shared run build",
+    "postinstall": "prisma generate",
+    "predev": "prisma generate && npm --prefix ../../packages/shared run build",
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "npm --prefix ../../packages/shared run build",
+    "pretest": "prisma generate && npm --prefix ../../packages/shared run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
