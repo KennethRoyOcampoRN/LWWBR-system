@@ -6,14 +6,13 @@
 // Every domain model carries createdAt/updatedAt/deletedAt per spec §4.5
 // (soft delete — nothing is hard-deleted from the UI).
 //
-// Enum note: enums below mirror the pipe-delimited value lists given
-// explicitly in spec.md. Where spec.md left a `status`/`type`/`severity`
-// field unenumerated (Booking.status, Notification.type, Incident.severity,
-// Expense.status), this schema uses a String field rather than inventing a
-// value set the spec never confirmed. Booking.status in particular needs a
-// real enum + transition table before M4 (bookings/check-in/out) lands —
-// carried forward as a decision to confirm with the client, not a default
-// to build against silently.
+// Enum note: enums below mostly mirror the pipe-delimited value lists given
+// explicitly in spec.md. Four fields — Booking.status, Notification.type,
+// Incident.severity, Expense.status — were left unenumerated in spec.md
+// itself; their enums here are inferred from other spec text (cited at each
+// definition) rather than invented from nothing. Booking.status still needs
+// its full transition table built in packages/shared per spec §7 before M4
+// (bookings/check-in/out) lands — this schema only types the values.
 
 generator client {
   provider = "prisma-client-js"
@@ -45,73 +44,73 @@ enum RolePermissionScope {
 }
 
 model User {
-  id               String   @id @default(cuid())
-  employeeCode     String   @unique
-  fullName         String
-  email            String?  @unique
-  phone            String?
-  passwordHash     String
-  department       Department
-  isActive         Boolean  @default(true)
-  lastLoginAt      DateTime?
-  mustChangePassword Boolean @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  deletedAt        DateTime?
+  id                 String     @id @default(cuid())
+  employeeCode       String     @unique
+  fullName           String
+  email              String?    @unique
+  phone              String?
+  passwordHash       String
+  department         Department
+  isActive           Boolean    @default(true)
+  lastLoginAt        DateTime?
+  mustChangePassword Boolean    @default(true)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  deletedAt          DateTime?
 
-  roles              UserRole[]
-  sessions            Session[]
-  auditLogs           AuditLog[]           @relation("AuditActor")
-  createdBookings     Booking[]            @relation("BookingCreatedBy")
-  checkIns            CheckInRecord[]      @relation("CheckedInBy")
-  checkOuts           CheckOutRecord[]     @relation("CheckedOutBy")
-  postedCharges       FolioCharge[]        @relation("ChargePostedBy")
-  voidedCharges       FolioCharge[]        @relation("ChargeVoidedBy")
-  settlements         FolioSettlement[]    @relation("SettledBy")
-  submittedPayments   Payment[]            @relation("PaymentSubmittedBy")
-  verifiedPayments    Payment[]            @relation("PaymentVerifiedBy")
-  createdWorkOrders   WorkOrder[]          @relation("WorkOrderCreatedBy")
-  assignedWorkOrders  WorkOrder[]          @relation("WorkOrderAssignedTo")
-  assignedByWorkOrders WorkOrder[]         @relation("WorkOrderAssignedBy")
-  verifiedWorkOrders  WorkOrder[]          @relation("WorkOrderVerifiedBy")
-  workOrderNotes      WorkOrderNote[]
-  workOrderPhotos     WorkOrderPhoto[]
-  requestedAmenities  AmenityRequest[]     @relation("AmenityRequestedBy")
-  approvedAmenities   AmenityRequest[]     @relation("AmenityApprovedBy")
-  issuedAmenities     AmenityRequest[]     @relation("AmenityIssuedBy")
-  returnedAmenities   AmenityRequest[]     @relation("AmenityReturnedBy")
-  createdFnbOrders    FnbOrder[]           @relation("FnbCreatedBy")
-  acknowledgedFnbOrders FnbOrder[]         @relation("FnbAcknowledgedBy")
-  stockRequests       StockRequest[]       @relation("StockRequestedBy")
-  decidedStockRequests StockRequest[]      @relation("StockDecidedBy")
-  stockMovements      StockMovement[]
-  shifts              Shift[]
-  restDayRequests     RestDayRequest[]     @relation("RestDayRequestedBy")
-  decidedRestDays     RestDayRequest[]     @relation("RestDayDecidedBy")
-  timeLogs            TimeLog[]
-  cashCounts          CashCount[]          @relation("CashCountedBy")
-  verifiedCashCounts  CashCount[]          @relation("CashVerifiedBy")
-  expenses            Expense[]            @relation("ExpenseRecordedBy")
-  approvedExpenses     Expense[]           @relation("ExpenseApprovedBy")
-  reportedIncidents   Incident[]           @relation("IncidentReportedBy")
-  involvedIncidents   Incident[]           @relation("IncidentInvolvedUser")
-  inspections         Inspection[]
-  notifications       Notification[]
-  uploadedFiles       FileObject[]
-  updatedSettings     Setting[]
-  unitStatusEvents    UnitStatusEvent[]
+  roles                 UserRole[]
+  sessions              Session[]
+  auditLogs             AuditLog[]        @relation("AuditActor")
+  createdBookings       Booking[]         @relation("BookingCreatedBy")
+  checkIns              CheckInRecord[]   @relation("CheckedInBy")
+  checkOuts             CheckOutRecord[]  @relation("CheckedOutBy")
+  postedCharges         FolioCharge[]     @relation("ChargePostedBy")
+  voidedCharges         FolioCharge[]     @relation("ChargeVoidedBy")
+  settlements           FolioSettlement[] @relation("SettledBy")
+  submittedPayments     Payment[]         @relation("PaymentSubmittedBy")
+  verifiedPayments      Payment[]         @relation("PaymentVerifiedBy")
+  createdWorkOrders     WorkOrder[]       @relation("WorkOrderCreatedBy")
+  assignedWorkOrders    WorkOrder[]       @relation("WorkOrderAssignedTo")
+  assignedByWorkOrders  WorkOrder[]       @relation("WorkOrderAssignedBy")
+  verifiedWorkOrders    WorkOrder[]       @relation("WorkOrderVerifiedBy")
+  workOrderNotes        WorkOrderNote[]
+  workOrderPhotos       WorkOrderPhoto[]
+  requestedAmenities    AmenityRequest[]  @relation("AmenityRequestedBy")
+  approvedAmenities     AmenityRequest[]  @relation("AmenityApprovedBy")
+  issuedAmenities       AmenityRequest[]  @relation("AmenityIssuedBy")
+  returnedAmenities     AmenityRequest[]  @relation("AmenityReturnedBy")
+  createdFnbOrders      FnbOrder[]        @relation("FnbCreatedBy")
+  acknowledgedFnbOrders FnbOrder[]        @relation("FnbAcknowledgedBy")
+  stockRequests         StockRequest[]    @relation("StockRequestedBy")
+  decidedStockRequests  StockRequest[]    @relation("StockDecidedBy")
+  stockMovements        StockMovement[]
+  shifts                Shift[]
+  restDayRequests       RestDayRequest[]  @relation("RestDayRequestedBy")
+  decidedRestDays       RestDayRequest[]  @relation("RestDayDecidedBy")
+  timeLogs              TimeLog[]
+  cashCounts            CashCount[]       @relation("CashCountedBy")
+  verifiedCashCounts    CashCount[]       @relation("CashVerifiedBy")
+  expenses              Expense[]         @relation("ExpenseRecordedBy")
+  approvedExpenses      Expense[]         @relation("ExpenseApprovedBy")
+  reportedIncidents     Incident[]        @relation("IncidentReportedBy")
+  involvedIncidents     Incident[]        @relation("IncidentInvolvedUser")
+  inspections           Inspection[]
+  notifications         Notification[]
+  uploadedFiles         FileObject[]
+  updatedSettings       Setting[]
+  unitStatusEvents      UnitStatusEvent[]
 
   @@index([department])
 }
 
 model Role {
-  id          String   @id @default(cuid())
-  key         String   @unique
+  id          String    @id @default(cuid())
+  key         String    @unique
   label       String
   description String?
-  isSystem    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
   users       UserRole[]
@@ -119,23 +118,23 @@ model Role {
 }
 
 model Permission {
-  id          String   @id @default(cuid())
-  key         String   @unique
+  id          String    @id @default(cuid())
+  key         String    @unique
   description String?
   group       String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
   roles RolePermission[]
 }
 
 model UserRole {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
   roleId    String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   user User @relation(fields: [userId], references: [id])
@@ -218,19 +217,19 @@ enum UnitStatus {
 }
 
 model UnitType {
-  id                String   @id @default(cuid())
-  name              String
-  description       String?
-  defaultCapacity   Int
-  baseRate          Decimal  @db.Decimal(12, 2)
-  dayTourRate       Decimal? @db.Decimal(12, 2)
-  extraPersonRate   Decimal? @db.Decimal(12, 2)
-  colorHex          String?
-  isActive          Boolean  @default(true)
-  sortOrder         Int      @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  deletedAt         DateTime?
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  defaultCapacity Int
+  baseRate        Decimal   @db.Decimal(12, 2)
+  dayTourRate     Decimal?  @db.Decimal(12, 2)
+  extraPersonRate Decimal?  @db.Decimal(12, 2)
+  colorHex        String?
+  isActive        Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
 
   units Unit[]
 }
@@ -252,13 +251,13 @@ model Unit {
   updatedAt  DateTime   @updatedAt
   deletedAt  DateTime?
 
-  unitType     UnitType          @relation(fields: [unitTypeId], references: [id])
-  statusEvents UnitStatusEvent[]
-  bookingUnits BookingUnit[]
-  workOrders   WorkOrder[]
+  unitType        UnitType          @relation(fields: [unitTypeId], references: [id])
+  statusEvents    UnitStatusEvent[]
+  bookingUnits    BookingUnit[]
+  workOrders      WorkOrder[]
   amenityRequests AmenityRequest[]
-  fnbOrders    FnbOrder[]
-  inspections  Inspection[]
+  fnbOrders       FnbOrder[]
+  inspections     Inspection[]
 
   @@index([unitTypeId])
   @@index([status])
@@ -297,54 +296,68 @@ enum BookingType {
   DAY_TOUR
 }
 
+// Not spelled out as a pipe list in spec.md, but inferred from spec text:
+// bookings are held (PENDING/CONFIRMED) before a stay, §7.6 refers to "a
+// booking currently CHECKED_IN", CheckInRecord/CheckOutRecord are 1:1 with
+// Booking, and §8.4 report #2 is "Arrivals / departures / no-shows" (which
+// requires a NO_SHOW state to report on). CANCELLED covers a held booking
+// that never arrives by guest/staff choice, distinct from a no-show. The
+// full transition table for these values still needs to be built in
+// packages/shared per spec §7 before M4 — this only types the field.
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
 model Booking {
-  id            String      @id @default(cuid())
-  referenceNo   String      @unique
+  id            String        @id @default(cuid())
+  referenceNo   String        @unique
   guestName     String
   guestPhone    String?
   guestEmail    String?
   source        BookingSource
   type          BookingType
-  // See schema header note: spec.md did not enumerate Booking.status values.
-  // This is a placeholder String until the booking state machine is
-  // confirmed and implemented in packages/shared for M4.
-  status        String
+  status        BookingStatus
   pax           Int
-  childrenPax   Int         @default(0)
+  childrenPax   Int           @default(0)
   arrivalDate   DateTime
   departureDate DateTime
   startAt       DateTime
   endAt         DateTime
-  totalAmount   Decimal     @db.Decimal(12, 2)
+  totalAmount   Decimal       @db.Decimal(12, 2)
   notes         String?
   createdById   String
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
   deletedAt     DateTime?
 
-  createdBy       User              @relation("BookingCreatedBy", fields: [createdById], references: [id])
-  units           BookingUnit[]
-  checkIn         CheckInRecord?
-  checkOut        CheckOutRecord?
-  folioCharges    FolioCharge[]
+  createdBy        User              @relation("BookingCreatedBy", fields: [createdById], references: [id])
+  units            BookingUnit[]
+  checkIn          CheckInRecord?
+  checkOut         CheckOutRecord?
+  folioCharges     FolioCharge[]
   folioSettlements FolioSettlement[]
-  payments        Payment[]
-  workOrders      WorkOrder[]
-  amenityRequests AmenityRequest[]
-  fnbOrders       FnbOrder[]
-  incidents       Incident[]
+  payments         Payment[]
+  workOrders       WorkOrder[]
+  amenityRequests  AmenityRequest[]
+  fnbOrders        FnbOrder[]
+  incidents        Incident[]
 
   @@index([status])
   @@index([startAt, endAt])
 }
 
 model BookingUnit {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   bookingId String
   unitId    String
-  rate      Decimal  @db.Decimal(12, 2)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  rate      Decimal   @db.Decimal(12, 2)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   booking Booking @relation(fields: [bookingId], references: [id])
@@ -355,37 +368,37 @@ model BookingUnit {
 }
 
 model CheckInRecord {
-  id                 String   @id @default(cuid())
-  bookingId          String   @unique
+  id                 String    @id @default(cuid())
+  bookingId          String    @unique
   checkedInAt        DateTime
   checkedInById      String
   waiverSigned       Boolean
   waiverFileId       String?
   wristbandsIssued   Int
-  keyDepositAmount   Decimal  @db.Decimal(12, 2)
-  keyDepositReturned Boolean  @default(false)
+  keyDepositAmount   Decimal   @db.Decimal(12, 2)
+  keyDepositReturned Boolean   @default(false)
   vehiclePlate       String?
   idPresented        Boolean
   notes              String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
   deletedAt          DateTime?
 
-  booking      Booking    @relation(fields: [bookingId], references: [id])
-  checkedInBy  User       @relation("CheckedInBy", fields: [checkedInById], references: [id])
-  waiverFile   FileObject? @relation(fields: [waiverFileId], references: [id])
+  booking     Booking     @relation(fields: [bookingId], references: [id])
+  checkedInBy User        @relation("CheckedInBy", fields: [checkedInById], references: [id])
+  waiverFile  FileObject? @relation(fields: [waiverFileId], references: [id])
 }
 
 model CheckOutRecord {
-  id               String   @id @default(cuid())
-  bookingId        String   @unique
-  checkedOutAt     DateTime
-  checkedOutById   String
-  damagesNoted     String?
-  depositRefunded  Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  deletedAt        DateTime?
+  id              String    @id @default(cuid())
+  bookingId       String    @unique
+  checkedOutAt    DateTime
+  checkedOutById  String
+  damagesNoted    String?
+  depositRefunded Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
 
   booking      Booking @relation(fields: [bookingId], references: [id])
   checkedOutBy User    @relation("CheckedOutBy", fields: [checkedOutById], references: [id])
@@ -437,14 +450,14 @@ model FolioCharge {
 }
 
 model FolioSettlement {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   bookingId   String
   paymentId   String
-  amount      Decimal  @db.Decimal(12, 2)
+  amount      Decimal   @db.Decimal(12, 2)
   settledById String
   settledAt   DateTime
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
   booking   Booking @relation(fields: [bookingId], references: [id])
@@ -477,28 +490,28 @@ enum PaymentStatus {
 }
 
 model Payment {
-  id               String        @id @default(cuid())
-  bookingId        String?
-  amount           Decimal       @db.Decimal(12, 2)
-  method           PaymentMethod
-  referenceNo      String?
-  proofFileId      String?
-  kind             PaymentKind
-  status           PaymentStatus @default(PENDING)
-  submittedById    String
-  submittedAt      DateTime
-  verifiedById     String?
-  verifiedAt       DateTime?
-  rejectionReason  String?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  deletedAt        DateTime?
+  id              String        @id @default(cuid())
+  bookingId       String?
+  amount          Decimal       @db.Decimal(12, 2)
+  method          PaymentMethod
+  referenceNo     String?
+  proofFileId     String?
+  kind            PaymentKind
+  status          PaymentStatus @default(PENDING)
+  submittedById   String
+  submittedAt     DateTime
+  verifiedById    String?
+  verifiedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
-  booking      Booking?          @relation(fields: [bookingId], references: [id])
-  proofFile    FileObject?       @relation(fields: [proofFileId], references: [id])
-  submittedBy  User              @relation("PaymentSubmittedBy", fields: [submittedById], references: [id])
-  verifiedBy   User?             @relation("PaymentVerifiedBy", fields: [verifiedById], references: [id])
-  settlements  FolioSettlement[]
+  booking     Booking?          @relation(fields: [bookingId], references: [id])
+  proofFile   FileObject?       @relation(fields: [proofFileId], references: [id])
+  submittedBy User              @relation("PaymentSubmittedBy", fields: [submittedById], references: [id])
+  verifiedBy  User?             @relation("PaymentVerifiedBy", fields: [verifiedById], references: [id])
+  settlements FolioSettlement[]
 
   @@index([status])
   @@index([bookingId])
@@ -541,38 +554,38 @@ enum WorkOrderPhotoKind {
 }
 
 model WorkOrder {
-  id              String            @id @default(cuid())
-  referenceNo     String            @unique
-  type            WorkOrderType
-  title           String
-  description     String?
-  priority        WorkOrderPriority @default(NORMAL)
-  status          WorkOrderStatus   @default(OPEN)
-  version         Int               @default(0)
-  unitId          String?
-  bookingId       String?
-  department      Department
-  createdById     String
-  assignedToId    String?
-  assignedById    String?
-  dueAt           DateTime?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  verifiedById    String?
-  verifiedAt      DateTime?
-  attemptNo       Int               @default(1)
-  isRecurring     Boolean           @default(false)
-  recurrenceRule  String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  deletedAt       DateTime?
+  id             String            @id @default(cuid())
+  referenceNo    String            @unique
+  type           WorkOrderType
+  title          String
+  description    String?
+  priority       WorkOrderPriority @default(NORMAL)
+  status         WorkOrderStatus   @default(OPEN)
+  version        Int               @default(0)
+  unitId         String?
+  bookingId      String?
+  department     Department
+  createdById    String
+  assignedToId   String?
+  assignedById   String?
+  dueAt          DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  verifiedById   String?
+  verifiedAt     DateTime?
+  attemptNo      Int               @default(1)
+  isRecurring    Boolean           @default(false)
+  recurrenceRule String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
 
-  unit       Unit?    @relation(fields: [unitId], references: [id])
-  booking    Booking? @relation(fields: [bookingId], references: [id])
-  createdBy  User     @relation("WorkOrderCreatedBy", fields: [createdById], references: [id])
-  assignedTo User?    @relation("WorkOrderAssignedTo", fields: [assignedToId], references: [id])
-  assignedBy User?    @relation("WorkOrderAssignedBy", fields: [assignedById], references: [id])
-  verifiedBy User?    @relation("WorkOrderVerifiedBy", fields: [verifiedById], references: [id])
+  unit       Unit?            @relation(fields: [unitId], references: [id])
+  booking    Booking?         @relation(fields: [bookingId], references: [id])
+  createdBy  User             @relation("WorkOrderCreatedBy", fields: [createdById], references: [id])
+  assignedTo User?            @relation("WorkOrderAssignedTo", fields: [assignedToId], references: [id])
+  assignedBy User?            @relation("WorkOrderAssignedBy", fields: [assignedById], references: [id])
+  verifiedBy User?            @relation("WorkOrderVerifiedBy", fields: [verifiedById], references: [id])
   notes      WorkOrderNote[]
   photos     WorkOrderPhoto[]
 
@@ -599,15 +612,15 @@ model WorkOrderNote {
 }
 
 model WorkOrderPhoto {
-  id           String              @id @default(cuid())
+  id           String             @id @default(cuid())
   workOrderId  String
   fileId       String
   kind         WorkOrderPhotoKind
   uploadedById String
   caption      String?
   capturedAt   DateTime
-  attemptNo    Int                 @default(1)
-  createdAt    DateTime            @default(now())
+  attemptNo    Int                @default(1)
+  createdAt    DateTime           @default(now())
   deletedAt    DateTime?
 
   workOrder  WorkOrder  @relation(fields: [workOrderId], references: [id])
@@ -647,7 +660,7 @@ model AmenityItem {
   totalQty        Int
   condition       String
   requiresDeposit Boolean         @default(false)
-  depositAmount   Decimal         @db.Decimal(12, 2) @default(0)
+  depositAmount   Decimal         @default(0) @db.Decimal(12, 2)
   isActive        Boolean         @default(true)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -657,13 +670,13 @@ model AmenityItem {
 }
 
 model AmenityRequest {
-  id                String                @id @default(cuid())
-  referenceNo       String                @unique
+  id                String               @id @default(cuid())
+  referenceNo       String               @unique
   amenityItemId     String
   bookingId         String?
   unitId            String?
   qty               Int
-  status            AmenityRequestStatus  @default(REQUESTED)
+  status            AmenityRequestStatus @default(REQUESTED)
   requestedById     String
   approvedById      String?
   issuedById        String?
@@ -673,8 +686,8 @@ model AmenityRequest {
   returnedAt        DateTime?
   conditionOnReturn String?
   notes             String?
-  createdAt         DateTime              @default(now())
-  updatedAt         DateTime              @updatedAt
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
   deletedAt         DateTime?
 
   amenityItem AmenityItem @relation(fields: [amenityItemId], references: [id])
@@ -713,42 +726,42 @@ enum FnbOrderStatus {
 }
 
 model MenuItem {
-  id           String   @id @default(cuid())
-  name         String
-  category     String
-  price        Decimal  @db.Decimal(12, 2)
-  isAvailable  Boolean  @default(true)
-  prepMinutes  Int?
-  sortOrder    Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  deletedAt    DateTime?
+  id          String    @id @default(cuid())
+  name        String
+  category    String
+  price       Decimal   @db.Decimal(12, 2)
+  isAvailable Boolean   @default(true)
+  prepMinutes Int?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
 
   orderLines FnbOrderLine[]
 }
 
 model FnbOrder {
-  id                String         @id @default(cuid())
-  referenceNo       String         @unique
-  bookingId         String?
-  unitId            String?
-  guestName         String?
-  type              FnbOrderType
-  scheduledFor      DateTime?
-  settlement        FnbSettlement
-  status            FnbOrderStatus @default(RECEIVED)
-  version           Int            @default(0)
-  subtotal          Decimal        @db.Decimal(12, 2)
-  notes             String?
-  createdById       String
-  acknowledgedById  String?
-  acknowledgedAt    DateTime?
-  preparingAt       DateTime?
-  readyAt           DateTime?
-  servedAt          DateTime?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  deletedAt         DateTime?
+  id               String         @id @default(cuid())
+  referenceNo      String         @unique
+  bookingId        String?
+  unitId           String?
+  guestName        String?
+  type             FnbOrderType
+  scheduledFor     DateTime?
+  settlement       FnbSettlement
+  status           FnbOrderStatus @default(RECEIVED)
+  version          Int            @default(0)
+  subtotal         Decimal        @db.Decimal(12, 2)
+  notes            String?
+  createdById      String
+  acknowledgedById String?
+  acknowledgedAt   DateTime?
+  preparingAt      DateTime?
+  readyAt          DateTime?
+  servedAt         DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
 
   booking        Booking?       @relation(fields: [bookingId], references: [id])
   unit           Unit?          @relation(fields: [unitId], references: [id])
@@ -761,14 +774,14 @@ model FnbOrder {
 }
 
 model FnbOrderLine {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   fnbOrderId String
   menuItemId String
   qty        Int
-  unitPrice  Decimal  @db.Decimal(12, 2)
+  unitPrice  Decimal   @db.Decimal(12, 2)
   notes      String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
   deletedAt  DateTime?
 
   fnbOrder FnbOrder @relation(fields: [fnbOrderId], references: [id])
@@ -804,16 +817,16 @@ enum StockRequestStatus {
 }
 
 model StockItem {
-  id             String        @id @default(cuid())
-  name           String
-  category       StockCategory
-  unitOfMeasure  String
-  currentQty     Decimal       @db.Decimal(12, 2) @default(0)
-  reorderLevel   Decimal       @db.Decimal(12, 2) @default(0)
-  isActive       Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  deletedAt      DateTime?
+  id            String        @id @default(cuid())
+  name          String
+  category      StockCategory
+  unitOfMeasure String
+  currentQty    Decimal       @default(0) @db.Decimal(12, 2)
+  reorderLevel  Decimal       @default(0) @db.Decimal(12, 2)
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
   movements StockMovement[]
   requests  StockRequest[]
@@ -836,17 +849,17 @@ model StockMovement {
 }
 
 model StockRequest {
-  id            String              @id @default(cuid())
-  referenceNo   String              @unique
+  id            String             @id @default(cuid())
+  referenceNo   String             @unique
   stockItemId   String
-  qty           Decimal             @db.Decimal(12, 2)
-  status        StockRequestStatus  @default(REQUESTED)
+  qty           Decimal            @db.Decimal(12, 2)
+  status        StockRequestStatus @default(REQUESTED)
   requestedById String
   decidedById   String?
   decidedAt     DateTime?
   note          String?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
   deletedAt     DateTime?
 
   stockItem   StockItem @relation(fields: [stockItemId], references: [id])
@@ -861,16 +874,16 @@ model StockRequest {
 // ————————————————————————————————————————————————————————————
 
 model Shift {
-  id         String   @id @default(cuid())
+  id         String     @id @default(cuid())
   userId     String
   date       DateTime
   startTime  DateTime
   endTime    DateTime
   department Department
-  isReliever Boolean  @default(false)
+  isReliever Boolean    @default(false)
   note       String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
   deletedAt  DateTime?
 
   user User @relation(fields: [userId], references: [id])
@@ -885,17 +898,17 @@ enum RestDayStatus {
 }
 
 model RestDayRequest {
-  id             String        @id @default(cuid())
-  userId         String
-  requestedDate  DateTime
-  reason         String?
-  status         RestDayStatus @default(PENDING)
-  decidedById    String?
-  decidedAt      DateTime?
-  decisionNote   String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  deletedAt      DateTime?
+  id            String        @id @default(cuid())
+  userId        String
+  requestedDate DateTime
+  reason        String?
+  status        RestDayStatus @default(PENDING)
+  decidedById   String?
+  decidedAt     DateTime?
+  decisionNote  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
   user      User  @relation("RestDayRequestedBy", fields: [userId], references: [id])
   decidedBy User? @relation("RestDayDecidedBy", fields: [decidedById], references: [id])
@@ -909,15 +922,15 @@ enum TimeLogSource {
 }
 
 model TimeLog {
-  id          String        @id @default(cuid())
-  userId      String
-  clockInAt   DateTime
-  clockOutAt  DateTime?
-  source      TimeLogSource
-  note        String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  deletedAt   DateTime?
+  id         String        @id @default(cuid())
+  userId     String
+  clockInAt  DateTime
+  clockOutAt DateTime?
+  source     TimeLogSource
+  note       String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  deletedAt  DateTime?
 
   user User @relation(fields: [userId], references: [id])
 
@@ -929,19 +942,19 @@ model TimeLog {
 // ————————————————————————————————————————————————————————————
 
 model CashCount {
-  id             String     @id @default(cuid())
-  shiftDate      DateTime
-  department     Department
-  openingAmount  Decimal    @db.Decimal(12, 2)
-  closingAmount  Decimal    @db.Decimal(12, 2)
-  countedById    String
-  verifiedById   String?
-  verifiedAt     DateTime?
-  variance       Decimal    @db.Decimal(12, 2)
-  note           String?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
-  deletedAt      DateTime?
+  id            String     @id @default(cuid())
+  shiftDate     DateTime
+  department    Department
+  openingAmount Decimal    @db.Decimal(12, 2)
+  closingAmount Decimal    @db.Decimal(12, 2)
+  countedById   String
+  verifiedById  String?
+  verifiedAt    DateTime?
+  variance      Decimal    @db.Decimal(12, 2)
+  note          String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
 
   countedBy  User  @relation("CashCountedBy", fields: [countedById], references: [id])
   verifiedBy User? @relation("CashVerifiedBy", fields: [verifiedById], references: [id])
@@ -949,20 +962,29 @@ model CashCount {
   @@index([shiftDate, department])
 }
 
+// Not spelled out as a pipe list in spec.md, but inferred from the model's
+// own shape: `approvedById` is optional, implying a submit-then-approve
+// flow. Mirrors the same three-state shape already used for StockRequest
+// (REQUESTED|APPROVED|...|REJECTED) elsewhere in this schema.
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model Expense {
-  id             String    @id @default(cuid())
-  amount         Decimal   @db.Decimal(12, 2)
-  category       String
-  description    String
-  receiptFileId  String?
-  incurredAt     DateTime
-  recordedById   String
-  approvedById   String?
-  // See schema header note: spec.md did not enumerate Expense.status values.
-  status         String
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  deletedAt      DateTime?
+  id            String        @id @default(cuid())
+  amount        Decimal       @db.Decimal(12, 2)
+  category      String
+  description   String
+  receiptFileId String?
+  incurredAt    DateTime
+  recordedById  String
+  approvedById  String?
+  status        ExpenseStatus @default(PENDING)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
   recordedBy  User        @relation("ExpenseRecordedBy", fields: [recordedById], references: [id])
   approvedBy  User?       @relation("ExpenseApprovedBy", fields: [approvedById], references: [id])
@@ -983,22 +1005,32 @@ enum IncidentStatus {
   RESOLVED
 }
 
+// Not spelled out as a pipe list in spec.md. A standard four-level ordinal
+// severity scale — the field is named "severity" (implying rank, not just
+// category) and spec §8.3 singles out safety incidents for immediate owner
+// exception alerts, which needs a severity threshold to key off of.
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
 model Incident {
-  id             String         @id @default(cuid())
-  referenceNo    String         @unique
+  id             String           @id @default(cuid())
+  referenceNo    String           @unique
   type           IncidentType
-  // See schema header note: spec.md did not enumerate Incident.severity values.
-  severity       String
+  severity       IncidentSeverity
   description    String
   location       String?
   involvedUserId String?
   bookingId      String?
   reportedById   String
-  status         IncidentStatus @default(OPEN)
+  status         IncidentStatus   @default(OPEN)
   resolution     String?
   resolvedAt     DateTime?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
   deletedAt      DateTime?
 
   involvedUser User?    @relation("IncidentInvolvedUser", fields: [involvedUserId], references: [id])
@@ -1017,18 +1049,18 @@ enum InspectionTemplate {
 }
 
 model Inspection {
-  id           String              @id @default(cuid())
-  template     InspectionTemplate
-  unitId       String?
-  checklist    Json
-  passed       Boolean
-  inspectorId  String
-  notes        String?
-  createdAt    DateTime            @default(now())
-  deletedAt    DateTime?
+  id          String             @id @default(cuid())
+  template    InspectionTemplate
+  unitId      String?
+  checklist   Json
+  passed      Boolean
+  inspectorId String
+  notes       String?
+  createdAt   DateTime           @default(now())
+  deletedAt   DateTime?
 
-  unit       Unit? @relation(fields: [unitId], references: [id])
-  inspector  User  @relation(fields: [inspectorId], references: [id])
+  unit      Unit? @relation(fields: [unitId], references: [id])
+  inspector User  @relation(fields: [inspectorId], references: [id])
 
   @@index([template, createdAt])
 }
@@ -1037,17 +1069,39 @@ model Inspection {
 // System
 // ————————————————————————————————————————————————————————————
 
+// Not spelled out as a pipe list in spec.md. Inferred from the Socket.IO
+// event catalogue (§9.1) and the owner exception-alert list (§8.3): each
+// value below corresponds to a realtime event or exception condition that
+// is expected to also produce a Notification row for its target user(s).
+enum NotificationType {
+  UNIT_STATUS_CHANGED
+  WORKORDER_CREATED
+  WORKORDER_ASSIGNED
+  WORKORDER_STATUS_CHANGED
+  WORKORDER_SLA_BREACHED
+  FNB_ORDER_CREATED
+  FNB_ORDER_STATUS_CHANGED
+  AMENITY_REQUEST_CHANGED
+  AMENITY_OVERDUE
+  PAYMENT_SUBMITTED
+  PAYMENT_VERIFIED
+  BOOKING_CHECKED_IN
+  BOOKING_CHECKED_OUT
+  BOOKING_FORCED_CHECKOUT
+  CASH_VARIANCE
+  SAFETY_INCIDENT
+}
+
 model Notification {
-  id         String    @id @default(cuid())
+  id         String           @id @default(cuid())
   userId     String
-  // See schema header note: spec.md did not enumerate Notification.type values.
-  type       String
+  type       NotificationType
   title      String
   body       String
   entityType String?
   entityId   String?
   readAt     DateTime?
-  createdAt  DateTime  @default(now())
+  createdAt  DateTime         @default(now())
 
   user User @relation(fields: [userId], references: [id])
 
@@ -1055,22 +1109,22 @@ model Notification {
 }
 
 model FileObject {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   filename     String
   mimeType     String
   sizeBytes    Int
-  storageKey   String   @unique
+  storageKey   String    @unique
   uploadedById String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   deletedAt    DateTime?
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 
-  checkInWaivers   CheckInRecord[]
-  workOrderNotes   WorkOrderNote[]
-  workOrderPhotos  WorkOrderPhoto[]
-  paymentProofs    Payment[]
-  expenseReceipts  Expense[]
+  checkInWaivers  CheckInRecord[]
+  workOrderNotes  WorkOrderNote[]
+  workOrderPhotos WorkOrderPhoto[]
+  paymentProofs   Payment[]
+  expenseReceipts Expense[]
 }
 
 model Setting {

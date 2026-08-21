@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 
 interface HealthResponse {
   status: string;
-  region: string;
   adapters: { realtime: string; storage: string };
 }
 
@@ -27,8 +26,6 @@ export function App() {
         <dl className="text-sm">
           <dt className="font-medium">Status</dt>
           <dd data-testid="health-status">{health.status}</dd>
-          <dt className="mt-2 font-medium">Region</dt>
-          <dd>{health.region}</dd>
           <dt className="mt-2 font-medium">Adapters</dt>
           <dd>
             realtime: {health.adapters.realtime}, storage: {health.adapters.storage}

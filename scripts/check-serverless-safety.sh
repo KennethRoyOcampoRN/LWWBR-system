@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Spec §3.1: no setInterval-based scheduling, no in-process background
-# jobs, in server code that will run on Vercel's serverless runtime.
+# jobs, in server code that will run on Netlify's serverless runtime.
 # Background work must be cron-triggered HTTP endpoints instead.
 #
 # Scope: apps/api/src only. apps/web is a browser SPA — setTimeout there

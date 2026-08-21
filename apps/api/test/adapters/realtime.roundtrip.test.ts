@@ -4,10 +4,11 @@ import { SupabaseRealtimeAdapter } from '../../src/adapters/realtime/supabaseRea
 
 // Requires SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for the hosted
 // Supabase project (spec §3.1) in apps/api/.env — see .env.example.
-// Skips cleanly if unset rather than failing.
-const hasLocalSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+// Skips cleanly if unset rather than failing; with them set, this must
+// actually run and pass — a skipped test is not a passing test.
+const hasSupabaseCredentials = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-describe.skipIf(!hasLocalSupabase)('SupabaseRealtimeAdapter round-trip', () => {
+describe.skipIf(!hasSupabaseCredentials)('SupabaseRealtimeAdapter round-trip', () => {
   const supabaseUrl = process.env.SUPABASE_URL as string;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY as string;
 

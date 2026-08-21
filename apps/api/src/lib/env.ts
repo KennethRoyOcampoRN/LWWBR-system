@@ -12,7 +12,6 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_STORAGE_BUCKET: z.string().default('lwwbr-files'),
   JOB_SECRET: z.string().min(1).optional(),
-  VERCEL_REGION: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

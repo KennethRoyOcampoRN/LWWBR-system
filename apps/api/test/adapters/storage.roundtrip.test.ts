@@ -4,16 +4,17 @@ import { SupabaseStorageAdapter } from '../../src/adapters/storage/supabaseStora
 
 // Requires SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for the hosted
 // Supabase project (spec §3.1) in apps/api/.env — see .env.example.
-// Skips cleanly if unset rather than failing.
-const hasLocalSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+// Skips cleanly if unset rather than failing; with them set, this must
+// actually run and pass — a skipped test is not a passing test.
+const hasSupabaseCredentials = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-describe.skipIf(!hasLocalSupabase)('SupabaseStorageAdapter round-trip', () => {
+describe.skipIf(!hasSupabaseCredentials)('SupabaseStorageAdapter round-trip', () => {
   const bucket = process.env.SUPABASE_STORAGE_BUCKET ?? 'lwwbr-files';
   // Fallback values only exist so construction doesn't throw during test
   // *collection* (Vitest evaluates describe bodies even when skipped).
   // Real values are required for the tests themselves to run — see
-  // hasLocalSupabase above.
-  const supabaseUrl = process.env.SUPABASE_URL ?? 'http://localhost:54321';
+  // hasSupabaseCredentials above.
+  const supabaseUrl = process.env.SUPABASE_URL ?? 'https://unset.supabase.co';
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'unset';
   const adapter = new SupabaseStorageAdapter(supabaseUrl, serviceRoleKey, bucket);
   const key = `test/m0-roundtrip-${Date.now()}.txt`;

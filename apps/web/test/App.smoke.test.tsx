@@ -10,7 +10,6 @@ describe('App smoke test', () => {
         json: () =>
           Promise.resolve({
             status: 'ok',
-            region: 'local',
             adapters: { realtime: 'supabase', storage: 'supabase' },
           }),
       }),

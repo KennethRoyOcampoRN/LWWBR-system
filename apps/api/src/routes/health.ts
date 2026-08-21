@@ -12,7 +12,6 @@ export const healthRouter = Router();
 healthRouter.get('/health', (_req, res) => {
   res.status(200).json({
     status: 'ok',
-    region: process.env.VERCEL_REGION ?? 'local',
     adapters: {
       realtime: resolvedRealtimeAdapterName(),
       storage: resolvedStorageAdapterName(),
