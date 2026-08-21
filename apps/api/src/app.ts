@@ -1,22 +1,38 @@
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import helmet from 'helmet';
 import { ZodError } from 'zod';
 import { ApiError } from './lib/apiError.js';
+import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { authRouter } from './modules/auth/router.js';
 import { healthRouter } from './routes/health.js';
 
-export function createApp() {
+export interface CreateAppOptions {
+  // Mounted after the real routers, before the 404 handler. Exists so
+  // tests can exercise middleware like requirePermission through a real
+  // route without it falling through to the catch-all 404 — production
+  // never passes this.
+  extraRouters?: RequestHandler[];
+}
+
+export function createApp(options: CreateAppOptions = {}) {
   const app = express();
 
   app.use(helmet());
   app.use(cors({ credentials: true }));
   app.use(express.json());
   app.use(cookieParser());
+  // Must run before any router — opens the per-request context the audit
+  // Prisma extension (lib/prisma.ts) reads actor/ip/userAgent from.
+  app.use(attachRequestContext);
 
   app.use('/api/v1', healthRouter);
   app.use('/api/v1', authRouter);
+
+  for (const router of options.extraRouters ?? []) {
+    app.use(router);
+  }
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Route not found' } });

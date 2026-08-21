@@ -2,6 +2,7 @@ import { getEffectivePermissions, type RoleKey } from '@lwwbr/shared';
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
+import { setRequestActorId } from '../../lib/requestContext.js';
 import { verifyPassword } from './passwords.js';
 import {
   generateRefreshToken,
@@ -88,6 +89,12 @@ export async function login(
     });
     throw invalidCredentials();
   }
+
+  // The user is now authenticated, even though no access token exists
+  // yet — attribute the lastLoginAt update below (and anything else
+  // this request does) to them, rather than leaving the audit
+  // extension's actorId null for a write that plainly has an actor.
+  setRequestActorId(user.id);
 
   const refreshToken = generateRefreshToken();
   await prisma.session.create({

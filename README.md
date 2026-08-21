@@ -117,11 +117,38 @@ an actual failure rather than a log line.
   session immediately and writes a distinct `REFRESH_TOKEN_REUSE_DETECTED`
   audit entry, while still keeping one `Session` row per logged-in device
   (needed for the "sign out all other devices" UX in spec §3.1.1).
-- 29 new tests across `packages/shared` and `apps/api` (permission
+- `requirePermission(key)` (spec §5.1): the single authorization
+  primitive — loads the caller's current roles fresh from the database on
+  every call (never trusts anything cached in the access token), checks
+  the requested key against their effective permissions, and attaches
+  `req.authUser` / `req.permissionScope` for the resource module (M2+) to
+  filter its own query by when the grant is DEPARTMENT- or SELF-scoped.
+  This middleware doesn't and can't do that filtering itself — no
+  resource endpoints exist yet to filter.
+- Automatic audit logging (spec §4.4): a Prisma client extension
+  (`lib/prisma.ts`) wraps every `create`/`update`/`delete`/`upsert` on
+  every model except `AuditLog` (would recurse) and `Session` (its own
+  churn already has explicit login/refresh audit entries) and writes an
+  `AuditLog` row with actor/ip/userAgent pulled from a per-request
+  `AsyncLocalStorage` context (`lib/requestContext.ts`) — set once by
+  `requireAuth`/`requirePermission`/`login()`, read anywhere a Prisma
+  write happens without threading it through every function call in
+  between. Password/token-hash fields are redacted before storage.
+  **Not verified against a live database from this sandbox** (same
+  network block as M0) — the decision logic (`lib/auditExtension.ts`:
+  which models/operations are audited, entity-id resolution, redaction)
+  is fully unit tested without a database, but the actual `$allOperations`
+  wiring in `lib/prisma.ts` needs confirming against the real Supabase
+  project: create a test record through any model and check `AuditLog`
+  for a matching row.
+- 49 new tests across `packages/shared` and `apps/api` (permission
   matrix invariants; password/JWT unit tests; service-level
-  login/refresh/logout/getMe against a mocked Prisma client; router-level
-  tests via supertest confirming real httpOnly cookies and the spec
-  §4.8 error shape). Full lint/typecheck/build clean.
+  login/refresh/logout/getMe/token-rotation/reuse-detection against a
+  mocked Prisma client; router-level tests via supertest confirming real
+  httpOnly cookies, cookie rotation, and the spec §4.8 error shape;
+  requirePermission's 401/403/200 paths through real Express middleware;
+  audit-extension decision logic; AsyncLocalStorage context isolation
+  under concurrent requests). Full lint/typecheck/build clean.
 
 ### Known risk flagged for M7, not yet tested
 
