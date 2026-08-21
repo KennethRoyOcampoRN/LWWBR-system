@@ -24,7 +24,7 @@ A web-based **operations command center** for Lucky Waku-Waku Beach Resort (Lian
 |---|---|
 | Monorepo | npm workspaces: `apps/web`, `apps/api`, `packages/shared` |
 | Frontend | React 19 + TypeScript + Vite, Tailwind CSS, shadcn/ui, TanStack Query, React Router, `react-hook-form` + zod |
-| Backend | Node 20 + Express + TypeScript |
+| Backend | Node 24 (Active LTS) + Express + TypeScript. Not Node 20 — it reached EOL on 30 April 2026 and receives no further security patches. Pin with `.nvmrc` and `engines` in `package.json`, and set the Vercel function runtime to match. |
 | ORM/DB | Prisma + **PostgreSQL 16** — Supabase-hosted or self-hosted (see §3.1) |
 | Realtime | `RealtimeAdapter` interface with two implementations: Socket.IO (self-host) and Supabase Realtime (cloud). App code emits domain events; it never imports either library directly. |
 | Auth | **Application-level JWT**, not Supabase Auth: access token (15 min) + refresh token (7 days), both in `httpOnly` `SameSite=Lax` cookies; `argon2` password hashing |
@@ -465,7 +465,7 @@ Complete each milestone fully — including its tests — before starting the ne
 ## 12. Working agreement for Claude Code
 1. **Read this whole file before writing anything.** Produce a plan and an assumptions list first; wait for approval.
 2. Work **one milestone at a time**. Do not scaffold ahead into future milestones.
-3. **Ask before adding any dependency** not listed in §3.
+3. **Ask before adding any dependency** not listed in §3 — with these already approved, no need to ask: `otplib` or `otpauth` (TOTP for §3.1.1 2FA), `express-rate-limit` (login throttling), `resend` (owner digest email, M6 only), `date-fns-tz` or `@date-fns/tz` (Asia/Manila boundary maths per §3.2). Anything else, stop and ask.
 4. Shared types, zod schemas, permission keys, and state-transition tables live in `packages/shared` and are imported by both apps. If you find yourself duplicating a union type or a status list, stop and move it.
 5. Write the API test alongside the endpoint, not after. Every state transition needs a happy-path test and a rejected-transition test.
 6. Prefer boring, readable code. No premature abstraction, no clever generics, no service-locator patterns. This system will be maintained by one developer on a phone-heavy schedule.
