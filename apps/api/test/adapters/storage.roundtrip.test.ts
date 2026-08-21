@@ -2,15 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SupabaseStorageAdapter } from '../../src/adapters/storage/supabaseStorageAdapter.js';
 
-// UNVERIFIED IN THIS SESSION — see /README.md "M0 status". This test needs
-// a running local Supabase stack (`supabase start`), which requires Docker
-// and was not available in the environment this was written in. It has
-// never been executed. Run it after `supabase start` to confirm the
-// StorageAdapter round-trips against real Supabase Storage.
-//
-// `supabase start` prints SUPABASE_URL as "API URL" and
-// SUPABASE_SERVICE_ROLE_KEY as "service_role key" — put both in
-// apps/api/.env before running.
+// Requires SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for the hosted
+// Supabase project (spec §3.1) in apps/api/.env — see .env.example.
+// Skips cleanly if unset rather than failing.
 const hasLocalSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 describe.skipIf(!hasLocalSupabase)('SupabaseStorageAdapter round-trip', () => {

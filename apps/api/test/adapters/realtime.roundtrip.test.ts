@@ -2,11 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import { SupabaseRealtimeAdapter } from '../../src/adapters/realtime/supabaseRealtimeAdapter.js';
 
-// UNVERIFIED IN THIS SESSION — see /README.md "M0 status". This test needs
-// a running local Supabase stack (`supabase start`), which requires Docker
-// and was not available in the environment this was written in. It has
-// never been executed. Run it after `supabase start` to confirm the
-// RealtimeAdapter round-trips against real Supabase Realtime.
+// Requires SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for the hosted
+// Supabase project (spec §3.1) in apps/api/.env — see .env.example.
+// Skips cleanly if unset rather than failing.
 const hasLocalSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 describe.skipIf(!hasLocalSupabase)('SupabaseRealtimeAdapter round-trip', () => {
