@@ -3,13 +3,16 @@ import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
 import { setRequestActorId } from '../../lib/requestContext.js';
+import { assertNotLockedOrRateLimited, maybeLockAccount } from './loginThrottle.js';
 import { verifyPassword } from './passwords.js';
+import { requiresTotp } from './requiresTotp.js';
 import {
   generateRefreshToken,
   hashRefreshToken,
   REFRESH_TOKEN_TTL_SECONDS,
   signAccessToken,
 } from './tokens.js';
+import { generateTotpSecret, totpProvisioningUri, verifyTotpCode } from './totp.js';
 
 export interface RequestMeta {
   ip?: string | null;
@@ -26,6 +29,27 @@ export interface AuthenticatedUser {
   roles: RoleKey[];
   permissions: ReturnType<typeof getEffectivePermissions>;
 }
+
+export interface LoginSuccess {
+  status: 'success';
+  user: AuthenticatedUser;
+  accessToken: string;
+  refreshToken: string;
+}
+
+// Returned instead of a session on an OWNER/SYSTEM_ADMIN account's first
+// login — spec §3.1.1 requires TOTP for these roles, so enrollment has
+// to happen somewhere. The secret is generated and persisted immediately
+// (see login() below for why that's safe), and the caller must complete
+// login again with a valid code from it before a session is issued —
+// "an owner account cannot complete login without a TOTP code" is true
+// even on the very first login.
+export interface LoginTotpSetupRequired {
+  status: 'totp_setup_required';
+  provisioningUri: string;
+}
+
+export type LoginResult = LoginSuccess | LoginTotpSetupRequired;
 
 function invalidCredentials(): ApiError {
   // Deliberately the same error for "no such employeeCode" and "wrong
@@ -55,25 +79,19 @@ async function loadAuthenticatedUser(userId: string): Promise<AuthenticatedUser>
   };
 }
 
-export interface LoginResult {
-  user: AuthenticatedUser;
-  accessToken: string;
-  refreshToken: string;
-}
-
-// TOTP 2FA for OWNER/SYSTEM_ADMIN (spec §3.1.1) and login rate limiting /
-// lockout land in a follow-up task — this is deliberately password-only
-// for now. The insertion point for a TOTP challenge is right after the
-// password check succeeds, before a session is created.
 export async function login(
   employeeCode: string,
   password: string,
   meta: RequestMeta,
+  totpCode?: string,
 ): Promise<LoginResult> {
   const user = await prisma.user.findFirst({
     where: { employeeCode, deletedAt: null },
     include: { roles: { where: { deletedAt: null }, include: { role: true } } },
   });
+  const accountKey = user?.id ?? employeeCode;
+
+  await assertNotLockedOrRateLimited(accountKey, meta.ip);
 
   if (!user || !user.isActive || !(await verifyPassword(user.passwordHash, password))) {
     await logAudit({
@@ -83,10 +101,11 @@ export async function login(
       // Fall back to the attempted employeeCode when no matching user
       // exists — AuditLog.entityId is required, and this is still useful
       // signal (repeated attempts against a code that doesn't exist).
-      entityId: user?.id ?? employeeCode,
+      entityId: accountKey,
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
+    await maybeLockAccount(accountKey, meta);
     throw invalidCredentials();
   }
 
@@ -95,6 +114,42 @@ export async function login(
   // this request does) to them, rather than leaving the audit
   // extension's actorId null for a write that plainly has an actor.
   setRequestActorId(user.id);
+
+  const roles = user.roles.map((userRole) => userRole.role.key as RoleKey);
+
+  if (requiresTotp(roles)) {
+    if (!user.totpSecret) {
+      // First login for a role that requires 2FA: generate and persist
+      // a secret now. Safe to persist before confirmation — an
+      // abandoned enrollment just means the next login attempt
+      // regenerates and overwrites it, which is harmless (nothing was
+      // ever issued against the old one).
+      const secret = generateTotpSecret();
+      await prisma.user.update({ where: { id: user.id }, data: { totpSecret: secret } });
+      return { status: 'totp_setup_required', provisioningUri: totpProvisioningUri(secret, user.employeeCode) };
+    }
+    if (!totpCode) {
+      // Password was correct — this isn't a failure, so it's neither
+      // logged as one nor counted toward lockout/rate-limiting.
+      throw new ApiError(401, 'TOTP_REQUIRED', 'Enter your authenticator code to finish signing in.');
+    }
+    if (!verifyTotpCode(user.totpSecret, totpCode)) {
+      // A wrong code, unlike a missing one, is exactly the kind of
+      // repeated-guessing this account's lockout exists to catch — a
+      // 6-digit TOTP code is brute-forceable within its validity window
+      // without this.
+      await logAudit({
+        actorId: user.id,
+        action: 'LOGIN_FAILURE',
+        entity: 'User',
+        entityId: accountKey,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+      });
+      await maybeLockAccount(accountKey, meta);
+      throw new ApiError(401, 'TOTP_INVALID', 'Invalid authenticator code.');
+    }
+  }
 
   const refreshToken = generateRefreshToken();
   await prisma.session.create({
@@ -116,8 +171,8 @@ export async function login(
     userAgent: meta.userAgent,
   });
 
-  const roles = user.roles.map((userRole) => userRole.role.key as RoleKey);
   return {
+    status: 'success',
     user: {
       id: user.id,
       employeeCode: user.employeeCode,
@@ -198,4 +253,43 @@ export async function logout(refreshToken: string): Promise<void> {
 
 export async function getMe(userId: string): Promise<AuthenticatedUser> {
   return loadAuthenticatedUser(userId);
+}
+
+export interface SessionSummary {
+  id: string;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+// Spec §3.1.1: "Session list and remote revocation in user settings —
+// 'sign out all other devices'." Self-service only — a user manages
+// their own device list. Never exposes refreshTokenHash/
+// previousRefreshTokenHash.
+export async function listSessions(userId: string): Promise<SessionSummary[]> {
+  const sessions = await prisma.session.findMany({
+    where: { userId, revokedAt: null, deletedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true, ip: true, userAgent: true, createdAt: true, expiresAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  return sessions;
+}
+
+export async function revokeSession(userId: string, sessionId: string, meta: RequestMeta): Promise<void> {
+  const session = await prisma.session.findFirst({
+    where: { id: sessionId, userId, revokedAt: null, deletedAt: null },
+  });
+  if (!session) {
+    throw new ApiError(404, 'NOT_FOUND', 'Session not found');
+  }
+  await prisma.session.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
+  await logAudit({
+    actorId: userId,
+    action: 'SESSION_REVOKED',
+    entity: 'Session',
+    entityId: session.id,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+  });
 }

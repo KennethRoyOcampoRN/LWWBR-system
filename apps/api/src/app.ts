@@ -4,6 +4,7 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 import helmet from 'helmet';
 import { ZodError } from 'zod';
 import { ApiError } from './lib/apiError.js';
+import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { authRouter } from './modules/auth/router.js';
 import { healthRouter } from './routes/health.js';
@@ -19,7 +20,12 @@ export interface CreateAppOptions {
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
 
-  app.use(helmet());
+  // Spec §3.1.1: HSTS + secure cookie flags + force HTTPS. helmet's
+  // default already sets Strict-Transport-Security; the explicit config
+  // here makes that a deliberate choice rather than an unexamined
+  // default. maxAge is 180 days, a conventional HSTS duration.
+  app.use(helmet({ hsts: { maxAge: 15552000, includeSubDomains: true } }));
+  app.use(forceHttps);
   app.use(cors({ credentials: true }));
   app.use(express.json());
   app.use(cookieParser());

@@ -4,8 +4,8 @@ import { hashPassword } from '../../../src/modules/auth/passwords.js';
 
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
-  session: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  auditLog: { create: vi.fn() },
+  session: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -29,6 +29,10 @@ function fakeUser(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Defaults so login flows in these tests aren't rate-limited/locked —
+  // the throttle logic itself is covered directly in service.test.ts.
+  mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+  mockPrisma.auditLog.count.mockResolvedValue(0);
 });
 
 describe('POST /api/v1/auth/login', () => {
@@ -125,5 +129,35 @@ describe('POST /api/v1/auth/logout', () => {
     expect(res.status).toBe(204);
     const cookies = res.headers['set-cookie'] as unknown as string[];
     expect(cookies.some((c) => c.startsWith('lwwbr_access=;'))).toBe(true);
+  });
+});
+
+describe('GET /api/v1/auth/sessions and POST /api/v1/auth/sessions/:id/revoke', () => {
+  it('requires authentication', async () => {
+    const res = await request(createApp()).get('/api/v1/auth/sessions');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists the logged-in user\'s sessions and can revoke one of them', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+    mockPrisma.session.findMany.mockResolvedValue([
+      { id: 'session_1', ip: '1.2.3.4', userAgent: 'Chrome', createdAt: new Date(), expiresAt: new Date() },
+    ]);
+
+    const agent = request.agent(createApp());
+    await agent.post('/api/v1/auth/login').send({ employeeCode: 'LWW-001', password: 'Waku2026!' });
+
+    const listRes = await agent.get('/api/v1/auth/sessions');
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.sessions).toHaveLength(1);
+
+    mockPrisma.session.findFirst.mockResolvedValue({ id: 'session_1', userId: 'user_1' });
+    const revokeRes = await agent.post('/api/v1/auth/sessions/session_1/revoke');
+    expect(revokeRes.status).toBe(204);
+    expect(mockPrisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session_1' },
+      data: { revokedAt: expect.any(Date) },
+    });
   });
 });

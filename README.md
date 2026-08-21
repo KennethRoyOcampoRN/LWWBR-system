@@ -108,9 +108,7 @@ an actual failure rather than a log line.
   the union-of-roles rule (spec §5.1). 9 tests.
 - Auth core (spec §3/§9): argon2 password hashing, JWT access tokens (15
   min) + opaque refresh tokens (7 days) in httpOnly `SameSite=Lax`
-  cookies, `POST /auth/login|refresh|logout`, `GET /auth/me`. Password-
-  only for now — TOTP 2FA, login rate limiting/lockout, and the session-
-  list/revocation UI are a separate task, not deferred out of M1.
+  cookies, `POST /auth/login|refresh|logout`, `GET /auth/me`.
 - Refresh tokens rotate on every use, with reuse detection: `Session`
   gained a `previousRefreshTokenHash` column so a replayed pre-rotation
   token can be told apart from a plain invalid one — replay revokes that
@@ -141,14 +139,51 @@ an actual failure rather than a log line.
   wiring in `lib/prisma.ts` needs confirming against the real Supabase
   project: create a test record through any model and check `AuditLog`
   for a matching row.
-- 49 new tests across `packages/shared` and `apps/api` (permission
-  matrix invariants; password/JWT unit tests; service-level
-  login/refresh/logout/getMe/token-rotation/reuse-detection against a
-  mocked Prisma client; router-level tests via supertest confirming real
-  httpOnly cookies, cookie rotation, and the spec §4.8 error shape;
-  requirePermission's 401/403/200 paths through real Express middleware;
-  audit-extension decision logic; AsyncLocalStorage context isolation
-  under concurrent requests). Full lint/typecheck/build clean.
+- Login rate limiting and progressive lockout (spec §3.1.1), state kept
+  entirely in Postgres via `AuditLog` — never in memory, per spec §3.1's
+  serverless rule (a module-level counter resets on every cold start,
+  which would make rate limiting silently do nothing in production). A
+  fast per-request check (5 failures / 15 min, per account or IP) returns
+  `429` before password verification even runs; a slower check (10
+  failures / hour — spec's own M1 acceptance number) locks the account
+  with a duration that escalates on repeat lockouts (30 min, then 2h,
+  then 24h), derived by counting past `ACCOUNT_LOCKED` audit entries
+  rather than a separate counter column.
+- TOTP 2FA for OWNER/SYSTEM_ADMIN (spec §3.1.1), via `otpauth`. First
+  login for an unenrolled account generates and persists a secret and
+  returns `{ totpSetupRequired: true, provisioningUri }` — **no
+  session is issued** until a subsequent login call includes a valid
+  code, so "an owner account cannot complete login without a TOTP code"
+  holds even on first-ever login, not just after enrollment. A missing
+  code (password was right, just need the code) isn't logged as a
+  failure or counted toward lockout; a wrong code is — a 6-digit TOTP
+  code is brute-forceable within its validity window without that.
+  Which roles require it lives in one small, explicitly-commented list
+  (`modules/auth/requiresTotp.ts`) — a deliberate, narrow exception to
+  spec §5.1's "don't hardcode role names," since this is an account-
+  security policy spec states by role name, not a permission-key check.
+- Session list + self-service revocation (spec §3.1.1's "sign out all
+  other devices"): `GET /auth/sessions`, `POST /auth/sessions/:id/revoke`.
+  Scoped to the caller's own sessions only — revoking someone else's by
+  guessing an id 404s, since the lookup itself is scoped by `userId`.
+- HSTS (explicit `helmet` config, not just its defaults), `forceHttps`
+  middleware rejecting non-TLS requests in production (checks
+  `x-forwarded-proto`, since Netlify terminates TLS in front of the
+  function), secure cookie flags (already in place from the auth-core
+  commit).
+- 78 real tests total across the repo (9 `packages/shared`, 68 `apps/api`,
+  1 `apps/web` scaffold smoke test) — the `apps/api` figure excludes the 3
+  known-blocked round-trip tests, unchanged since M0, that only fail in
+  this sandbox's network-restricted environment. On `apps/api` alone —
+  permission matrix invariants; password/JWT/TOTP unit tests; service-
+  level login/refresh/logout/getMe/token-rotation/reuse-detection/
+  rate-limiting/lockout/sessions against a mocked Prisma client;
+  router-level tests via supertest confirming real httpOnly cookies,
+  cookie rotation, the spec §4.8 error shape, and the sessions
+  endpoints; requirePermission's 401/403/200 paths through real Express
+  middleware; audit-extension decision logic; AsyncLocalStorage context
+  isolation under concurrent requests; forceHttps's dev/prod and
+  proxy-header behavior). Full lint/typecheck/build clean.
 
 ### Known risk flagged for M7, not yet tested
 
@@ -164,12 +199,13 @@ fallback is `bcrypt`/`bcryptjs` (pure JS, no native step, more common in
 serverless deployments) instead of argon2 — a deliberate trade to revisit
 only if needed, not a default to switch to preemptively.
 
-### Schema change needs syncing to the hosted project
+### Schema changes need syncing to the hosted project
 
-`Session.previousRefreshTokenHash` (nullable `String?`) was added for
-refresh-token rotation. This session's sandbox can't reach the hosted
-Supabase project to push it (same network block noted under M0). Run
-`npx prisma db push` (from `apps/api`) against the real database before
-relying on login/refresh working end-to-end.
+`Session.previousRefreshTokenHash` and `User.totpSecret` (both nullable
+`String?`) were added for refresh-token rotation and TOTP enrollment.
+This session's sandbox can't reach the hosted Supabase project to push
+them (same network block noted under M0). Run `npx prisma db push`
+(from `apps/api`) against the real database before relying on
+login/refresh/TOTP working end-to-end.
 
 See `spec.md` §11 for the full M1 acceptance criteria — not all met yet.

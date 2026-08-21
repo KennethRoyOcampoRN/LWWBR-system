@@ -1,19 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from '../../../src/modules/auth/passwords.js';
 import { verifyAccessToken } from '../../../src/modules/auth/tokens.js';
+import { generateTotpSecret, verifyTotpCode } from '../../../src/modules/auth/totp.js';
 
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
-  session: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  auditLog: { create: vi.fn() },
+  session: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn() },
 };
 
-// Mocked so these tests exercise the real password/token logic (argon2,
-// JWT signing) against a fake persistence layer instead of a real
-// database — no network dependency, and it runs the same everywhere.
+// Mocked so these tests exercise the real password/token/TOTP logic
+// (argon2, JWT signing, otpauth) against a fake persistence layer
+// instead of a real database — no network dependency, and it runs the
+// same everywhere.
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
-const { login, refresh, logout, getMe } = await import('../../../src/modules/auth/service.js');
+const { login, refresh, logout, getMe, listSessions, revokeSession } = await import(
+  '../../../src/modules/auth/service.js'
+);
 
 function fakeUser(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -24,6 +28,7 @@ function fakeUser(overrides: Partial<Record<string, unknown>> = {}) {
     department: 'MANAGEMENT',
     isActive: true,
     mustChangePassword: true,
+    totpSecret: null,
     deletedAt: null,
     roles: [{ role: { key: 'RESORT_MANAGER' } }],
     ...overrides,
@@ -32,6 +37,10 @@ function fakeUser(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Defaults so tests unrelated to throttling/lockout don't need to know
+  // about it: no active lock, no recent failures.
+  mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+  mockPrisma.auditLog.count.mockResolvedValue(0);
 });
 
 describe('login', () => {
@@ -40,6 +49,7 @@ describe('login', () => {
     mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
 
     const result = await login('LWW-001', 'Waku2026!', { ip: '127.0.0.1', userAgent: 'vitest' });
+    if (result.status !== 'success') throw new Error('expected success');
 
     expect(result.user.employeeCode).toBe('LWW-001');
     expect(result.user.roles).toEqual(['RESORT_MANAGER']);
@@ -91,6 +101,150 @@ describe('login', () => {
 
     await expect(login('LWW-001', 'Waku2026!', {})).rejects.toMatchObject({ status: 401 });
     expect(mockPrisma.session.create).not.toHaveBeenCalled();
+  });
+
+  describe('rate limiting and lockout (spec §3.1.1)', () => {
+    it('rejects with 429 once 5 recent failures exist for this account, before ever checking the password', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+      mockPrisma.auditLog.count.mockResolvedValue(5); // >= RATE_LIMIT_THRESHOLD
+
+      // Correct password — still rejected, because the fast rate limit
+      // fires before verifyPassword is ever reached.
+      await expect(login('LWW-001', 'Waku2026!', {})).rejects.toMatchObject({
+        status: 429,
+        code: 'RATE_LIMITED',
+      });
+      expect(mockPrisma.session.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 423 while an active lockout window is still in effect', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+      mockPrisma.auditLog.findFirst.mockResolvedValue({
+        action: 'ACCOUNT_LOCKED',
+        after: { lockedUntil: new Date(Date.now() + 60_000).toISOString() },
+      });
+
+      await expect(login('LWW-001', 'Waku2026!', {})).rejects.toMatchObject({
+        status: 423,
+        code: 'ACCOUNT_LOCKED',
+      });
+    });
+
+    it('allows login once a past lockout has expired', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+      mockPrisma.auditLog.findFirst.mockResolvedValue({
+        action: 'ACCOUNT_LOCKED',
+        after: { lockedUntil: new Date(Date.now() - 60_000).toISOString() }, // in the past
+      });
+
+      const result = await login('LWW-001', 'Waku2026!', {});
+      expect(result.status).toBe('success');
+    });
+
+    it('locks the account on the 10th failure within the window and reports it distinctly from a plain wrong password', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+      mockPrisma.auditLog.count.mockImplementation(
+        ({ where }: { where: { action: string; OR?: unknown } }) => {
+          // Both the fast rate-limit check and the lockout-threshold
+          // check query action: 'LOGIN_FAILURE' — they're told apart by
+          // shape, not value: the rate-limit check always queries with
+          // an OR (accountKey or ip), the lockout check doesn't. Keep
+          // the rate-limit check under its own threshold so this test
+          // actually reaches the lockout logic rather than getting
+          // stopped earlier by 429 RATE_LIMITED.
+          if (where.action === 'LOGIN_FAILURE' && !where.OR) {
+            return Promise.resolve(10);
+          }
+          return Promise.resolve(0);
+        },
+      );
+
+      await expect(login('LWW-001', 'wrong-password', {})).rejects.toMatchObject({
+        status: 423,
+        code: 'ACCOUNT_LOCKED',
+      });
+      expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ action: 'ACCOUNT_LOCKED', entityId: 'user_1' }) }),
+      );
+    });
+  });
+
+  describe('TOTP for OWNER/SYSTEM_ADMIN (spec §3.1.1)', () => {
+    it('does not require TOTP for a role that is not OWNER or SYSTEM_ADMIN', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'CASHIER' } }] }),
+      );
+      const result = await login('LWW-001', 'Waku2026!', {});
+      expect(result.status).toBe('success');
+    });
+
+    it('returns totp_setup_required and persists a fresh secret on an unenrolled OWNER account, without issuing a session', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret: null }),
+      );
+
+      const result = await login('LWW-001', 'Waku2026!', {});
+      expect(result.status).toBe('totp_setup_required');
+      if (result.status !== 'totp_setup_required') throw new Error('unreachable');
+      expect(result.provisioningUri).toMatch(/^otpauth:\/\/totp\//);
+      expect(mockPrisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user_1' },
+        data: { totpSecret: expect.any(String) },
+      });
+      expect(mockPrisma.session.create).not.toHaveBeenCalled();
+    });
+
+    it('requires a TOTP code once enrolled, and does not count a missing code as a failure', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      const totpSecret = generateTotpSecret();
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'SYSTEM_ADMIN' } }], totpSecret }),
+      );
+
+      await expect(login('LWW-001', 'Waku2026!', {})).rejects.toMatchObject({
+        status: 401,
+        code: 'TOTP_REQUIRED',
+      });
+      expect(mockPrisma.auditLog.create).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ action: 'LOGIN_FAILURE' }) }),
+      );
+    });
+
+    it('rejects an invalid TOTP code, and this DOES count toward lockout', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      const totpSecret = generateTotpSecret();
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret }),
+      );
+
+      await expect(login('LWW-001', 'Waku2026!', {}, '000000')).rejects.toMatchObject({
+        status: 401,
+        code: 'TOTP_INVALID',
+      });
+      expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ action: 'LOGIN_FAILURE', actorId: 'user_1' }) }),
+      );
+    });
+
+    it('completes login with a valid TOTP code', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      const totpSecret = generateTotpSecret();
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret }),
+      );
+
+      const code = new (await import('otpauth')).TOTP({ secret: totpSecret }).generate();
+      expect(verifyTotpCode(totpSecret, code)).toBe(true); // sanity check on the test's own code
+
+      const result = await login('LWW-001', 'Waku2026!', {}, code);
+      expect(result.status).toBe('success');
+    });
   });
 });
 
@@ -186,5 +340,42 @@ describe('getMe', () => {
   it('rejects a soft-deleted or inactive user', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(null);
     await expect(getMe('gone')).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe('sessions (spec §3.1.1 "sign out all other devices")', () => {
+  it('lists only this user\'s active, unexpired sessions, never exposing token hashes', async () => {
+    mockPrisma.session.findMany.mockResolvedValue([
+      { id: 'session_1', ip: '1.2.3.4', userAgent: 'Chrome', createdAt: new Date(), expiresAt: new Date() },
+    ]);
+    const sessions = await listSessions('user_1');
+    expect(sessions).toHaveLength(1);
+    expect(mockPrisma.session.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user_1', revokedAt: null, deletedAt: null, expiresAt: { gt: expect.any(Date) } },
+        select: { id: true, ip: true, userAgent: true, createdAt: true, expiresAt: true },
+      }),
+    );
+  });
+
+  it('revokes a session belonging to the caller and audits it', async () => {
+    mockPrisma.session.findFirst.mockResolvedValue({ id: 'session_1', userId: 'user_1' });
+    await revokeSession('user_1', 'session_1', { ip: '1.2.3.4' });
+    expect(mockPrisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session_1' },
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'SESSION_REVOKED', actorId: 'user_1', entityId: 'session_1' }),
+      }),
+    );
+  });
+
+  it('refuses to revoke a session belonging to a different user', async () => {
+    // The query itself is scoped by userId — a session owned by someone
+    // else simply won't be found under this caller's id.
+    mockPrisma.session.findFirst.mockResolvedValue(null);
+    await expect(revokeSession('user_1', 'someone-elses-session', {})).rejects.toMatchObject({ status: 404 });
   });
 });

@@ -54,6 +54,12 @@ model User {
   isActive           Boolean    @default(true)
   lastLoginAt        DateTime?
   mustChangePassword Boolean    @default(true)
+  // Spec §3.1.1: TOTP required for OWNER/SYSTEM_ADMIN, optional for
+  // everyone else. Null = not enrolled. Stored plain (not further
+  // encrypted beyond Postgres/Supabase's own at-rest protection) — same
+  // trust boundary as the rest of this schema; only reachable via the
+  // service-role key, never returned by any API response.
+  totpSecret         String?
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
   deletedAt          DateTime?
