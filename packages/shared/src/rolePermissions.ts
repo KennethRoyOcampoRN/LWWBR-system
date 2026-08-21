@@ -37,6 +37,15 @@ import type { RoleKey } from './roles.js';
 //    matrix's other patterns, not an arbitrary default — see the
 //    scaffold-generation script referenced in the M1 commit for the exact
 //    per-key reasoning if this ever needs revisiting.
+//
+// Resolved ambiguity (client decision, not a default): the table marks
+// OWNER "—" on both workorder:create and incident:create, in tension with
+// spec §8.1's "every role" has the "+" report-an-issue button. The client
+// confirmed OWNER should have the button — report-only, since creating a
+// ticket doesn't let OWNER assign, verify, or close anything, so it's a
+// narrow exception rather than a breach of "read-only except
+// payment:verify and report:export." OWNER is granted workorder:create
+// and incident:create below; every other write-shaped key stays withheld.
 export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, PermissionScope>>> = {
   SYSTEM_ADMIN: {
     'amenity:approve': 'ALL',
@@ -100,6 +109,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'booking:read': 'ALL',
     'cash:read': 'ALL',
     'folio:read': 'ALL',
+    'incident:create': 'ALL', // resolved ambiguity — see header comment
     'incident:read': 'ALL',
     'payment:read': 'ALL',
     'payment:verify': 'ALL',
@@ -107,6 +117,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'report:view': 'ALL',
     'shift:read': 'ALL',
     'unit:read': 'ALL',
+    'workorder:create': 'ALL', // resolved ambiguity — see header comment
     'workorder:read': 'ALL',
     'workorder:read_all': 'ALL',
   },

@@ -16,9 +16,21 @@ describe('ROLE_PERMISSIONS', () => {
 
   // Spec §5.4: "OWNER is read-only across the entire system except
   // payment:verify and report:export. Enforce this at the API layer."
-  it('grants OWNER only read-type keys plus payment:verify and report:export', () => {
+  // Client-confirmed narrow exception on top of that (see header comment):
+  // OWNER may also create work orders/incidents (report-only — it doesn't
+  // grant assign/verify/close/update_status), matching §8.1's "every
+  // role has this" quick-action button. No other write-shaped key is
+  // ever granted to OWNER.
+  const OWNER_ALLOWED_WRITE_KEYS = new Set([
+    'payment:verify',
+    'report:export',
+    'workorder:create',
+    'incident:create',
+  ]);
+  it('grants OWNER only read-type keys plus the confirmed narrow exceptions', () => {
     const writeKeys = Object.keys(ROLE_PERMISSIONS.OWNER).filter(
-      (key) => key !== 'payment:verify' && key !== 'report:export' && !key.includes('read') && key !== 'report:view',
+      (key) =>
+        !OWNER_ALLOWED_WRITE_KEYS.has(key) && !key.includes('read') && key !== 'report:view',
     );
     expect(writeKeys).toEqual([]);
   });
@@ -35,25 +47,22 @@ describe('ROLE_PERMISSIONS', () => {
     expect(perms['workorder:update_status']).toBeUndefined();
   });
 
-  // Spec §8.1 says the "+" quick action (report an issue) exists for
-  // "every role," but the §5.4 matrix explicitly marks OWNER "—" on both
-  // "workorder create" and "incident create" — consistent with the hard
-  // "OWNER is read-only... except payment:verify and report:export"
-  // rule. Flagging this as a spec tension rather than silently picking a
-  // side: the matrix (more precise, reviewed row by row) wins here, so
-  // OWNER is excluded. If the client confirms owners should be able to
-  // report an issue too, that's a one-line change to rolePermissions.ts.
-  it('every operational role can create a work order and report an incident', () => {
+  // Spec §8.1's "+" quick action (report an issue) exists for every role,
+  // OWNER included — resolved per the client decision in the header
+  // comment (report-only, doesn't touch assign/verify/close).
+  it('every role can create a work order and report an incident', () => {
     for (const role of ROLE_KEYS) {
-      if (role === 'OWNER') continue;
       expect(ROLE_PERMISSIONS[role]['workorder:create']).toBe('ALL');
       expect(ROLE_PERMISSIONS[role]['incident:create']).toBe('ALL');
     }
   });
 
-  it('OWNER cannot create work orders or incidents, per the read-only-except rule', () => {
-    expect(ROLE_PERMISSIONS.OWNER['workorder:create']).toBeUndefined();
-    expect(ROLE_PERMISSIONS.OWNER['incident:create']).toBeUndefined();
+  it("OWNER's work-order/incident access is create-only — no assign, verify, close, or update_status", () => {
+    const perms = ROLE_PERMISSIONS.OWNER;
+    expect(perms['workorder:assign']).toBeUndefined();
+    expect(perms['workorder:verify']).toBeUndefined();
+    expect(perms['workorder:close']).toBeUndefined();
+    expect(perms['workorder:update_status']).toBeUndefined();
   });
 
   it('scopes department-head workorder:read_all and report:view to DEPARTMENT', () => {

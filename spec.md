@@ -151,7 +151,7 @@ Legend: ✅ granted · 👁 read-only variant · — none
 | folio charge | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | — | — | — | — | — | ✅ | ✅ |
 | folio settle | ✅ | — | ✅ | — | ✅ | — | ✅ | — | — | — | — | — | — | — |
 | folio void | ✅ | — | ✅ | ✅ | — | — | — | — | — | — | — | — | — | — |
-| workorder create | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| workorder create | ✅ | ✅¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | workorder read_all | ✅ | 👁 | ✅ | ✅ | ✅ | — | — | dept | — | dept | — | — | dept | — |
 | workorder assign | ✅ | — | ✅ | ✅ | — | — | — | ✅ | — | ✅ | — | — | ✅ | — |
 | workorder update_status | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -167,12 +167,13 @@ Legend: ✅ granted · 👁 read-only variant · — none
 | cash verify | ✅ | 👁 | ✅ | ✅ | — | — | — | — | — | — | — | — | — | — |
 | shift manage | ✅ | 👁 | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | — | — | ✅ | — |
 | restday approve | ✅ | — | ✅ | ✅ | — | — | — | — | — | — | — | — | — | — |
-| incident create | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| incident create | ✅ | ✅¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | report view | ✅ | ✅ | ✅ | ✅ | ✅ | — | 👁 | dept | — | dept | — | — | dept | — |
 | report export | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — | — | — | — | — | ✅ | — |
 | audit read | ✅ | 👁 | ✅ | — | — | — | — | — | — | — | — | — | — | — |
 `dept` = scoped to own department only. Implement as a `scope` field on the role-permission join (`ALL` \| `DEPARTMENT` \| `SELF`) rather than a separate permission key.
-**OWNER is read-only across the entire system except `payment:verify` and `report:export`.** Enforce this at the API layer, not just by hiding buttons.
+¹ Resolved ambiguity, not an oversight — see the OWNER note directly below.
+**OWNER is read-only across the entire system except `payment:verify`, `report:export`, `workorder:create`, and `incident:create`.** Enforce this at the API layer, not just by hiding buttons. The latter two were a resolved ambiguity, not an oversight: an early reading of this table (✅/👁 read literally) would have denied OWNER the "+" report-an-issue button that §8.1 says every role has, since "workorder create"/"incident create" showed OWNER as "—". The client confirmed OWNER keeps that button — report-only, since creating a ticket or incident doesn't grant `workorder:assign`, `workorder:verify`, `workorder:close`, or `workorder:update_status`, so it stays a narrow exception rather than an operational capability.
 **OWNER sees full peso figures** — confirmed by the client. Revenue, rates, folio balances, payments, COH, and expenses are all visible to `OWNER` in actual amounts, not just occupancy and volume counts. Do not build a "hide financials" mode.
 **CASHIER vs ADMIN_STAFF — the split is money vs guest handling.** Both sit at the front desk and their roles overlap deliberately; a small property will often assign both roles to one person, and the union rule in §5.1 handles that. The distinction:
 - `CASHIER` owns the money: manual booking entry, collecting and recording payments, posting and settling folio charges, and the shift cash count. Cashier **cannot** change room status or move work orders — nothing operational.
