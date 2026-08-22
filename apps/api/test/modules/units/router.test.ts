@@ -162,8 +162,12 @@ describe('POST /api/v1/units/:id/status', () => {
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
   });
 
-  it('rejects the automatic-only INSPECTED -> READY transition even for an admin', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+  it('rejects the automatic-only INSPECTED -> READY transition for a non-SYSTEM_ADMIN caller, even one holding unit:manage', async () => {
+    // RESORT_MANAGER also holds unit:manage (same as SYSTEM_ADMIN) but is
+    // deliberately excluded from the override — client decision,
+    // 2026-08-22: this is a stopgap testing tool, not a normal
+    // operational path RESORT_MANAGER should reach for day to day.
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'INSPECTED', version: 5 }));
 
     const res = await request(createApp())
@@ -174,6 +178,30 @@ describe('POST /api/v1/units/:id/status', () => {
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('allows SYSTEM_ADMIN to override an automatic-only transition, and audits it distinctly from a plain update', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'INSPECTED', version: 5 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 5, note: 'unsticking manually, no inspection module yet' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'unit_1', status: 'READY', version: 6 });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE',
+          entity: 'Unit',
+          entityId: 'unit_1',
+          actorId: 'user_1',
+        }),
+      }),
+    );
   });
 
   it('returns 409 on a stale version (concurrent edit)', async () => {

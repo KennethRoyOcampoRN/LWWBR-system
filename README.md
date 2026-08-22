@@ -536,25 +536,35 @@ duplicate this logic"). Each transition carries the permission it needs
 specifically for the CLEANED→INSPECTED QC step per spec, `unit:block`
 for OUT_OF_ORDER/BLOCKED) and a `trigger: 'manual' | 'automatic'` flag.
 
-**A judgment call worth flagging**: three transitions
-(`INSPECTED→READY`, `READY→OCCUPIED`, `OCCUPIED→VACANT_DIRTY`) are
-spec'd as happening automatically — on inspection pass, booking
-check-in, and check-out respectively — but the inspection module (M3)
-and booking module (M4) that would trigger them don't exist yet. Rather
-than leave them out of the table (which would mean re-deriving the same
-rules later, the exact duplication spec §7 warns against) or silently
-allow them as ordinary manual actions (which would let any room
-attendant "wave a room ready" without an actual inspection), they're in
-the table now, marked `trigger: 'automatic'`, and the manual
-status-change endpoint (`POST /units/:id/status`) explicitly rejects
-them with `422 INVALID_TRANSITION` even for an admin — flagged in a
-test (`"rejects the automatic-only INSPECTED -> READY transition even
-for an admin"`). Once M3/M4 land, their own service code calls the
-transition directly rather than through this endpoint. Until then,
-there's a real gap: no admin override to hand-correct a unit that's
-stuck in `INSPECTED` or `READY` with no inspection/booking module yet
-to move it forward. Worth a product decision — either a temporary
-admin-only manual-override permission, or accept the gap until M3/M4.
+Three transitions (`INSPECTED→READY`, `READY→OCCUPIED`,
+`OCCUPIED→VACANT_DIRTY`) are spec'd as happening automatically — on
+inspection pass, booking check-in, and check-out respectively — but the
+inspection module (M3) and booking module (M4) that would trigger them
+don't exist yet. They're in the table now (marked `trigger: 'automatic'`)
+rather than left out (which would mean re-deriving the same rules later
+— the exact duplication spec §7 warns against), and once M3/M4 land,
+their own service code calls the transition directly rather than
+through the manual endpoint below.
+
+**Manual override, added 2026-08-22 (client decision) to close the gap
+until then**: without one, a unit stuck in `INSPECTED` or `READY` had no
+way forward at all — no inspection/booking module yet to advance it.
+`SYSTEM_ADMIN` only, deliberately excluding `RESORT_MANAGER` even though
+it also holds `unit:manage` — this is a stopgap testing tool, not a
+normal operational path (`modules/units/automaticTransitionOverride.ts`,
+same one-small-explicit-commented-list pattern as
+`requiresTotp.ts`'s role check, for the same reason: a policy decision,
+not a resource-permission check). Every override writes a **second,
+distinct** audit entry — `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`,
+separate from the generic `UPDATE` row the audit extension already
+writes for the underlying `Unit` change — specifically so it's visible
+later *how often* the override actually gets used. That frequency is
+the signal for when M3/M4 have really closed the gap: near-zero uses
+once bookings/inspections exist means the override can be left dormant
+(or removed); if it's still getting used, something in M3/M4 isn't
+covering a real case. 2 new tests: `RESORT_MANAGER` (holds `unit:manage`,
+same as `SYSTEM_ADMIN`) is still rejected; `SYSTEM_ADMIN` succeeds and
+the distinct audit entry is confirmed.
 
 Backend: `GET/POST /unit-types`, `PATCH /unit-types/:id`,
 `GET/POST /units`, `PATCH /units/:id`, `POST /units/:id/status`

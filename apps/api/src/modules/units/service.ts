@@ -1,6 +1,14 @@
-import { getTransition, type PermissionKey, type PermissionScope, type UnitStatusKey } from '@lwwbr/shared';
+import {
+  getTransition,
+  type PermissionKey,
+  type PermissionScope,
+  type RoleKey,
+  type UnitStatusKey,
+} from '@lwwbr/shared';
 import { ApiError } from '../../lib/apiError.js';
+import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
+import { canOverrideAutomaticTransition } from './automaticTransitionOverride.js';
 import type {
   ChangeUnitStatusInput,
   CreateUnitInput,
@@ -107,7 +115,8 @@ export async function getUnitTimeline(unitId: string) {
 export async function changeUnitStatus(
   unitId: string,
   input: ChangeUnitStatusInput,
-  actor: { id: string; permissions: Partial<Record<PermissionKey, PermissionScope>> },
+  actor: { id: string; roles: readonly RoleKey[]; permissions: Partial<Record<PermissionKey, PermissionScope>> },
+  meta: { ip?: string | null; userAgent?: string | null } = {},
 ) {
   const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
   if (!unit) {
@@ -122,14 +131,19 @@ export async function changeUnitStatus(
   if (!actor.permissions[transition.permission]) {
     throw new ApiError(403, 'FORBIDDEN', `Missing permission: ${transition.permission}`);
   }
-  // Manual transitions only, through this endpoint — the three
-  // "automatic" ones (INSPECTED->READY, READY->OCCUPIED,
-  // OCCUPIED->VACANT_DIRTY) are invoked by the inspection/booking
-  // services directly once M3/M4 build them, never by a person clicking
-  // a button here. allowedManualTransitions is what the UI's own button
-  // list is built from, so this check and "which buttons exist" can
-  // never drift apart.
-  if (transition.trigger !== 'manual') {
+
+  // Manual transitions go through normally. The three "automatic" ones
+  // (INSPECTED->READY, READY->OCCUPIED, OCCUPIED->VACANT_DIRTY) have no
+  // real trigger yet — the inspection module (M3) and booking module
+  // (M4) that are meant to call them don't exist — so without an escape
+  // hatch a unit can get stuck with no way forward. SYSTEM_ADMIN only
+  // (client decision, 2026-08-22, deliberately excluding RESORT_MANAGER:
+  // this is a stopgap testing tool, not a normal operational path) may
+  // override, and every use is audited distinctly (see below) so it's
+  // visible later how often the override actually gets used — that
+  // visibility is what tells us when M3/M4 have closed the gap for real.
+  const isOverride = transition.trigger === 'automatic';
+  if (isOverride && !canOverrideAutomaticTransition(actor.roles)) {
     throw new ApiError(
       422,
       'INVALID_TRANSITION',
@@ -148,6 +162,22 @@ export async function changeUnitStatus(
   await prisma.unitStatusEvent.create({
     data: { unitId, fromStatus, toStatus: input.toStatus, actorId: actor.id, note: input.note },
   });
+
+  if (isOverride) {
+    // Distinct from the generic UPDATE row the audit extension already
+    // wrote for the prisma.unit.updateMany() above — that row alone
+    // wouldn't tell a future reader "this was the stopgap override
+    // firing," just that status changed. This is the one that does.
+    await logAudit({
+      actorId: actor.id,
+      action: 'UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE',
+      entity: 'Unit',
+      entityId: unitId,
+      after: { fromStatus, toStatus: input.toStatus, note: input.note ?? null },
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+  }
 
   return { id: unitId, status: input.toStatus, version: input.version + 1 };
 }

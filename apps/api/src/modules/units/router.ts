@@ -95,7 +95,12 @@ unitsRouter.post(
   asyncHandler(async (req, res) => {
     const body = changeUnitStatusSchema.parse(req.body);
     const me = await getMe(req.userId as string);
-    const result = await changeUnitStatus(req.params.id as string, body, { id: me.id, permissions: me.permissions });
+    const result = await changeUnitStatus(
+      req.params.id as string,
+      body,
+      { id: me.id, roles: me.roles, permissions: me.permissions },
+      { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null },
+    );
     res.status(200).json(result);
   }),
 );
