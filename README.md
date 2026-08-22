@@ -98,7 +98,7 @@ an actual failure rather than a log line.
   `package.json#engines`). `npm install` warns (`EBADENGINE`) but every
   command still ran correctly. Confirm on Node 24 before relying on this.
 
-## M1 — Auth, RBAC & hardening — in progress
+## M1 — Auth, RBAC & hardening — done (2026-08-22)
 
 ### What works so far
 
@@ -511,4 +511,74 @@ the next `/auth/refresh` (and, once the access token lapses, every
 authenticated request) should come back `401 SESSION_EXPIRED` rather than
 silently keep working.
 
-See `spec.md` §11 for the full M1 acceptance criteria.
+See `spec.md` §11 for the full M1 acceptance criteria — all confirmed
+live against the real deployment, not just code-complete: seed script,
+SYSTEM_ADMIN + 4 other seeded roles logging in with correctly filtered
+nav, the Users/Roles admin UI, the forced password-change flow, real
+`AuditLog` rows for every mutation, the 429/423 lockout tiers (escalation
+logic verified directly by test; the underlying failure-counting is the
+same code path already exercised live), and session revocation
+(`401 SESSION_EXPIRED` on the revoked device's next request).
+
+## M2 — Units & Command Center — in progress
+
+### Unit model & status state machine — done, not yet live-tested
+
+Spec §7.1's unit status cycle (`VACANT_DIRTY → CLEANING → CLEANED →
+INSPECTED → READY → OCCUPIED → VACANT_DIRTY`, plus `OUT_OF_ORDER`/
+`BLOCKED` reachable from almost anywhere, both returning only to
+`VACANT_DIRTY`) now lives as a single transition table in
+`packages/shared/src/unitStatus.ts` — spec §7's own rule ("implement
+each as an explicit transition table... the API validates against the
+table; the UI derives its action buttons from the same table; never
+duplicate this logic"). Each transition carries the permission it needs
+(`unit:update_status` for the room-attendant step, `workorder:verify`
+specifically for the CLEANED→INSPECTED QC step per spec, `unit:block`
+for OUT_OF_ORDER/BLOCKED) and a `trigger: 'manual' | 'automatic'` flag.
+
+**A judgment call worth flagging**: three transitions
+(`INSPECTED→READY`, `READY→OCCUPIED`, `OCCUPIED→VACANT_DIRTY`) are
+spec'd as happening automatically — on inspection pass, booking
+check-in, and check-out respectively — but the inspection module (M3)
+and booking module (M4) that would trigger them don't exist yet. Rather
+than leave them out of the table (which would mean re-deriving the same
+rules later, the exact duplication spec §7 warns against) or silently
+allow them as ordinary manual actions (which would let any room
+attendant "wave a room ready" without an actual inspection), they're in
+the table now, marked `trigger: 'automatic'`, and the manual
+status-change endpoint (`POST /units/:id/status`) explicitly rejects
+them with `422 INVALID_TRANSITION` even for an admin — flagged in a
+test (`"rejects the automatic-only INSPECTED -> READY transition even
+for an admin"`). Once M3/M4 land, their own service code calls the
+transition directly rather than through this endpoint. Until then,
+there's a real gap: no admin override to hand-correct a unit that's
+stuck in `INSPECTED` or `READY` with no inspection/booking module yet
+to move it forward. Worth a product decision — either a temporary
+admin-only manual-override permission, or accept the gap until M3/M4.
+
+Backend: `GET/POST /unit-types`, `PATCH /unit-types/:id`,
+`GET/POST /units`, `PATCH /units/:id`, `POST /units/:id/status`
+(`{ toStatus, note?, version }` — optimistic concurrency via `version`,
+`409 VERSION_CONFLICT` on a stale write), `GET /units/:id/timeline`
+(reads the append-only `UnitStatusEvent` table spec §6 defines
+specifically for the room timeline / housekeeping-productivity report —
+distinct from the generic `AuditLog` row the audit extension also writes
+for the same update). `unit:read`/`unit:manage`/`unittype:manage` gate
+the CRUD endpoints; the status-change endpoint has no single gate —
+it loads the caller's fresh permission set and checks whichever
+permission the *specific requested transition* requires, exactly like
+`requirePermission` does internally. 11 new router tests cover: 401/403
+paths, a POC Housekeeping caller completing the QC step, a room
+attendant correctly blocked from that same step but allowed their own,
+skipping a step in the cycle (`422`), the automatic-only rejection
+above, a stale-version conflict (`409`), and the timeline read. Also
+fixed: `UnitType`'s Decimal-typed rate fields (`baseRate`,
+`dayTourRate`, `extraPersonRate`) don't serialize to plain JSON numbers
+on their own through Prisma — would have shipped as internal Decimal
+objects in the API response without an explicit conversion, caught
+before it ever reached a real request.
+
+**Not yet built**: the unit grid, detail drawer, and realtime status
+updates (spec §8.2, §11's M2 acceptance criteria) — next up. **Not yet
+live-verified**: same sandbox network limitation as every prior
+milestone; needs confirming against the real database.
