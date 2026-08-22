@@ -16,9 +16,9 @@ authRouter.post(
     const result = await login(body.employeeCode, body.password, meta, body.totpCode);
 
     if (result.status === 'totp_setup_required') {
-      // No session yet — spec §3.1.1: an OWNER/SYSTEM_ADMIN account
-      // can't complete login without a TOTP code, including on its
-      // first-ever login.
+      // No session yet — spec §3.1.1: a SYSTEM_ADMIN account can't
+      // complete login without a TOTP code, including on its first-ever
+      // login.
       res.status(200).json({ totpSetupRequired: true, provisioningUri: result.provisioningUri });
       return;
     }

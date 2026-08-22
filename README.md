@@ -149,7 +149,9 @@ an actual failure rather than a log line.
   with a duration that escalates on repeat lockouts (30 min, then 2h,
   then 24h), derived by counting past `ACCOUNT_LOCKED` audit entries
   rather than a separate counter column.
-- TOTP 2FA for OWNER/SYSTEM_ADMIN (spec §3.1.1), via `otpauth`. First
+- TOTP 2FA for SYSTEM_ADMIN only (spec §3.1.1, updated 2026-08-22 —
+  client decision to exclude OWNER, a read-only role with materially
+  lower blast radius), via `otpauth`. First
   login for an unenrolled account generates and persists a secret and
   returns `{ totpSetupRequired: true, provisioningUri }` — **no
   session is issued** until a subsequent login call includes a valid

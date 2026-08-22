@@ -1,6 +1,6 @@
 import * as OTPAuth from 'otpauth';
 
-// Spec §3.1.1: "Two-factor authentication (TOTP) required for OWNER and
+// Spec §3.1.1: "Two-factor authentication (TOTP) required for
 // SYSTEM_ADMIN, optional for everyone else." This module is role-agnostic
 // (it just generates/verifies codes for whatever secret it's given) —
 // which roles require it is decided in loginThrottle.ts's sibling,

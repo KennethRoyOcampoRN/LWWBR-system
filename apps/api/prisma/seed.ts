@@ -120,11 +120,33 @@ async function main() {
       },
     });
 
+    // Each demo account is meant to hold EXACTLY its one intended role,
+    // for the nav-filtering and TOTP-gating checks to mean anything.
+    // Delete any other role assignment before upserting the intended
+    // one — a plain upsert only ever adds, so a stray UserRole row from
+    // an earlier seed run, an earlier bug, or manual testing via the
+    // Users admin UI would silently persist forever otherwise (and
+    // requiresTotp()'s `.some()` check is a real security feature, not
+    // a bug, when it does that — any role union that includes
+    // SYSTEM_ADMIN correctly requires TOTP, stray or not).
+    await prisma.userRole.deleteMany({ where: { userId: user.id, roleId: { not: roleId } } });
     await prisma.userRole.upsert({
       where: { userId_roleId: { userId: user.id, roleId } },
       create: { userId: user.id, roleId },
       update: {},
     });
+  }
+
+  console.warn('Verifying final role assignments...');
+  const demoUsers = await prisma.user.findMany({
+    where: { employeeCode: { startsWith: 'LWW-' } },
+    include: { roles: { where: { deletedAt: null }, include: { role: true } } },
+    orderBy: { employeeCode: 'asc' },
+  });
+  for (const user of demoUsers) {
+    const roleKeys = user.roles.map((userRole) => userRole.role.key);
+    const flag = roleKeys.length === 1 ? '' : '  <-- expected exactly 1 role';
+    console.warn(`  ${user.employeeCode}: [${roleKeys.join(', ')}]${flag}`);
   }
 
   console.warn('Seed complete.');

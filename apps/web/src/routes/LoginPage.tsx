@@ -7,7 +7,7 @@ import { ApiRequestError } from '../lib/api.js';
 // shown for manual entry — most authenticator apps also accept typing the
 // secret directly, which matters here since this is plain text, not an
 // actual scannable QR code (no QR-rendering dependency for one MVP screen
-// that only OWNER/SYSTEM_ADMIN ever see).
+// that only SYSTEM_ADMIN ever sees).
 function extractTotpSecret(provisioningUri: string): string | null {
   try {
     const url = new URL(provisioningUri);

@@ -37,13 +37,13 @@ export interface LoginSuccess {
   refreshToken: string;
 }
 
-// Returned instead of a session on an OWNER/SYSTEM_ADMIN account's first
-// login — spec §3.1.1 requires TOTP for these roles, so enrollment has
+// Returned instead of a session on a SYSTEM_ADMIN account's first
+// login — spec §3.1.1 requires TOTP for this role, so enrollment has
 // to happen somewhere. The secret is generated and persisted immediately
 // (see login() below for why that's safe), and the caller must complete
 // login again with a valid code from it before a session is issued —
-// "an owner account cannot complete login without a TOTP code" is true
-// even on the very first login.
+// "a system admin account cannot complete login without a TOTP code" is
+// true even on the very first login.
 export interface LoginTotpSetupRequired {
   status: 'totp_setup_required';
   provisioningUri: string;

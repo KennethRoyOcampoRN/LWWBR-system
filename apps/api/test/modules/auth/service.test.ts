@@ -173,8 +173,8 @@ describe('login', () => {
     });
   });
 
-  describe('TOTP for OWNER/SYSTEM_ADMIN (spec §3.1.1)', () => {
-    it('does not require TOTP for a role that is not OWNER or SYSTEM_ADMIN', async () => {
+  describe('TOTP for SYSTEM_ADMIN only (spec §3.1.1)', () => {
+    it('does not require TOTP for a role that is not SYSTEM_ADMIN', async () => {
       const passwordHash = await hashPassword('Waku2026!');
       mockPrisma.user.findFirst.mockResolvedValue(
         fakeUser({ passwordHash, roles: [{ role: { key: 'CASHIER' } }] }),
@@ -183,10 +183,19 @@ describe('login', () => {
       expect(result.status).toBe('success');
     });
 
-    it('returns totp_setup_required and persists a fresh secret on an unenrolled OWNER account, without issuing a session', async () => {
+    it('does not require TOTP for OWNER (deliberately excluded, 2026-08-22 — read-only role, lower blast radius)', async () => {
       const passwordHash = await hashPassword('Waku2026!');
       mockPrisma.user.findFirst.mockResolvedValue(
-        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret: null }),
+        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }] }),
+      );
+      const result = await login('LWW-001', 'Waku2026!', {});
+      expect(result.status).toBe('success');
+    });
+
+    it('returns totp_setup_required and persists a fresh secret on an unenrolled SYSTEM_ADMIN account, without issuing a session', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(
+        fakeUser({ passwordHash, roles: [{ role: { key: 'SYSTEM_ADMIN' } }], totpSecret: null }),
       );
 
       const result = await login('LWW-001', 'Waku2026!', {});
@@ -220,7 +229,7 @@ describe('login', () => {
       const passwordHash = await hashPassword('Waku2026!');
       const totpSecret = generateTotpSecret();
       mockPrisma.user.findFirst.mockResolvedValue(
-        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret }),
+        fakeUser({ passwordHash, roles: [{ role: { key: 'SYSTEM_ADMIN' } }], totpSecret }),
       );
 
       await expect(login('LWW-001', 'Waku2026!', {}, '000000')).rejects.toMatchObject({
@@ -236,7 +245,7 @@ describe('login', () => {
       const passwordHash = await hashPassword('Waku2026!');
       const totpSecret = generateTotpSecret();
       mockPrisma.user.findFirst.mockResolvedValue(
-        fakeUser({ passwordHash, roles: [{ role: { key: 'OWNER' } }], totpSecret }),
+        fakeUser({ passwordHash, roles: [{ role: { key: 'SYSTEM_ADMIN' } }], totpSecret }),
       );
 
       const code = new (await import('otpauth')).TOTP({ secret: totpSecret }).generate();
