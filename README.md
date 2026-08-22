@@ -588,7 +588,35 @@ on their own through Prisma — would have shipped as internal Decimal
 objects in the API response without an explicit conversion, caught
 before it ever reached a real request.
 
-**Not yet built**: the unit grid, detail drawer, and realtime status
-updates (spec §8.2, §11's M2 acceptance criteria) — next up. **Not yet
-live-verified**: same sandbox network limitation as every prior
-milestone; needs confirming against the real database.
+### Unit grid + detail drawer (web) — done, not yet live-tested
+
+`UnitsPage` (nav-gated by `unit:read`, same permission-generated pattern
+as Users/Roles): a card per unit — code, name, status label, colour per
+`lib/unitStatusStyle.ts`'s status→label/colour map (one mapping, so a
+future screen can't invent an inconsistent colour for the same status).
+Tapping a card opens a detail drawer with the unit's timeline (from
+`GET /units/:id/timeline`) and a "change status" panel — but only the
+transitions `allowedManualTransitions()` (`packages/shared`, the same
+transition table the API validates against) says this caller's actual
+permissions unlock from the unit's *current* status. This is spec §7's
+"the UI derives available action buttons from the same table" rule
+applied directly: the button list isn't hand-maintained per screen, it's
+computed from the identical table the backend enforces, so the two
+literally cannot drift apart. A stale `409 VERSION_CONFLICT` (someone
+else changed the unit first) surfaces as a plain "refresh and try again"
+message rather than a generic error.
+
+**Deliberately not yet in this page**: guest name and work-order/amenity
+badges on occupied units (spec §8.2) — both need the booking module
+(M4) and work-order module (M3), neither built yet. This is a units-only
+grid, not the full multi-widget Command Center (KPI strip, live activity
+feed, attention queue) — `DashboardPage` stays a placeholder landing
+page for now rather than claiming to be that.
+
+1 new component test: log in, navigate to Units, open a unit's drawer,
+click an allowed transition button, confirm the status-change request
+fires. **Not yet live-verified against the real database** — same
+sandbox limitation as every prior milestone.
+
+**Not yet built**: realtime status updates (spec §11's "a status change
+in one browser appears in another within 2s without refresh") — next up.

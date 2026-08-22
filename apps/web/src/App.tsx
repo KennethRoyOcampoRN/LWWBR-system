@@ -9,6 +9,7 @@ import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
 import { RequirePermission } from './routes/RequirePermission.js';
 import { RolesPage } from './routes/RolesPage.js';
 import { SessionsPage } from './routes/SessionsPage.js';
+import { UnitsPage } from './routes/UnitsPage.js';
 import { UsersPage } from './routes/UsersPage.js';
 
 export function App() {
@@ -22,6 +23,14 @@ export function App() {
             <Route element={<RequirePasswordChange />}>
               <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
+                <Route
+                  path="/units"
+                  element={
+                    <RequirePermission permission="unit:read">
+                      <UnitsPage />
+                    </RequirePermission>
+                  }
+                />
                 <Route
                   path="/users"
                   element={

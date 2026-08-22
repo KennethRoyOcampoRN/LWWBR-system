@@ -5,8 +5,9 @@ import { useAuth } from '../context/AuthContext.js';
 // permissions." Each entry names the permission key that unlocks it —
 // add a screen, add a row here, no separate role-based menu config to
 // keep in sync.
-const NAV_ITEMS: { to: string; label: string; permission?: 'user:read' | 'role:manage' }[] = [
+const NAV_ITEMS: { to: string; label: string; permission?: 'user:read' | 'role:manage' | 'unit:read' }[] = [
   { to: '/', label: 'Command Center' },
+  { to: '/units', label: 'Units', permission: 'unit:read' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

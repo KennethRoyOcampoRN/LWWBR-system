@@ -226,4 +226,56 @@ describe('App', () => {
     // Specifically not the 429 wording — the two must read differently.
     expect(screen.queryByTestId('lockout-countdown')).not.toHaveTextContent(/too many attempts from this device/i);
   });
+
+  it('shows the unit grid, opens the detail drawer, and changes status via an allowed transition', async () => {
+    const user = userEvent.setup();
+    const housekeepingUser = {
+      ...currentUser,
+      roles: ['HOUSEKEEPING_STAFF'],
+      permissions: { 'unit:read': 'ALL', 'unit:update_status': 'ALL' },
+    };
+    const unit = {
+      id: 'unit_1',
+      code: '101',
+      name: 'Room 101',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: '1',
+      status: 'CLEANING',
+      version: 1,
+      notes: null,
+      isActive: true,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+      if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+      if (url.endsWith('/units/unit_1/status')) {
+        return jsonResponse(200, { id: 'unit_1', status: 'CLEANED', version: 2 });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Units' }));
+
+    await waitFor(() => expect(screen.getByText('101')).toBeInTheDocument());
+    await user.click(screen.getByText('101'));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /101 — Room 101/i })).toBeInTheDocument());
+    const markCleanedButton = await screen.findByRole('button', { name: /mark cleaned/i });
+    await user.click(markCleanedButton);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).includes('/units/unit_1/status')),
+      ).toBe(true);
+    });
+  });
 });
