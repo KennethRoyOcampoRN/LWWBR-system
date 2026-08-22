@@ -75,19 +75,19 @@ describe('GET /api/v1/units and /unit-types', () => {
     expect(res.status).toBe(200);
     expect(res.body.units).toHaveLength(1);
     expect(res.body.units[0].status).toBe('CLEANED');
-    expect(res.body.units[0].forcedCorrectionNote).toBeNull();
+    expect(res.body.units[0].latestNote).toBeNull();
   });
 
-  it('surfaces forcedCorrectionNote only while the latest event is still a forced correction', async () => {
+  it('surfaces latestNote from any status-change panel, only while it is still attached to the latest event', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
     mockPrisma.unit.findMany.mockResolvedValue([fakeUnit()]);
     mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
-      { unitId: 'unit_1', source: 'FORCED_CORRECTION', note: 'staff forgot to mark this cleaned yesterday' },
+      { unitId: 'unit_1', note: 'staff forgot to mark this cleaned yesterday' },
     ]);
 
     const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
     expect(res.status).toBe(200);
-    expect(res.body.units[0].forcedCorrectionNote).toBe('staff forgot to mark this cleaned yesterday');
+    expect(res.body.units[0].latestNote).toBe('staff forgot to mark this cleaned yesterday');
   });
 
   it('serializes UnitType Decimal fields as plain numbers', async () => {
@@ -310,6 +310,9 @@ describe('POST /api/v1/units/:id/force-status', () => {
           entity: 'Unit',
           entityId: 'unit_1',
           actorId: 'user_1',
+          after: expect.objectContaining({
+            label: 'Forced correction — bypassed the normal status sequence',
+          }),
         }),
       }),
     );

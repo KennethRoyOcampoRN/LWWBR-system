@@ -66,37 +66,38 @@ export interface UnitSummary {
   sortOrder: number;
 }
 
-export interface UnitSummaryWithCorrection extends UnitSummary {
-  forcedCorrectionNote: string | null;
+export interface UnitSummaryWithNote extends UnitSummary {
+  latestNote: string | null;
 }
 
-export async function listUnits(): Promise<UnitSummaryWithCorrection[]> {
+export async function listUnits(): Promise<UnitSummaryWithNote[]> {
   const units = await prisma.unit.findMany({
     where: { deletedAt: null },
     orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
   });
 
-  // The grid badge (see forceUnitStatus below) shows a note only while the
-  // unit's *latest* status event is still a forced correction — the badge
-  // disappears the instant any later transition happens, with no separate
-  // expiry/flag needed. `distinct: ['unitId']` + `orderBy: createdAt desc`
-  // gets exactly one (the latest) event per unit in a single query.
+  // The grid tile shows a note (from any of the three status-change
+  // panels — normal, override, or forced correction) only while it's
+  // still attached to the unit's *latest* status event — it disappears
+  // the instant a later transition happens without a note, or gets
+  // replaced if the new one has a note of its own. No distinct visual
+  // treatment per panel; the source (see forceUnitStatus below) is only
+  // used to tag the audit log, not to decide what shows here.
+  // `distinct: ['unitId']` + `orderBy: createdAt desc` gets exactly one
+  // (the latest) event per unit in a single query.
   const latestEvents = await prisma.unitStatusEvent.findMany({
     where: { unitId: { in: units.map((u) => u.id) } },
     orderBy: { createdAt: 'desc' },
     distinct: ['unitId'],
-    select: { unitId: true, source: true, note: true },
+    select: { unitId: true, note: true },
   });
   const latestByUnitId = new Map(latestEvents.map((e) => [e.unitId, e]));
 
-  return units.map((u) => {
-    const latest = latestByUnitId.get(u.id);
-    return {
-      ...u,
-      status: u.status as UnitStatusKey,
-      forcedCorrectionNote: latest?.source === 'FORCED_CORRECTION' ? (latest.note ?? null) : null,
-    };
-  });
+  return units.map((u) => ({
+    ...u,
+    status: u.status as UnitStatusKey,
+    latestNote: latestByUnitId.get(u.id)?.note ?? null,
+  }));
 }
 
 export async function createUnit(input: CreateUnitInput) {
@@ -262,12 +263,22 @@ export async function forceUnitStatus(
   // writes and from UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE above — this
   // is a different kind of action (any-to-any correction, not a specific
   // automatic transition) and needs its own tag to be identifiable later.
+  // The grid tile no longer shows any distinct treatment for a forced
+  // correction (client decision, 2026-08-22 — notes now display the same
+  // way regardless of which panel set them), so `label` here is what
+  // keeps a forced correction identifiable as having bypassed the normal
+  // §7.1 sequence once this shows up in an AuditLog viewer.
   await logAudit({
     actorId: actor.id,
     action: 'UNIT_STATUS_FORCED_CORRECTION',
     entity: 'Unit',
     entityId: unitId,
-    after: { fromStatus, toStatus: input.toStatus, note: input.note },
+    after: {
+      fromStatus,
+      toStatus: input.toStatus,
+      note: input.note,
+      label: 'Forced correction — bypassed the normal status sequence',
+    },
     ip: meta.ip,
     userAgent: meta.userAgent,
   });

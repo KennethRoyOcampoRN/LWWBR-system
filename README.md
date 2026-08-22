@@ -703,17 +703,31 @@ check as every other status write (`409 VERSION_CONFLICT` on a stale
 `UNIT_STATUS_FORCED_CORRECTION`, separate from both the generic `UPDATE`
 row and from `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`.
 
-A new `UnitStatusEventSource` enum (`MANUAL` / `AUTOMATIC_OVERRIDE` /
-`FORCED_CORRECTION`) was added to `UnitStatusEvent` so a forced
-correction's note can be surfaced on the unit grid tile without a
-separate flag/expiry mechanism: `GET /units` now looks up each unit's
+**Note visibility, revised 2026-08-22 (client decision, superseding the
+original forced-correction-only badge below)**: the grid tile shows
+*any* note attached to a unit's current status — from any of the three
+panels (Change status, Admin override, Force status correction) — with
+the identical display for all of them; there's no visual distinction on
+the tile for where a note came from. `GET /units` looks up each unit's
 *single latest* `UnitStatusEvent` (`distinct: ['unitId']` +
 `orderBy: createdAt desc` — Postgres `DISTINCT ON` semantics) and
-attaches `forcedCorrectionNote` only when that latest event's `source`
-is `FORCED_CORRECTION`. The badge is therefore self-clearing: the moment
-*any* later transition happens — manual, override, or another forced
-correction — the latest event's source changes and the note disappears,
-with no expiry job or extra bookkeeping needed. **This requires the new
+attaches its `note` as `latestNote` regardless of `source`. Self-clearing
+behaviour is unchanged: the moment a later transition happens, the note
+either disappears (if the new transition had no note) or is replaced (if
+it did) — no expiry job or extra bookkeeping needed. A forced
+correction's note is therefore visually indistinguishable from an
+ordinary one on the tile — what still marks it as a forced correction is
+the audit trail: `forceUnitStatus()`'s `UNIT_STATUS_FORCED_CORRECTION`
+entry now carries an explicit `label` field
+(`"Forced correction — bypassed the normal status sequence"`) in its
+`after` payload, so a future AuditLog viewer (not yet built — see M2's
+task list) can flag it as having skipped the normal §7.1 sequence even
+though the tile treatment matches any other note.
+
+The `UnitStatusEventSource` enum (`MANUAL` / `AUTOMATIC_OVERRIDE` /
+`FORCED_CORRECTION`) added to `UnitStatusEvent` for the original design
+stays — it's still what tags each event for the audit trail — but is no
+longer read when deciding what the tile shows. **Still requires the new
 `prisma/schema.prisma` field (`UnitStatusEvent.source`) — needs
 `npx prisma db push` before the next live test**, same as every prior
 schema change this session.
@@ -725,20 +739,21 @@ rose-coloured "Force status correction" panel, shown only when
 statuses (`UNIT_STATUS_KEYS`, not filtered by the transition table), the
 note field is required client-side too (submit is blocked with an inline
 error if empty, mirroring the server's `422`). On the grid tile itself: a
-small rose "!" badge in the corner, shown only while
-`unit.forcedCorrectionNote` is set, carrying the note as both a `title`
-tooltip (hover, desktop) and an `aria-label` (screen readers / focus,
-mobile) — kept deliberately compact rather than showing note text
+small neutral grey "i" badge in the corner, shown whenever
+`unit.latestNote` is set (from any panel), carrying the note as both a
+`title` tooltip (hover, desktop) and an `aria-label` (screen readers /
+focus, mobile) — kept deliberately compact rather than showing note text
 directly on the tile. The full note is always visible in the drawer's
 timeline regardless, since every event's note already renders there.
 
 1 new component test (log in as SYSTEM_ADMIN, open a unit's drawer, use
 the panel to jump `VACANT_DIRTY → OCCUPIED` directly, confirm the request
-fires and the badge appears on the tile afterward) plus 6 new backend
-router tests (permission-denied `403`, empty-note `422`, a same-status
-non-adjacent jump succeeding with the distinct audit tag, `409` on a
-stale version, `404` on an unknown unit, and `GET /units` surfacing
-`forcedCorrectionNote` only while the latest event is still a forced
-correction). **Not yet live-verified against the real database** — same
-sandbox limitation as every prior milestone; also blocked on the pending
+fires and the generic note badge appears on the tile afterward) plus 6
+new backend router tests (permission-denied `403`, empty-note `422`, a
+same-status non-adjacent jump succeeding with the distinct audit tag and
+`label`, `409` on a stale version, `404` on an unknown unit, and
+`GET /units` surfacing `latestNote` from any panel, only while it's
+still attached to the latest event). **Not yet live-verified against the
+real database** — same sandbox limitation as every prior milestone; also
+blocked on the pending
 `prisma db push` above.

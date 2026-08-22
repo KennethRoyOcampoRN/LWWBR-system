@@ -351,7 +351,7 @@ describe('App', () => {
       version: 0,
       notes: null,
       isActive: true,
-      forcedCorrectionNote: null,
+      latestNote: null,
     };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -392,7 +392,9 @@ describe('App', () => {
     });
 
     await user.click(screen.getByText(/close/i));
-    const badge = await screen.findByRole('img', { name: /forced status correction/i });
+    // Same generic note badge as any other panel produces — no distinct
+    // visual treatment for a forced correction on the tile itself.
+    const badge = await screen.findByRole('img', { name: /note: guest already checked in, staff forgot/i });
     expect(badge).toBeInTheDocument();
   });
 });

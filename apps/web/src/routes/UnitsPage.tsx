@@ -21,10 +21,12 @@ interface UnitRow {
   version: number;
   notes: string | null;
   isActive: boolean;
-  // Set only while the unit's most recent status event is a forced
-  // correction (see ForceStatusPanel below) — disappears the instant any
-  // later transition, of any kind, happens.
-  forcedCorrectionNote: string | null;
+  // The note from whichever status-change panel (Change status, Admin
+  // override, Force status correction) produced the unit's *current*
+  // status — same display everywhere, no distinct treatment per panel.
+  // Disappears the instant a later transition happens without a note, or
+  // gets replaced if the new one has a note of its own.
+  latestNote: string | null;
 }
 
 interface UnitTypeRow {
@@ -77,11 +79,12 @@ function UnitDetailDrawer({
     setError(null);
     setChangingTo(toStatus);
     try {
+      const trimmedNote = note.trim();
       const result = await api.post<{ id: string; status: UnitStatusKey; version: number }>(
         `/units/${unit.id}/status`,
-        { toStatus, version: unit.version, note: note.trim() || undefined },
+        { toStatus, version: unit.version, note: trimmedNote || undefined },
       );
-      onChanged({ ...unit, status: result.status, version: result.version });
+      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote || null });
       setNote('');
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
@@ -102,11 +105,12 @@ function UnitDetailDrawer({
     }
     setForcing(true);
     try {
+      const trimmedNote = forceNote.trim();
       const result = await api.post<{ id: string; status: UnitStatusKey; version: number }>(
         `/units/${unit.id}/force-status`,
-        { toStatus: forceToStatus, version: unit.version, note: forceNote.trim() },
+        { toStatus: forceToStatus, version: unit.version, note: trimmedNote },
       );
-      onChanged({ ...unit, status: result.status, version: result.version, forcedCorrectionNote: forceNote.trim() });
+      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote });
       setForceNote('');
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
@@ -303,15 +307,15 @@ export function UnitsPage() {
               onClick={() => setSelectedUnitId(unit.id)}
               className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]}`}
             >
-              {unit.forcedCorrectionNote && (
+              {unit.latestNote && (
                 <span
                   role="img"
-                  aria-label={`Forced status correction: ${unit.forcedCorrectionNote}`}
-                  title={`Forced status correction: ${unit.forcedCorrectionNote}`}
+                  aria-label={`Note: ${unit.latestNote}`}
+                  title={`Note: ${unit.latestNote}`}
                   tabIndex={0}
-                  className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold leading-none text-white"
+                  className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-[10px] font-bold leading-none text-white"
                 >
-                  !
+                  i
                 </span>
               )}
               <span className="font-semibold">{unit.code}</span>
