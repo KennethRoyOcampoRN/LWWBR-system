@@ -195,6 +195,40 @@ an actual failure rather than a log line.
     last entry, so a third array slot repeating the same value isn't
     needed to express "capped forever after." 3 new tests confirm the
     1st/2nd/3rd+ lockout durations directly against `maybeLockAccount`.
+
+  **Investigated 2026-08-22 — reported as a possible regression, confirmed
+  not one.** Deliberately re-locking `LWW-006` showed a 15-minute
+  countdown, not 5; `LWW-014`, untouched that night, showed the identical
+  15 minutes moments later. Neither number is from `LOCKOUT_DURATIONS_MS`
+  at all (that governs the 423 tier only) — both were the 429 rate
+  limiter's own `RATE_LIMIT_WINDOW_MS`, which is and always was a fixed
+  15 minutes, untouched by the duration-escalation change. **Why this
+  happens on any rapid manual test**: `RATE_LIMIT_THRESHOLD` (5) is lower
+  than `LOCKOUT_FAILURE_THRESHOLD` (10), and once the fast rate limiter
+  trips it rejects every further attempt *before* `login()` ever reaches
+  the code that records a `LOGIN_FAILURE` or calls `maybeLockAccount` —
+  so failures 6 through 10 can never be logged by repeated clicking
+  within the same 15-minute window. **The identical countdown across two
+  different accounts is the IP counter working as intended, not shared
+  state**: `LWW-006`'s 5 failures all carry the same front-desk IP, so
+  the very same 5 rows are what `LWW-014`'s IP-scoped query (correctly)
+  finds too, producing byte-identical `retryAt` values from the same
+  underlying rows — proven directly in
+  `loginThrottle.test.ts`'s `"reproducing the reported ... report"` test,
+  which mocks that exact scenario and asserts both accounts get the
+  same `retryAt`, then asserts `auditLog.create` (i.e. `maybeLockAccount`)
+  was never even called. **To actually reach and observe the new 5/10
+  minute 423 tiers**, rapid clicking won't do it — accumulate 10 total
+  failures inside the 1-hour lockout window by waiting out each 429 (its
+  `retryAt` tells you when), or space failed attempts further apart than
+  15 minutes so the fast counter never trips.
+  **Also fixed while investigating**: `LoginPage` showed identical
+  wording for both mechanisms ("Too many attempts — try again in..."),
+  which is exactly what made this ambiguous from the UI alone. It now
+  reads "Account locked after repeated failed logins" for 423 and "Too
+  many attempts from this device or account" for 429 — genuinely
+  different mechanisms, genuinely different messages. 1 new test
+  confirms the two render distinguishably.
 - TOTP 2FA for SYSTEM_ADMIN only (spec §3.1.1, updated 2026-08-22 —
   client decision to exclude OWNER, a read-only role with materially
   lower blast radius), via `otpauth`. First

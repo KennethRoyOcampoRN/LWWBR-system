@@ -189,4 +189,41 @@ describe('App', () => {
     );
     expect(screen.getByRole('button', { name: /sign in/i })).not.toBeDisabled();
   });
+
+  it('shows different wording for RATE_LIMITED (429) than ACCOUNT_LOCKED (423), so which mechanism fired is never ambiguous', async () => {
+    const user = userEvent.setup();
+    const retryAt = new Date(Date.now() + 60_000).toISOString();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) {
+          return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'Not authenticated' } });
+        }
+        if (url.endsWith('/auth/login')) {
+          return jsonResponse(423, {
+            error: {
+              code: 'ACCOUNT_LOCKED',
+              message: 'Account temporarily locked after repeated failed logins.',
+              details: { lockedUntil: retryAt },
+            },
+          });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument());
+    await user.type(screen.getByLabelText(/employee code/i), 'LWW-006');
+    await user.type(screen.getByLabelText(/password/i), 'wrong');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('lockout-countdown')).toHaveTextContent(/account locked after repeated failed/i);
+    });
+    // Specifically not the 429 wording — the two must read differently.
+    expect(screen.queryByTestId('lockout-countdown')).not.toHaveTextContent(/too many attempts from this device/i);
+  });
 });

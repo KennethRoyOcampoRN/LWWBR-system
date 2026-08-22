@@ -17,13 +17,7 @@ function extractTotpSecret(provisioningUri: string): string | null {
   }
 }
 
-// mm:ss, floor-rounded — a resort front desk on a shared IP hits the
-// per-IP throttle far more than any one account gets truly locked, and
-// "try again in a few minutes" with no number was generating confused
-// calls to whoever's on duty. Both RATE_LIMITED (429, temporary — clears
-// as the sliding window ages out) and ACCOUNT_LOCKED (423, a real
-// lockout with a stored unlock time) resolve to the same countdown UI;
-// the caller only needs to know "how long," not which of the two it is.
+// mm:ss, floor-rounded.
 function formatCountdown(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -43,6 +37,19 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [retryAt, setRetryAt] = useState<Date | null>(null);
+  // Two genuinely different mechanisms, deliberately reported with
+  // different wording — RATE_LIMITED (429) is the fast per-request/per-IP
+  // throttle (5 failures / 15 min, either the account's own or shared
+  // with everyone else on the same IP); ACCOUNT_LOCKED (423) is the
+  // slower, account-only lockout (10 failures / hour, 5 min then 10 min
+  // capped). Showing both under one identical "too many attempts"
+  // message made it impossible to tell which one had actually fired —
+  // real confusion during live testing, not hypothetical: a rapid burst
+  // of wrong passwords hits the 5-failure/15-min rate limit long before
+  // it ever reaches the 10-failure lockout, so "try again in 15
+  // minutes" was the rate limiter, correctly working exactly as
+  // designed, not the new 5/10-minute lockout tiers failing to apply.
+  const [lockKind, setLockKind] = useState<'rate_limit' | 'account_locked' | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   // Ticks once a second only while a countdown is actually showing —
@@ -57,6 +64,7 @@ export function LoginPage() {
   useEffect(() => {
     if (retryAt && remainingMs <= 0) {
       setRetryAt(null);
+      setLockKind(null);
       setError(null);
     }
   }, [retryAt, remainingMs]);
@@ -88,6 +96,7 @@ export function LoginPage() {
           const until = details?.lockedUntil ?? details?.retryAt;
           if (until) {
             setRetryAt(new Date(until));
+            setLockKind(err.code === 'ACCOUNT_LOCKED' ? 'account_locked' : 'rate_limit');
             setNow(Date.now());
           } else {
             // Older/degraded response with no timestamp — still tell the
@@ -171,7 +180,9 @@ export function LoginPage() {
 
         {locked && (
           <p role="alert" className="text-sm text-red-600" data-testid="lockout-countdown">
-            Too many attempts — try again in {formatCountdown(remainingMs)}.
+            {lockKind === 'account_locked'
+              ? `Account locked after repeated failed logins — try again in ${formatCountdown(remainingMs)}.`
+              : `Too many attempts from this device or account — try again in ${formatCountdown(remainingMs)}.`}
           </p>
         )}
         {!locked && error && (

@@ -110,3 +110,54 @@ describe('assertNotLockedOrRateLimited — independent account and IP counters (
     });
   });
 });
+
+describe('reproducing the reported "15 minutes on two different accounts" report', () => {
+  it('proves this was the 429 rate limiter (15-min window), not the 423 lockout (5/10-min tiers) -- and that it is the intended IP-throttle behavior, not shared/broken state', async () => {
+    // Exactly what 5 rapid wrong-password attempts against LWW-006
+    // produces: 5 LOGIN_FAILURE rows, each carrying both the account's
+    // own entityId AND the shared front-desk IP.
+    const sharedIp = '10.0.0.9';
+    const failureRows = Array.from({ length: 5 }, (_, i) => ({ createdAt: new Date(Date.now() - i * 1000) }));
+
+    mockPrisma.auditLog.findMany.mockImplementation(
+      ({ where }: { where: { entityId?: string; ip?: string } }) => {
+        // LWW-006's own account-scoped query sees its 5 failures.
+        if (where.entityId === 'user_006') return Promise.resolve(failureRows);
+        // The IP-scoped query sees the SAME 5 rows, because every one of
+        // LWW-006's failures also carries this ip -- this is the one
+        // shared dimension by design (per-IP throttling), not a bug.
+        if (where.ip === sharedIp) return Promise.resolve(failureRows);
+        // LWW-014's own account-scoped query: genuinely untouched.
+        if (where.entityId === 'user_014') return Promise.resolve([]);
+        return Promise.resolve([]);
+      },
+    );
+
+    const expectedRetryAt = new Date(
+      (failureRows[failureRows.length - 1] as { createdAt: Date }).createdAt.getTime() + 15 * 60 * 1000,
+    );
+
+    // LWW-006 itself: rate-limited via its own account counter.
+    await expect(assertNotLockedOrRateLimited('user_006', sharedIp)).rejects.toMatchObject({
+      status: 429,
+      code: 'RATE_LIMITED',
+      details: { retryAt: expectedRetryAt.toISOString() },
+    });
+
+    // LWW-014, never itself failed, from the same IP: rate-limited via
+    // the IP counter -- with the SAME retryAt, because it's built from
+    // the exact same underlying failure rows. This is what "identical
+    // countdown on two different accounts" actually was: correct
+    // per-IP throttling, not the account/IP split failing to apply.
+    await expect(assertNotLockedOrRateLimited('user_014', sharedIp)).rejects.toMatchObject({
+      status: 429,
+      code: 'RATE_LIMITED',
+      details: { retryAt: expectedRetryAt.toISOString() },
+    });
+
+    // And to be unambiguous: neither of these ever touched
+    // maybeLockAccount or LOCKOUT_DURATIONS_MS at all -- the 5/10-minute
+    // tiers from the last commit were never exercised by this scenario.
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+});
