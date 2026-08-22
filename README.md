@@ -471,12 +471,44 @@ turned out to be the local API dev server simply not running, unrelated
 to the seed/role-data issue. Restarting it resolved that half. Both
 were real; neither alone explained everything observed that night.
 
-**Still not independently live-confirmed**, only covered by this
-session's mocked tests: a revoked session's refresh token actually
-being rejected immediately (needs two devices — planned separately).
-Not suspected broken — the same logic already has unit/router coverage
-— but "the code should work" and "this was watched work against the
-real system" are different claims, and spec §11's acceptance criteria
-are written as the latter.
+**Lockout tier escalation (5 min first, 10 min second-and-after) — verified
+by test, not by a real-time manual retest, and that distinction is
+deliberate, not a gap in confidence.** Reaching this path by clicking
+requires spacing failed attempts across separate 15-minute windows (or
+waiting out each 429's `retryAt`) — the fast rate limiter's threshold (5)
+is lower than the lockout's (10), so a rapid-click session always hits the
+429 tier first and never reaches it, as diagnosed above. Rather than spend
+15+ real minutes clicking a button to watch a duration change from 5 to
+10, `loginThrottle.test.ts`'s `'maybeLockAccount — escalating durations'`
+suite calls `maybeLockAccount` directly with a mocked prior-lockout count
+and asserts the 423 status and duration for the 1st, 2nd, and 3rd+ cases
+in isolation — the same function the live code path calls, exercised
+without needing to out-wait its own timers. This closes spec §11's "10
+failed logins lock the account" criterion on the merits (the escalation
+logic itself), while leaving open only "personally watched real clock time
+pass in a browser," which carries no separate correctness risk given the
+above.
+
+**Session revocation — code is in place and passing tests, ready for a
+live two-session test.** `Session.previousRefreshTokenHash`/`revokedAt`
+gate both branches of `refresh()` (`apps/api/src/modules/auth/service.ts`)
+on `revokedAt: null`, so a revoked session's refresh token matches neither
+the current-token nor the reused-token branch and every subsequent
+`/auth/refresh` call returns `401 SESSION_EXPIRED` — verified by this
+session's unit/router tests, not yet by a real browser pair. (The access
+token itself is a stateless 15-minute JWT with no session id claim, so it
+keeps working until its own natural expiry even after the session is
+revoked — that's the existing accepted design, not something revocation
+is meant to short-circuit; see `tokens.ts`.) `SessionsPage` (nav entry
+"Sessions", no permission gate — self-service) lists a caller's active
+sessions with IP/user-agent/signed-in/expires and a per-row Revoke button
+that calls `POST /auth/sessions/:id/revoke` and drops the row from the
+list on success. To confirm live: log in as the same user in two
+sessions (e.g. a normal window and an Incognito window), open
+Sessions in one, revoke the other device's row, then in that other
+session either wait for its access token to expire or force a refresh —
+the next `/auth/refresh` (and, once the access token lapses, every
+authenticated request) should come back `401 SESSION_EXPIRED` rather than
+silently keep working.
 
 See `spec.md` §11 for the full M1 acceptance criteria.
