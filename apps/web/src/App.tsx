@@ -8,6 +8,7 @@ import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
 import { RequirePermission } from './routes/RequirePermission.js';
 import { RolesPage } from './routes/RolesPage.js';
+import { SessionsPage } from './routes/SessionsPage.js';
 import { UsersPage } from './routes/UsersPage.js';
 
 export function App() {
@@ -37,6 +38,7 @@ export function App() {
                     </RequirePermission>
                   }
                 />
+                <Route path="/sessions" element={<SessionsPage />} />
               </Route>
             </Route>
           </Route>

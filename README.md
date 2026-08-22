@@ -168,6 +168,20 @@ an actual failure rather than a log line.
   other devices"): `GET /auth/sessions`, `POST /auth/sessions/:id/revoke`.
   Scoped to the caller's own sessions only — revoking someone else's by
   guessing an id 404s, since the lookup itself is scoped by `userId`.
+  **Correction (2026-08-22):** this was reported here as done when only
+  the API half was — no frontend page or nav entry existed, so there was
+  nowhere in the app to actually use it. Added `SessionsPage` (device
+  list with IP/user-agent/signed-in/expires, a Revoke button per row) and
+  a `Sessions` nav entry — unlike Users/Roles, it carries no `permission`
+  gate, since it's self-service account settings available to every
+  authenticated user, not a permission-scoped resource. 1 new component
+  test (list two sessions, revoke one, confirm it disappears and the
+  other doesn't). Writing that test also caught a real, previously-latent
+  test-isolation bug: `BrowserRouter` reads jsdom's actual
+  `window.location`, which doesn't reset between tests in the same file
+  the way the `fetch` stub does — a test that navigated anywhere leaked
+  that URL into the next test. Fixed with a `beforeEach` that resets to
+  `/` before every test in `App.smoke.test.tsx`.
 - HSTS (explicit `helmet` config, not just its defaults), `forceHttps`
   middleware rejecting non-TLS requests in production (checks
   `x-forwarded-proto`, since Netlify terminates TLS in front of the

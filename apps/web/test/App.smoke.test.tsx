@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
 
 function jsonResponse(status: number, body: unknown) {
@@ -25,6 +25,15 @@ const currentUser = {
 const mustChangeUser = { ...currentUser, mustChangePassword: true };
 
 describe('App', () => {
+  // BrowserRouter reads jsdom's real window.location, which — unlike the
+  // fetch stub — isn't reset between tests in the same file. Without
+  // this, a test that navigated (e.g. to /change-password or /sessions)
+  // leaks that URL into the next test, which then renders whatever route
+  // matches it instead of starting fresh at "/".
+  beforeEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -98,5 +107,47 @@ describe('App', () => {
       expect(screen.getByRole('heading', { name: /change your password/i })).toBeInTheDocument();
     });
     expect(screen.queryByText(/Welcome, Resort Manager/i)).not.toBeInTheDocument();
+  });
+
+  it('lists sessions for any authenticated user and revokes one', async () => {
+    const user = userEvent.setup();
+    const sessions = [
+      { id: 'session_this', ip: '1.1.1.1', userAgent: 'This tab', createdAt: '2026-08-22T00:00:00Z', expiresAt: '2026-08-29T00:00:00Z' },
+      { id: 'session_other', ip: '2.2.2.2', userAgent: 'Incognito tab', createdAt: '2026-08-22T00:01:00Z', expiresAt: '2026-08-29T00:01:00Z' },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) {
+        return jsonResponse(200, { user: currentUser });
+      }
+      if (url.endsWith('/auth/sessions')) {
+        return jsonResponse(200, { sessions });
+      }
+      if (url.endsWith('/session_other/revoke')) {
+        return jsonResponse(204, undefined);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Welcome, Resort Manager/i)).toBeInTheDocument());
+
+    // Sessions is self-service — visible in nav even though currentUser
+    // has no permissions at all (unlike Users/Roles, which do require
+    // one and are correctly absent here).
+    expect(screen.queryByRole('link', { name: 'Users' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: 'Sessions' }));
+
+    await waitFor(() => expect(screen.getByText('2.2.2.2')).toBeInTheDocument());
+    expect(screen.getByText('1.1.1.1')).toBeInTheDocument();
+
+    const revokeButtons = screen.getAllByRole('button', { name: /revoke/i });
+    await user.click(revokeButtons[1] as HTMLElement);
+
+    await waitFor(() => expect(screen.queryByText('2.2.2.2')).not.toBeInTheDocument());
+    expect(screen.getByText('1.1.1.1')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/auth/sessions/session_other/revoke'), expect.anything());
   });
 });

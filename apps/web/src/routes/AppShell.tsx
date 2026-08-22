@@ -9,6 +9,10 @@ const NAV_ITEMS: { to: string; label: string; permission?: 'user:read' | 'role:m
   { to: '/', label: 'Command Center' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
+  // Self-service account settings, not a permission-scoped resource —
+  // GET /auth/sessions is already scoped server-side to the caller's own
+  // rows, so every authenticated user gets this regardless of role.
+  { to: '/sessions', label: 'Sessions' },
 ];
 
 export function AppShell() {
