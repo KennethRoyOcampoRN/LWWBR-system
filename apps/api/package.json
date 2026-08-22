@@ -12,7 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "prisma generate && npm --prefix ../../packages/shared run build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@lwwbr/shared": "*",

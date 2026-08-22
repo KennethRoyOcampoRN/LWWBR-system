@@ -199,6 +199,35 @@ fallback is `bcrypt`/`bcryptjs` (pure JS, no native step, more common in
 serverless deployments) instead of argon2 — a deliberate trade to revisit
 only if needed, not a default to switch to preemptively.
 
+### Seed script (spec §10) — written, not yet run against the live database
+
+`apps/api/prisma/seed.ts`: idempotent (every write is an `upsert` keyed on
+a unique column, so re-running it is safe), and mechanically driven from
+`packages/shared` rather than hand-retyped — `PERMISSION_KEYS`,
+`ROLE_KEYS`/`ROLE_LABELS`, and `ROLE_PERMISSIONS` (the same source task 6's
+`getEffectivePermissions()` uses) are the single source of truth for both
+the runtime authorization logic and what the seed writes, so the two can't
+drift apart. Seeds, in order: all 55 permissions (`Permission.group`
+derived from the key's `resource:action` prefix), all 14 roles, every
+role→permission grant from the §5.4 matrix, and one placeholder demo user
+per role (`LWW-001`...`LWW-014`, password `Waku2026!`,
+`mustChangePassword: true`, `fullName` set to the role's own label — e.g.
+"Cashier (Demo)" — never a real staff name, per spec §12 rule 9). Wired as
+`npm run seed -w apps/api` and via `prisma db seed` (added a
+`package.json#prisma.seed` entry pointing at `tsx prisma/seed.ts`).
+
+**Not run against the live database from this sandbox** — same network
+block as every other DB-touching test this session. Verified as far as
+this sandbox allows: `apps/api/tsconfig.json` now includes `prisma/` (it
+didn't before, which meant `seed.ts` was silently skipped by
+`tsc --noEmit` entirely — caught and fixed while writing this), full
+typecheck is clean, `apps/api/dist` still excludes it (the build config
+only includes `src`), and running it directly with `tsx` confirms every
+import resolves and the script reaches its first real database call before
+failing on the expected `Can't reach database server` error. Run
+`npm run seed -w apps/api` (from repo root, with `apps/api/.env` filled in)
+against the real Supabase project before relying on any seeded login.
+
 ### Schema changes need syncing to the hosted project
 
 `Session.previousRefreshTokenHash` and `User.totpSecret` (both nullable
