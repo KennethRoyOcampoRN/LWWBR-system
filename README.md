@@ -671,7 +671,7 @@ needs a fresh `npm run seed` and the Units page reload to confirm.
 **Not yet built**: realtime status updates (spec §11's "a status change
 in one browser appears in another within 2s without refresh") — next up.
 
-### Forced status correction — done, not yet live-tested (2026-08-22, client decision)
+### Forced status correction — done, live-verified (2026-08-22, client decision)
 
 A general-purpose data-correction tool, deliberately separate from the
 manual override above even though both let a unit's status move outside
@@ -769,11 +769,17 @@ that omits `note` entirely. Both pass.
 1 new component test (log in as SYSTEM_ADMIN, open a unit's drawer, use
 the panel to jump `VACANT_DIRTY → OCCUPIED` directly, confirm the request
 fires and the generic note badge appears on the tile afterward) plus 6
-new backend router tests (permission-denied `403`, empty-note `422`, a
+new backend router tests (permission-denied `403`, empty-note success, a
 same-status non-adjacent jump succeeding with the distinct audit tag and
 `label`, `409` on a stale version, `404` on an unknown unit, and
 `GET /units` surfacing `latestNote` from any panel, only while it's
-still attached to the latest event). **Not yet live-verified against the
-real database** — same sandbox limitation as every prior milestone; also
-blocked on the pending
-`prisma db push` above.
+still attached to the latest event).
+
+**Live-verified by the user, 2026-08-22**: after `npx prisma db push`
+for `UnitStatusEvent.source` and `npm run seed`, confirmed against the
+real Supabase database that an empty-note forced correction succeeds
+(the fix above), the grid tile shows the note appropriately, and the
+`UNIT_STATUS_FORCED_CORRECTION` `AuditLog` entry carries the `label`
+field even when no note was given. This closes out the forced
+status-correction feature for the night — no outstanding gaps between
+this feature and what the client asked for.
