@@ -278,4 +278,57 @@ describe('App', () => {
       ).toBe(true);
     });
   });
+
+  it('shows the admin override for SYSTEM_ADMIN on an INSPECTED unit and uses it to reach READY', async () => {
+    // Reproduces the exact reported bug: a unit stuck at INSPECTED with
+    // only OUT_OF_ORDER/BLOCKED manual buttons showing, no way to the
+    // automatic-only READY transition even for SYSTEM_ADMIN. The override
+    // button was built server-side but never wired into this drawer.
+    const user = userEvent.setup();
+    const adminUser = {
+      ...currentUser,
+      roles: ['SYSTEM_ADMIN'],
+      permissions: { 'unit:read': 'ALL', 'unit:block': 'ALL', 'unit:manage': 'ALL' },
+    };
+    const unit = {
+      id: 'unit_1',
+      code: 'R01',
+      name: 'Room 1',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: null,
+      status: 'INSPECTED',
+      version: 5,
+      notes: null,
+      isActive: true,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+      if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+      if (url.endsWith('/units/unit_1/status')) {
+        return jsonResponse(200, { id: 'unit_1', status: 'READY', version: 6 });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Units' }));
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /R01 — Room 1/i })).toBeInTheDocument());
+    const overrideButton = await screen.findByRole('button', { name: /override.*ready/i });
+    await user.click(overrideButton);
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/units/unit_1/status'))).toBe(true);
+    });
+  });
 });

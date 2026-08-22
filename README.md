@@ -551,20 +551,38 @@ until then**: without one, a unit stuck in `INSPECTED` or `READY` had no
 way forward at all — no inspection/booking module yet to advance it.
 `SYSTEM_ADMIN` only, deliberately excluding `RESORT_MANAGER` even though
 it also holds `unit:manage` — this is a stopgap testing tool, not a
-normal operational path (`modules/units/automaticTransitionOverride.ts`,
-same one-small-explicit-commented-list pattern as
-`requiresTotp.ts`'s role check, for the same reason: a policy decision,
-not a resource-permission check). Every override writes a **second,
-distinct** audit entry — `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`,
-separate from the generic `UPDATE` row the audit extension already
-writes for the underlying `Unit` change — specifically so it's visible
-later *how often* the override actually gets used. That frequency is
-the signal for when M3/M4 have really closed the gap: near-zero uses
-once bookings/inspections exist means the override can be left dormant
-(or removed); if it's still getting used, something in M3/M4 isn't
-covering a real case. 2 new tests: `RESORT_MANAGER` (holds `unit:manage`,
-same as `SYSTEM_ADMIN`) is still rejected; `SYSTEM_ADMIN` succeeds and
-the distinct audit entry is confirmed.
+normal operational path. `canOverrideAutomaticTransition()` /
+`allowedOverrideTransitions()` live in `packages/shared/src/unitStatus.ts`
+(same one-small-explicit-commented-list pattern as `requiresTotp.ts`'s
+role check, for the same reason: a policy decision, not a
+resource-permission check) — **not** duplicated separately in the API
+and the web app. Every override writes a **second, distinct** audit
+entry — `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`, separate from the
+generic `UPDATE` row the audit extension already writes for the
+underlying `Unit` change — specifically so it's visible later *how
+often* the override actually gets used. That frequency is the signal
+for when M3/M4 have really closed the gap: near-zero uses once
+bookings/inspections exist means the override can be left dormant (or
+removed); if it's still getting used, something in M3/M4 isn't covering
+a real case.
+
+**Real bug, confirmed live 2026-08-22, fixed same day**: the override
+existed only server-side. `UnitDetailDrawer` (the units-grid page) never
+called `allowedOverrideTransitions()` — its button list came entirely
+from `allowedManualTransitions()`, which by design filters to
+`trigger: 'manual'` and can never include an automatic-only transition.
+A `SYSTEM_ADMIN` session at an `INSPECTED` unit saw only the
+`OUT_OF_ORDER`/`BLOCKED` buttons, exactly as reported, with no way to
+reach `READY` at all — the entire point of building the override. Fixed
+by having the role-check logic live once in `packages/shared` (moved out
+of an API-only file, `modules/units/automaticTransitionOverride.ts`,
+which is now deleted) so both sides read the same function, and wiring
+the drawer to render a visually distinct amber "Admin override" panel —
+separate from the ordinary status buttons, with a one-line explanation
+of why it exists — whenever `allowedOverrideTransitions()` returns
+anything. A new component test reproduces the exact reported scenario
+(`SYSTEM_ADMIN`, unit at `INSPECTED`) and confirms the override button
+now renders and fires the status-change request.
 
 Backend: `GET/POST /unit-types`, `PATCH /unit-types/:id`,
 `GET/POST /units`, `PATCH /units/:id`, `POST /units/:id/status`

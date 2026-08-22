@@ -1,4 +1,5 @@
 import {
+  canOverrideAutomaticTransition,
   getTransition,
   type PermissionKey,
   type PermissionScope,
@@ -8,7 +9,6 @@ import {
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
-import { canOverrideAutomaticTransition } from './automaticTransitionOverride.js';
 import type {
   ChangeUnitStatusInput,
   CreateUnitInput,

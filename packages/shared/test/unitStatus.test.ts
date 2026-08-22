@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   allowedManualTransitions,
+  allowedOverrideTransitions,
+  canOverrideAutomaticTransition,
   canTransition,
   getTransition,
   UNIT_STATUS_KEYS,
@@ -70,5 +72,25 @@ describe('allowedManualTransitions', () => {
 
   it('returns an empty list when the caller holds none of the required permissions', () => {
     expect(allowedManualTransitions('VACANT_DIRTY', {})).toEqual([]);
+  });
+});
+
+describe('canOverrideAutomaticTransition / allowedOverrideTransitions', () => {
+  it('allows SYSTEM_ADMIN', () => {
+    expect(canOverrideAutomaticTransition(['SYSTEM_ADMIN'])).toBe(true);
+    expect(allowedOverrideTransitions('INSPECTED', ['SYSTEM_ADMIN'])).toEqual(['READY']);
+  });
+
+  it('excludes RESORT_MANAGER, even though it holds unit:manage same as SYSTEM_ADMIN', () => {
+    expect(canOverrideAutomaticTransition(['RESORT_MANAGER'])).toBe(false);
+    expect(allowedOverrideTransitions('INSPECTED', ['RESORT_MANAGER'])).toEqual([]);
+  });
+
+  it('returns nothing for a status with no automatic transition at all', () => {
+    expect(allowedOverrideTransitions('VACANT_DIRTY', ['SYSTEM_ADMIN'])).toEqual([]);
+  });
+
+  it('is true if SYSTEM_ADMIN is any one of several held roles', () => {
+    expect(canOverrideAutomaticTransition(['CASHIER', 'SYSTEM_ADMIN'])).toBe(true);
   });
 });

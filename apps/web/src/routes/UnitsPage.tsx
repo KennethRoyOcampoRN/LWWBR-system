@@ -1,4 +1,4 @@
-import { allowedManualTransitions, type UnitStatusKey } from '@lwwbr/shared';
+import { allowedManualTransitions, allowedOverrideTransitions, type UnitStatusKey } from '@lwwbr/shared';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
@@ -58,6 +58,7 @@ function UnitDetailDrawer({
   }, [unit.id]);
 
   const allowedNext = allowedManualTransitions(unit.status, user?.permissions ?? {});
+  const overrideNext = allowedOverrideTransitions(unit.status, user?.roles ?? []);
 
   async function changeStatus(toStatus: UnitStatusKey) {
     setError(null);
@@ -124,12 +125,36 @@ function UnitDetailDrawer({
               </button>
             ))}
           </div>
-          {error && (
-            <p role="alert" className="text-sm text-red-600">
-              {error}
-            </p>
-          )}
         </div>
+      )}
+
+      {overrideNext.length > 0 && (
+        <div className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-3">
+          <p className="text-sm font-medium text-amber-900">Admin override</p>
+          <p className="text-xs text-amber-800">
+            These transitions normally happen automatically (inspection pass / booking check-in / check-out) —
+            no inspection or booking module exists yet, so this is a manual stopgap. Every use is audited
+            distinctly. Prefer waiting for the real flow once M3/M4 land.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {overrideNext.map((status) => (
+              <button
+                key={status}
+                onClick={() => void changeStatus(status)}
+                disabled={changingTo !== null}
+                className="rounded border border-amber-600 bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-900 disabled:opacity-50"
+              >
+                {changingTo === status ? 'Saving…' : `Override → ${UNIT_STATUS_LABELS[status]}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
       )}
 
       <div>

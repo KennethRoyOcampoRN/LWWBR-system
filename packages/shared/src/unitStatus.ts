@@ -1,4 +1,5 @@
 import type { PermissionKey } from './permissions.js';
+import type { RoleKey } from './roles.js';
 
 // Spec §7.1's unit status cycle:
 //   VACANT_DIRTY -> CLEANING -> CLEANED -> INSPECTED -> READY -> OCCUPIED -> VACANT_DIRTY
@@ -90,11 +91,11 @@ export function canTransition(from: UnitStatusKey, to: UnitStatusKey): boolean {
 }
 
 // Manual transitions only, filtered to what `permissions` actually
-// grants — exactly what a detail-drawer action-button list needs, and
-// what the API's manual status-change endpoint accepts (automatic
-// transitions are invoked by their owning module's service code
-// directly, never through the generic manual endpoint, once M3/M4 build
-// them).
+// grants — exactly what a detail-drawer action-button list needs for its
+// normal, staff-facing buttons. Automatic transitions are handled
+// separately below (allowedOverrideTransitions) since they need a role
+// check, not a permission check, and render as a distinct "override" UI
+// element, not an ordinary status button.
 export function allowedManualTransitions(
   from: UnitStatusKey,
   permissions: Partial<Record<PermissionKey, unknown>>,
@@ -102,4 +103,33 @@ export function allowedManualTransitions(
   return UNIT_STATUS_TRANSITIONS[from]
     .filter((t) => t.trigger === 'manual' && permissions[t.permission])
     .map((t) => t.to);
+}
+
+// Spec §5.1: "Do not hardcode role names in business logic... all
+// authorization checks are permission checks." Deliberate, narrow
+// exception, same reasoning as requiresTotp.ts: this isn't a resource
+// permission check (that's still `unit:manage`, enforced separately by
+// the API) — it's a stopgap policy, scoped by client decision
+// (2026-08-22) to SYSTEM_ADMIN only, not RESORT_MANAGER, even though
+// both hold `unit:manage`. The three "automatic" unit-status transitions
+// (INSPECTED->READY, READY->OCCUPIED, OCCUPIED->VACANT_DIRTY) have no
+// real trigger yet — the inspection module (M3) and booking module (M4)
+// meant to call them don't exist — so without an escape hatch a unit can
+// get permanently stuck. This lives here, not duplicated separately in
+// apps/api and apps/web, so the API's enforcement and the UI's override
+// button can never drift on "who is allowed to do this."
+const ROLES_ALLOWED_TO_OVERRIDE_AUTOMATIC_TRANSITIONS: ReadonlySet<RoleKey> = new Set(['SYSTEM_ADMIN']);
+
+export function canOverrideAutomaticTransition(roles: readonly RoleKey[]): boolean {
+  return roles.some((role) => ROLES_ALLOWED_TO_OVERRIDE_AUTOMATIC_TRANSITIONS.has(role));
+}
+
+// The automatic-only transitions from `from` that `roles` may invoke as
+// a manual override — empty unless `roles` includes an allowed role.
+// Distinct from allowedManualTransitions() so a caller (the detail
+// drawer) can render these as a visually separate "admin override"
+// control rather than an ordinary status button.
+export function allowedOverrideTransitions(from: UnitStatusKey, roles: readonly RoleKey[]): UnitStatusKey[] {
+  if (!canOverrideAutomaticTransition(roles)) return [];
+  return UNIT_STATUS_TRANSITIONS[from].filter((t) => t.trigger === 'automatic').map((t) => t.to);
 }
