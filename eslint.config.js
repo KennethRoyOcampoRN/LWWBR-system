@@ -31,6 +31,11 @@ export default [
       ...tseslint.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // TypeScript's own checker already validates every identifier,
+      // including ambient lib types like RequestInit/RequestInfo that
+      // aren't real JS globals — no-undef doesn't know about those and
+      // false-positives on them.
+      'no-undef': 'off',
     },
   },
   {

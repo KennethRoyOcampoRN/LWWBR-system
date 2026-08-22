@@ -1,37 +1,42 @@
-import { useEffect, useState } from 'react';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext.js';
+import { AppShell } from './routes/AppShell.js';
+import { DashboardPage } from './routes/DashboardPage.js';
+import { LoginPage } from './routes/LoginPage.js';
+import { RequireAuth } from './routes/RequireAuth.js';
+import { RequirePermission } from './routes/RequirePermission.js';
+import { RolesPage } from './routes/RolesPage.js';
+import { UsersPage } from './routes/UsersPage.js';
 
-interface HealthResponse {
-  status: string;
-  adapters: { realtime: string; storage: string };
-}
-
-// M0 scaffold only — confirms the web app can reach the api. Role-scoped
-// dashboards and the Command Center land in M2+ per spec §11.
 export function App() {
-  const [health, setHealth] = useState<HealthResponse | 'loading' | 'error'>('loading');
-
-  useEffect(() => {
-    fetch('/api/v1/health')
-      .then((res) => res.json())
-      .then((data: HealthResponse) => setHealth(data))
-      .catch(() => setHealth('error'));
-  }, []);
-
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col gap-4 p-6">
-      <h1 className="text-xl font-semibold">Lucky Waku-Waku Resort — Command Center</h1>
-      {health === 'loading' && <p>Checking API…</p>}
-      {health === 'error' && <p role="alert">Could not reach the API.</p>}
-      {typeof health === 'object' && (
-        <dl className="text-sm">
-          <dt className="font-medium">Status</dt>
-          <dd data-testid="health-status">{health.status}</dd>
-          <dt className="mt-2 font-medium">Adapters</dt>
-          <dd>
-            realtime: {health.adapters.realtime}, storage: {health.adapters.storage}
-          </dd>
-        </dl>
-      )}
-    </main>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route element={<RequireAuth />}>
+            <Route element={<AppShell />}>
+              <Route index element={<DashboardPage />} />
+              <Route
+                path="/users"
+                element={
+                  <RequirePermission permission="user:read">
+                    <UsersPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="/roles"
+                element={
+                  <RequirePermission permission="role:manage">
+                    <RolesPage />
+                  </RequirePermission>
+                }
+              />
+            </Route>
+          </Route>
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }

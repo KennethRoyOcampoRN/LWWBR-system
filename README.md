@@ -216,13 +216,15 @@ per role (`LWW-001`...`LWW-014`, password `Waku2026!`,
 `npm run seed -w apps/api` and via `prisma db seed` (added a
 `package.json#prisma.seed` entry pointing at `tsx prisma/seed.ts`).
 
-**Not run against the live database from this sandbox** — same network
-block as every other DB-touching test this session. Verified as far as
-this sandbox allows: `apps/api/tsconfig.json` now includes `prisma/` (it
-didn't before, which meant `seed.ts` was silently skipped by
-`tsc --noEmit` entirely — caught and fixed while writing this), full
-typecheck is clean, `apps/api/dist` still excludes it (the build config
-only includes `src`), and running it directly with `tsx` confirms every
+**Confirmed on the user's machine** against the live Supabase project — a
+clean run seeded 55 permissions, 14 roles, all role/permission grants, and
+14 demo users, and the full suite was back to 71/71 passing. Verified as
+far as this sandbox allows before that: `apps/api/tsconfig.json` now
+includes `prisma/` (it didn't before, which meant `seed.ts` was silently
+skipped by `tsc --noEmit` entirely — caught and fixed while writing this),
+full typecheck is clean, `apps/api/dist` still excludes it (the build
+config only includes `src`), and running it directly with `tsx` confirms
+every
 import resolves and the script reaches its first real database call before
 failing on the expected `Can't reach database server` error. Run
 `npm run seed -w apps/api` (from repo root, with `apps/api/.env` filled in)
@@ -236,5 +238,70 @@ This session's sandbox can't reach the hosted Supabase project to push
 them (same network block noted under M0). Run `npx prisma db push`
 (from `apps/api`) against the real database before relying on
 login/refresh/TOTP working end-to-end.
+
+### Login screen, permission-generated nav, and users/roles admin UI
+
+Backend additions (spec §9's documented API surface, not yet built until
+now): `GET/POST /users`, `PATCH /users/:id`, `POST /users/:id/reset-password`,
+`GET/POST /roles`, `PATCH /roles/:id`, `PUT /roles/:id/permissions`,
+`GET /permissions` — all gated by `requirePermission('user:read' |
+'user:manage' | 'role:manage')`, which in the seeded matrix only
+`SYSTEM_ADMIN` holds. A few implementation notes:
+- User create and password-reset never accept an admin-chosen password —
+  both generate a random temporary one server-side, hash it, set
+  `mustChangePassword: true`, and return the plaintext exactly once in the
+  response for the admin to relay out of band. It is never stored or
+  retrievable again.
+- An admin-triggered password reset also revokes the user's active
+  sessions — a reset is often a "this account may be compromised" action,
+  so leaving old sessions alive would defeat the point.
+- `PATCH /users/:id` and `PUT /roles/:id/permissions` both take the full
+  desired set (role assignments / permission grants) and replace it in one
+  transaction, rather than diffing add/remove — the admin UI always
+  submits the complete list, so a diff would be complexity with no
+  behavior difference.
+- Route-level tests (16 new, router-level via supertest + mocked Prisma)
+  cover permission gating, validation, the 409 conflicts (duplicate
+  employee code / role key), and the reset-password session-revocation
+  side effect.
+
+Frontend (`apps/web`, previously just the M0 health-check scaffold): added
+`react-router-dom` and rebuilt the app around it —
+- `AuthContext` calls `GET /auth/me` on load and exposes `login`/`logout`;
+  `RequireAuth` redirects to `/login` when there's no session.
+- `LoginPage` drives the full login state machine from service.ts's
+  responses: plain success, `TOTP_REQUIRED` (reveals the code field),
+  first-login `totpSetupRequired` (shows the secret extracted from the
+  `otpauth://` provisioning URI for manual entry into an authenticator
+  app — no QR-rendering dependency added for the two roles that ever see
+  this screen), and `ACCOUNT_LOCKED` (reads `lockedUntil` out of the error
+  `details`).
+- `AppShell`'s nav is generated from `user.permissions`, per spec §8.1 —
+  each nav entry names the permission key that unlocks it (`Users` needs
+  `user:read`, `Roles` needs `role:manage`), so a new screen is a new
+  table row, not a parallel role-based menu config that can drift from
+  the real authorization check. `RequirePermission` is a client-side
+  companion gate for direct-URL access — the API's own
+  `requirePermission` middleware remains the actual enforcement; this
+  only avoids a broken page of failed requests.
+- `UsersPage` / `RolesPage`: create + inline-edit users (name, active
+  flag, role checkboxes, reset-password), create custom roles, and a
+  per-role permission-grant editor (every permission key, grouped by its
+  `resource:action` prefix, each with a NONE/ALL/DEPARTMENT/SELF select).
+- `DashboardPage` is a placeholder landing page — the real Command Center
+  (spec §8.2: KPI strip, unit grid, live feed, attention queue) is M2+.
+
+**Not verified in a real browser against a real backend** — this
+sandbox's network block means there's no way to run the API against the
+live Supabase project here, the same limitation noted throughout M1.
+Verified as far as this sandbox allows: full lint/typecheck/build clean
+across all three packages, component tests render the real `App` tree
+(react-router included) against a mocked `fetch` and exercise the actual
+login form end to end — unauthenticated → login screen, filling in
+real form fields, submitting, landing on the dashboard with the logged-in
+user's name. Please re-verify the login → dashboard → Users/Roles admin
+flow in an actual browser against the live API before relying on it, the
+same way M1's earlier pieces needed your machine to confirm DB-touching
+behavior.
 
 See `spec.md` §11 for the full M1 acceptance criteria — not all met yet.

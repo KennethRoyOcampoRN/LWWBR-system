@@ -7,6 +7,8 @@ import { ApiError } from './lib/apiError.js';
 import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { authRouter } from './modules/auth/router.js';
+import { rolesRouter } from './modules/roles/router.js';
+import { usersRouter } from './modules/users/router.js';
 import { healthRouter } from './routes/health.js';
 
 export interface CreateAppOptions {
@@ -35,6 +37,8 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use('/api/v1', healthRouter);
   app.use('/api/v1', authRouter);
+  app.use('/api/v1', usersRouter);
+  app.use('/api/v1', rolesRouter);
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);
