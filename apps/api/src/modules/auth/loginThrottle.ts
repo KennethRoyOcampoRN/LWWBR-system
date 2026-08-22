@@ -37,16 +37,33 @@ function lockedApiError(lockedUntil: Date): ApiError {
 // currently under an active lockout, or if the fast rate-limit threshold
 // has been hit — in either case the caller should never learn whether
 // the password would have been correct.
+//
+// Fails OPEN on infrastructure error: if reading AuditLog itself fails
+// (a transient DB blip, not a security signal), that must not become an
+// outage that blocks every login at the resort. This is a deliberate,
+// asymmetric choice — the write side (logAudit, maybeLockAccount below)
+// stays fail-CLOSED, because spec §4.4 makes audit logging "a hard
+// requirement, not optional": a login that can't be recorded shouldn't
+// silently succeed unaudited, but a lockout check that can't be *read*
+// shouldn't silently deny everyone either. Real lockout enforcement is
+// unaffected whenever the database is actually healthy; this only
+// changes behavior during an unrelated outage, where the alternative is
+// worse.
 export async function assertNotLockedOrRateLimited(
   accountKey: string,
   ip: string | null | undefined,
 ): Promise<void> {
   const now = new Date();
 
-  const activeLock = await prisma.auditLog.findFirst({
-    where: { action: 'ACCOUNT_LOCKED', entityId: accountKey },
-    orderBy: { createdAt: 'desc' },
-  });
+  let activeLock: { after: unknown } | null;
+  try {
+    activeLock = await prisma.auditLog.findFirst({
+      where: { action: 'ACCOUNT_LOCKED', entityId: accountKey },
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch {
+    return;
+  }
   if (activeLock) {
     const details = activeLock.after as LockoutDetails | null;
     const lockedUntil = details?.lockedUntil ? new Date(details.lockedUntil) : null;
@@ -56,13 +73,18 @@ export async function assertNotLockedOrRateLimited(
   }
 
   const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
-  const recentFailures = await prisma.auditLog.count({
-    where: {
-      action: 'LOGIN_FAILURE',
-      createdAt: { gte: windowStart },
-      OR: [{ entityId: accountKey }, ...(ip ? [{ ip }] : [])],
-    },
-  });
+  let recentFailures: number;
+  try {
+    recentFailures = await prisma.auditLog.count({
+      where: {
+        action: 'LOGIN_FAILURE',
+        createdAt: { gte: windowStart },
+        OR: [{ entityId: accountKey }, ...(ip ? [{ ip }] : [])],
+      },
+    });
+  } catch {
+    return;
+  }
   if (recentFailures >= RATE_LIMIT_THRESHOLD) {
     throw new ApiError(429, 'RATE_LIMITED', 'Too many login attempts — try again in a few minutes.');
   }
@@ -72,6 +94,15 @@ export async function assertNotLockedOrRateLimited(
 // pushes the account over the lockout threshold, locks it (writing a
 // distinct, escalating-duration ACCOUNT_LOCKED entry) and throws — the
 // caller finds out now, not on their next attempt.
+//
+// Deliberately fail-CLOSED, unlike the read side above: every DB call in
+// here (the two counts, and logAudit's own write) is left to propagate as
+// an unhandled rejection on failure. If the database is unreachable, this
+// function not completing means the failed-login attempt that triggered it
+// also fails closed (service.ts's login() has nothing to return), which is
+// the correct side to fail on for a write that spec §4.4 treats as a hard
+// requirement — better a login attempt errors out than a lockout write
+// silently gets lost.
 export async function maybeLockAccount(
   accountKey: string,
   meta: { ip?: string | null; userAgent?: string | null },
