@@ -348,16 +348,42 @@ entries all present with correct actor IDs, entities, timestamps, IPs,
 user agents, and full before/after JSON diffs on updates. That closes
 spec §11's "every mutation appears in `AuditLog`" criterion.
 
+**Confirmed 2026-08-22**: permission-generated nav (spec §8.1) is
+discriminating correctly — Owner, Admin Staff, Room Attendant, and
+Restaurant Staff all logged in straight through (no TOTP prompt,
+correct per the SYSTEM_ADMIN-only policy above), showed the correct
+role, and all four showed only "Command Center" in the nav — no
+Users/Roles admin panel — versus SYSTEM_ADMIN's Command Center + Users
++ Roles. That closes spec §11's "login as each seeded role and see a
+correctly filtered nav" criterion (4 of 14 roles spot-checked, plus
+SYSTEM_ADMIN; the underlying check reads `user.permissions` generically
+and isn't role-specific, so this isn't 4 independent code paths).
+
+**Real bug found and fixed during this check, two causes layered
+together** — worth recording both, not collapsing them into one: every
+seeded role was hitting the TOTP setup screen on login, not just
+SYSTEM_ADMIN. Root-caused to (1) the seed script's demo-user role
+assignment being additive-only — it upserted each account's intended
+role but never removed a stray extra one (e.g. an accumulated
+SYSTEM_ADMIN grant) that a prior seed run or admin-UI testing session
+could have left behind; `requiresTotp()`'s `.some()` check was
+correctly, not incorrectly, requiring TOTP for any account holding
+SYSTEM_ADMIN alongside its intended role. Fixed by making the seed
+authoritative: it now deletes any other role assignment for a demo
+account before upserting the intended one, and prints each account's
+final role list at the end of the run. (2) Separately, the very first
+retry after that fix failed with a generic "Request failed" — that one
+turned out to be the local API dev server simply not running, unrelated
+to the seed/role-data issue. Restarting it resolved that half. Both
+were real; neither alone explained everything observed that night.
+
 **Still not independently live-confirmed**, only covered by this
 session's mocked tests: a revoked session's refresh token actually
 being rejected immediately (needs two devices — planned separately);
 10 failed logins actually locking the account with the attempt visible
-in `AuditLog` (a real lockout may already have been triggered
-incidentally during testing — being checked); and the nav rendering
-correctly filtered for the other 13 seeded roles, not just
-SYSTEM_ADMIN. None of these are suspected broken — the same logic
-already has unit/router coverage — but "the code should work" and "this
-was watched work against the real system" are different claims, and
-spec §11's acceptance criteria are written as the latter.
+in `AuditLog`. Neither is suspected broken — the same logic already
+has unit/router coverage — but "the code should work" and "this was
+watched work against the real system" are different claims, and spec
+§11's acceptance criteria are written as the latter.
 
 See `spec.md` §11 for the full M1 acceptance criteria.
