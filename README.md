@@ -339,11 +339,19 @@ all built, tested (mocked-Prisma + component tests), and lint/typecheck/
 build clean. Live-confirmed on the user's machine: `npm run seed`
 against the real database; a real SYSTEM_ADMIN login through TOTP
 enrollment to a working dashboard with correctly permission-filtered
-nav. **Not yet independently live-confirmed**, only covered by this
-session's mocked tests: every mutation actually appearing in `AuditLog`
-against the real database; a revoked session's refresh token actually
-being rejected immediately; 10 failed logins actually locking the
-account with the attempt visible in `AuditLog`; and the nav rendering
+nav; the forced-password-change redirect; the Users admin page loading
+real seeded data. **Confirmed 2026-08-22**: `AuditLog` has real rows in
+the live database — `LOGIN_FAILURE`, `LOGIN_SUCCESS`, and `UPDATE`
+entries all present with correct actor IDs, entities, timestamps, IPs,
+user agents, and full before/after JSON diffs on updates. That closes
+spec §11's "every mutation appears in `AuditLog`" criterion.
+
+**Still not independently live-confirmed**, only covered by this
+session's mocked tests: a revoked session's refresh token actually
+being rejected immediately (needs two devices — planned separately);
+10 failed logins actually locking the account with the attempt visible
+in `AuditLog` (a real lockout may already have been triggered
+incidentally during testing — being checked); and the nav rendering
 correctly filtered for the other 13 seeded roles, not just
 SYSTEM_ADMIN. None of these are suspected broken — the same logic
 already has unit/router coverage — but "the code should work" and "this
