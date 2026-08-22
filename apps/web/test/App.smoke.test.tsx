@@ -22,6 +22,8 @@ const currentUser = {
   permissions: {},
 };
 
+const mustChangeUser = { ...currentUser, mustChangePassword: true };
+
 describe('App', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -67,5 +69,34 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByText(/Welcome, Resort Manager \(Demo\)/i)).toBeInTheDocument();
     });
+  });
+
+  it('forces a password change before the dashboard is reachable when mustChangePassword is set', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) {
+          return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'Not authenticated' } });
+        }
+        if (url.endsWith('/auth/login')) {
+          return jsonResponse(200, { user: mustChangeUser });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument());
+    await user.type(screen.getByLabelText(/employee code/i), 'LWW-001');
+    await user.type(screen.getByLabelText(/password/i), 'temp-password');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /change your password/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Welcome, Resort Manager/i)).not.toBeInTheDocument();
   });
 });

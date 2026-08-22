@@ -9,10 +9,7 @@ export function DashboardPage() {
   return (
     <div className="flex flex-col gap-2">
       <h1 className="text-lg font-semibold">Welcome, {user?.fullName}</h1>
-      <p className="text-sm text-gray-600">
-        Roles: {user?.roles.join(', ')}
-        {user?.mustChangePassword && ' — you must change your password.'}
-      </p>
+      <p className="text-sm text-gray-600">Roles: {user?.roles.join(', ')}</p>
       <p className="text-sm text-gray-500">The Command Center dashboard lands in M2.</p>
     </div>
   );

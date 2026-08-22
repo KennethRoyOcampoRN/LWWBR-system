@@ -4,7 +4,7 @@ import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
 import { setRequestActorId } from '../../lib/requestContext.js';
 import { assertNotLockedOrRateLimited, maybeLockAccount } from './loginThrottle.js';
-import { verifyPassword } from './passwords.js';
+import { hashPassword, verifyPassword } from './passwords.js';
 import { requiresTotp } from './requiresTotp.js';
 import {
   generateRefreshToken,
@@ -274,6 +274,32 @@ export async function listSessions(userId: string): Promise<SessionSummary[]> {
     orderBy: { createdAt: 'desc' },
   });
   return sessions;
+}
+
+// Self-service — the caller changes their own password, proving they
+// still know the current one (or the temp one issued at creation/reset,
+// see modules/users/service.ts). Clears mustChangePassword, so the forced
+// first-login flow that field exists for actually terminates.
+//
+// Unlike an admin-triggered reset (users/service.ts resetPassword), this
+// does NOT revoke the caller's other sessions: this is the legitimate
+// user acting on their own account, not a suspected-compromise response,
+// and the access token that authenticated this very request isn't tied
+// to a Session row at all (it's a stateless JWT, no session id claim) —
+// there'd be no way to spare "this device" from a blanket revoke anyway
+// without logging the user straight back out of the flow they just
+// completed.
+export async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+  const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
+  if (!user || !(await verifyPassword(user.passwordHash, currentPassword))) {
+    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Current password is incorrect');
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash, mustChangePassword: false },
+  });
 }
 
 export async function revokeSession(userId: string, sessionId: string, meta: RequestMeta): Promise<void> {

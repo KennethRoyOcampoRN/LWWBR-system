@@ -3,8 +3,8 @@ import { asyncHandler } from '../../lib/asyncHandler.js';
 import { ApiError } from '../../lib/apiError.js';
 import { setAccessCookie, setRefreshCookie, clearAuthCookies, getRefreshCookie } from './cookies.js';
 import { requireAuth } from './middleware.js';
-import { loginSchema } from './schema.js';
-import { getMe, listSessions, login, logout, refresh, revokeSession } from './service.js';
+import { changePasswordSchema, loginSchema } from './schema.js';
+import { changePassword, getMe, listSessions, login, logout, refresh, revokeSession } from './service.js';
 
 export const authRouter = Router();
 
@@ -64,6 +64,16 @@ authRouter.get(
   asyncHandler(async (req, res) => {
     const user = await getMe(req.userId as string);
     res.status(200).json({ user });
+  }),
+);
+
+authRouter.post(
+  '/auth/change-password',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = changePasswordSchema.parse(req.body);
+    await changePassword(req.userId as string, body.currentPassword, body.newPassword);
+    res.status(204).send();
   }),
 );
 

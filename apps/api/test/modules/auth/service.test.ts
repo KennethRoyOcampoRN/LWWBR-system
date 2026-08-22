@@ -15,7 +15,7 @@ const mockPrisma = {
 // same everywhere.
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
-const { login, refresh, logout, getMe, listSessions, revokeSession } = await import(
+const { login, refresh, logout, getMe, listSessions, revokeSession, changePassword } = await import(
   '../../../src/modules/auth/service.js'
 );
 
@@ -377,5 +377,33 @@ describe('sessions (spec §3.1.1 "sign out all other devices")', () => {
     // else simply won't be found under this caller's id.
     mockPrisma.session.findFirst.mockResolvedValue(null);
     await expect(revokeSession('user_1', 'someone-elses-session', {})).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('changePassword (forces mustChangePassword to resolve)', () => {
+  it('rejects an incorrect current password', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+
+    await expect(changePassword('user_1', 'wrong-current', 'NewPassword1')).rejects.toMatchObject({
+      status: 401,
+      code: 'INVALID_CREDENTIALS',
+    });
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('updates the password hash and clears mustChangePassword on success', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash, mustChangePassword: true }));
+
+    await changePassword('user_1', 'Waku2026!', 'NewPassword1');
+
+    expect(mockPrisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user_1' },
+      data: { passwordHash: expect.any(String), mustChangePassword: false },
+    });
+    // Never revokes other sessions — see service.ts's own comment on why
+    // this differs from an admin-triggered reset.
+    expect(mockPrisma.session.updateMany).not.toHaveBeenCalled();
   });
 });

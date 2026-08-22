@@ -132,6 +132,64 @@ describe('POST /api/v1/auth/logout', () => {
   });
 });
 
+describe('POST /api/v1/auth/change-password', () => {
+  it('requires authentication', async () => {
+    const res = await request(createApp())
+      .post('/api/v1/auth/change-password')
+      .send({ currentPassword: 'x', newPassword: 'NewPassword1' });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects an incorrect current password without changing the hash', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+
+    const agent = request.agent(createApp());
+    await agent.post('/api/v1/auth/login').send({ employeeCode: 'LWW-001', password: 'Waku2026!' });
+
+    const res = await agent.post('/api/v1/auth/change-password').send({
+      currentPassword: 'wrong-current',
+      newPassword: 'NewPassword1',
+    });
+    expect(res.status).toBe(401);
+    expect(mockPrisma.user.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ mustChangePassword: false }) }),
+    );
+  });
+
+  it('changes the password and clears mustChangePassword on success', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+
+    const agent = request.agent(createApp());
+    await agent.post('/api/v1/auth/login').send({ employeeCode: 'LWW-001', password: 'Waku2026!' });
+
+    const res = await agent.post('/api/v1/auth/change-password').send({
+      currentPassword: 'Waku2026!',
+      newPassword: 'NewPassword1',
+    });
+    expect(res.status).toBe(204);
+    expect(mockPrisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user_1' },
+      data: { passwordHash: expect.any(String), mustChangePassword: false },
+    });
+  });
+
+  it('returns 422 when the new password is too short', async () => {
+    const passwordHash = await hashPassword('Waku2026!');
+    mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+
+    const agent = request.agent(createApp());
+    await agent.post('/api/v1/auth/login').send({ employeeCode: 'LWW-001', password: 'Waku2026!' });
+
+    const res = await agent.post('/api/v1/auth/change-password').send({
+      currentPassword: 'Waku2026!',
+      newPassword: 'short',
+    });
+    expect(res.status).toBe(422);
+  });
+});
+
 describe('GET /api/v1/auth/sessions and POST /api/v1/auth/sessions/:id/revoke', () => {
   it('requires authentication', async () => {
     const res = await request(createApp()).get('/api/v1/auth/sessions');

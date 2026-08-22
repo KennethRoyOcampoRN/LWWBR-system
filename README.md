@@ -291,17 +291,63 @@ Frontend (`apps/web`, previously just the M0 health-check scaffold): added
 - `DashboardPage` is a placeholder landing page — the real Command Center
   (spec §8.2: KPI strip, unit grid, live feed, attention queue) is M2+.
 
-**Not verified in a real browser against a real backend** — this
-sandbox's network block means there's no way to run the API against the
-live Supabase project here, the same limitation noted throughout M1.
-Verified as far as this sandbox allows: full lint/typecheck/build clean
-across all three packages, component tests render the real `App` tree
-(react-router included) against a mocked `fetch` and exercise the actual
-login form end to end — unauthenticated → login screen, filling in
-real form fields, submitting, landing on the dashboard with the logged-in
-user's name. Please re-verify the login → dashboard → Users/Roles admin
-flow in an actual browser against the live API before relying on it, the
-same way M1's earlier pieces needed your machine to confirm DB-touching
-behavior.
+**Confirmed end to end on the user's machine** (2026-08-22): `LWW-001`
+(SYSTEM_ADMIN) gated behind TOTP setup, enrolled via a real authenticator
+app, verified, and landed on the dashboard reading live data from
+Supabase — nav correctly showed Command Center/Users/Roles per the
+permission-generated nav rule. First fully-verified real login of the
+build.
 
-See `spec.md` §11 for the full M1 acceptance criteria — not all met yet.
+### Forced password change — was a real gap, now closed
+
+`User.mustChangePassword` was being set correctly everywhere (new user
+creation, admin password reset, the seeded demo users) and *displayed*
+on the dashboard, but nothing actually enforced it — no endpoint even
+existed to change your own password, so the flag could never be cleared
+and the dashboard text was the entire "feature." Caught when asked
+directly whether this was intentional or a gap: it was a gap, not a
+deferral, since the field's whole purpose was unimplemented. Fixed in
+the same pass:
+- `POST /auth/change-password` (`{ currentPassword, newPassword }`,
+  requires auth, re-verifies the current password before accepting a
+  new one, clears `mustChangePassword`). Deliberately does **not**
+  revoke the caller's other sessions the way an admin-triggered reset
+  does — this is the legitimate user acting on their own account, not a
+  compromise response, and the access token authenticating the request
+  isn't tied to a session id at all (stateless JWT), so there'd be no
+  way to spare "this device" from a blanket revoke without logging the
+  user straight back out of the flow they just completed.
+- `ChangePasswordPage` + a `RequirePasswordChange` route guard sitting
+  between `RequireAuth` and `AppShell`: any signed-in user with
+  `mustChangePassword: true` is redirected there and cannot reach any
+  other screen (including the admin UI) until they set a new password.
+- 6 new tests (2 service-level, 3 router-level on the API; 1 component
+  test confirming the redirect actually blocks the dashboard rather than
+  just displaying text).
+
+**Not yet re-verified against the live API** — this was written and
+tested against the mocked/component-test setup only, after the last
+live confirmation. Please confirm the forced-change flow (log in with
+a temp password, get redirected, set a new one, land on the dashboard)
+on your machine before relying on it.
+
+### M1 status against spec §11's acceptance criteria
+
+Tasks 6–11 (permission matrix, auth core, requirePermission + audit
+middleware, security hardening, seed script, admin UI/login/nav) are
+all built, tested (mocked-Prisma + component tests), and lint/typecheck/
+build clean. Live-confirmed on the user's machine: `npm run seed`
+against the real database; a real SYSTEM_ADMIN login through TOTP
+enrollment to a working dashboard with correctly permission-filtered
+nav. **Not yet independently live-confirmed**, only covered by this
+session's mocked tests: every mutation actually appearing in `AuditLog`
+against the real database; a revoked session's refresh token actually
+being rejected immediately; 10 failed logins actually locking the
+account with the attempt visible in `AuditLog`; and the nav rendering
+correctly filtered for the other 13 seeded roles, not just
+SYSTEM_ADMIN. None of these are suspected broken — the same logic
+already has unit/router coverage — but "the code should work" and "this
+was watched work against the real system" are different claims, and
+spec §11's acceptance criteria are written as the latter.
+
+See `spec.md` §11 for the full M1 acceptance criteria.

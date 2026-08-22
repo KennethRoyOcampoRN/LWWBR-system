@@ -21,6 +21,10 @@ interface AuthContextValue {
   loading: boolean;
   login: typeof loginImpl;
   logout: () => Promise<void>;
+  // Re-fetches /auth/me — used after an action that changes the current
+  // user's own record server-side without going through login() (e.g.
+  // ChangePasswordPage clearing mustChangePassword).
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -37,19 +41,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    api
-      .get<{ user: CurrentUser }>('/auth/me')
-      .then((res) => setUser(res.user))
-      .catch((err: unknown) => {
-        // 401 just means "not logged in" — every other error still leaves
-        // the login screen as the fallback, so it's not re-thrown here.
-        if (!(err instanceof ApiRequestError && err.status === 401)) {
-          console.error(err);
-        }
-      })
-      .finally(() => setLoading(false));
+  const fetchUser = useCallback(async () => {
+    try {
+      const res = await api.get<{ user: CurrentUser }>('/auth/me');
+      setUser(res.user);
+    } catch (err) {
+      // 401 just means "not logged in" — every other error still leaves
+      // the login screen as the fallback, so it's not re-thrown here.
+      if (!(err instanceof ApiRequestError && err.status === 401)) {
+        console.error(err);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    void fetchUser().finally(() => setLoading(false));
+  }, [fetchUser]);
 
   const login = useCallback(async (employeeCode: string, password: string, totpCode?: string) => {
     const result = await loginImpl(employeeCode, password, totpCode);
@@ -64,7 +71,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser: fetchUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {
