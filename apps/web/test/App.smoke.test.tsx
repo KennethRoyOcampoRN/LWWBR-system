@@ -332,7 +332,7 @@ describe('App', () => {
     });
   });
 
-  it('lets a caller with unit:force_status jump a unit to any status with a mandatory note, and shows the badge on the tile', async () => {
+  it('lets a caller with unit:force_status jump a unit to any status with an optional note, and shows the badge only when a note was given', async () => {
     const user = userEvent.setup();
     const adminUser = {
       ...currentUser,
@@ -376,13 +376,8 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: /R02 — Room 2/i })).toBeInTheDocument());
     const forceButton = await screen.findByRole('button', { name: /force correction/i });
 
-    // Mandatory note: submitting without one must not call the API.
-    await user.click(forceButton);
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/force-status'))).toBe(false);
-    expect(await screen.findByRole('alert')).toHaveTextContent(/note is required/i);
-
+    // Note is optional: submitting with an empty note must still call the API.
     await user.selectOptions(screen.getByLabelText(/correct status to/i), 'OCCUPIED');
-    await user.type(screen.getByPlaceholderText(/note \(required\)/i), 'guest already checked in, staff forgot');
     await user.click(forceButton);
 
     await waitFor(() => {
@@ -390,11 +385,13 @@ describe('App', () => {
         true,
       );
     });
+    const forceStatusCall = (fetchMock.mock.calls as unknown as [RequestInfo | URL, RequestInit | undefined][]).find(
+      ([input]) => String(input).includes('/units/unit_1/force-status'),
+    );
+    expect(JSON.parse(forceStatusCall?.[1]?.body as string).note).toBeUndefined();
 
     await user.click(screen.getByText(/close/i));
-    // Same generic note badge as any other panel produces — no distinct
-    // visual treatment for a forced correction on the tile itself.
-    const badge = await screen.findByRole('img', { name: /note: guest already checked in, staff forgot/i });
-    expect(badge).toBeInTheDocument();
+    // No note was given, so no badge on the tile.
+    expect(screen.queryByRole('img', { name: /^note:/i })).not.toBeInTheDocument();
   });
 });

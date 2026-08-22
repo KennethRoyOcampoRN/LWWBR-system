@@ -276,7 +276,7 @@ export async function forceUnitStatus(
     after: {
       fromStatus,
       toStatus: input.toStatus,
-      note: input.note,
+      note: input.note ?? null,
       label: 'Forced correction — bypassed the normal status sequence',
     },
     ip: meta.ip,

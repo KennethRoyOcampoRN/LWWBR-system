@@ -51,12 +51,11 @@ export const changeUnitStatusSchema = z.object({
 
 // Forced status correction (client decision, 2026-08-22): jumps a unit
 // directly to any of the 8 statuses, bypassing the §7.1 transition table
-// entirely. The note is mandatory here — unlike changeUnitStatusSchema's
-// optional note — because this action exists specifically to explain why
-// the system's status didn't match reality.
+// entirely. The note is optional — client decision, 2026-08-22, reversing
+// the original mandatory-note requirement.
 export const forceUnitStatusSchema = z.object({
   toStatus: z.enum(UNIT_STATUS_KEYS),
-  note: z.string().trim().min(1, 'A note is required when forcing a status correction'),
+  note: z.string().trim().max(2000).optional(),
   version: z.number().int().nonnegative(),
 });
 

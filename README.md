@@ -693,15 +693,16 @@ UI with no code change. Seeded to `SYSTEM_ADMIN` only for now
 automatically since the seed script derives every role's grants
 mechanically from that shared source.
 
-Backend: `POST /units/:id/force-status` (`{ toStatus, note, version }` —
-`note` is **mandatory** here, `422` on empty/missing, unlike the optional
-note on the ordinary status-change endpoint). Bypasses
-`getTransition()`/the transition table entirely by design — any status
-to any status — but still goes through the same optimistic-concurrency
-check as every other status write (`409 VERSION_CONFLICT` on a stale
-`version`). Every use writes its own distinct audit entry,
-`UNIT_STATUS_FORCED_CORRECTION`, separate from both the generic `UPDATE`
-row and from `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`.
+Backend: `POST /units/:id/force-status` (`{ toStatus, note?, version }` —
+`note` is **optional**, matching the ordinary status-change endpoint;
+reversed from an original mandatory-note requirement, client decision
+2026-08-22 same day). Bypasses `getTransition()`/the transition table
+entirely by design — any status to any status — but still goes through
+the same optimistic-concurrency check as every other status write
+(`409 VERSION_CONFLICT` on a stale `version`). Every use writes its own
+distinct audit entry, `UNIT_STATUS_FORCED_CORRECTION`, separate from
+both the generic `UPDATE` row and from
+`UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`.
 
 **Note visibility, revised 2026-08-22 (client decision, superseding the
 original forced-correction-only badge below)**: the grid tile shows
@@ -736,15 +737,34 @@ Frontend (`UnitsPage.tsx`): a third drawer panel, visually distinct from
 both "Change status" (blue) and "Admin override" (amber) — a dashed
 rose-coloured "Force status correction" panel, shown only when
 `user.permissions['unit:force_status']` is set. A dropdown offers all 8
-statuses (`UNIT_STATUS_KEYS`, not filtered by the transition table), the
-note field is required client-side too (submit is blocked with an inline
-error if empty, mirroring the server's `422`). On the grid tile itself: a
-small neutral grey "i" badge in the corner, shown whenever
-`unit.latestNote` is set (from any panel), carrying the note as both a
-`title` tooltip (hover, desktop) and an `aria-label` (screen readers /
-focus, mobile) — kept deliberately compact rather than showing note text
-directly on the tile. The full note is always visible in the drawer's
-timeline regardless, since every event's note already renders there.
+statuses (`UNIT_STATUS_KEYS`, not filtered by the transition table); the
+note field is optional, matching the backend — no client-side block on
+submitting it empty. On the grid tile itself: a small neutral grey "i"
+badge in the corner, shown whenever `unit.latestNote` is set (from any
+panel), carrying the note as both a `title` tooltip (hover, desktop) and
+an `aria-label` (screen readers / focus, mobile) — kept deliberately
+compact rather than showing note text directly on the tile. The full
+note is always visible in the drawer's timeline regardless, since every
+event's note already renders there.
+
+**Real bug, reported live 2026-08-22, fixed same day**: after the note
+was made optional, the mandatory-note requirement was still being
+enforced in two places that hadn't been checked: the backend
+`forceUnitStatusSchema` still had `note: z.string().trim().min(1, ...)`
+(a `422` on any empty note), and the frontend's
+`forceStatusCorrection()` had its own separate client-side guard
+(`if (!forceNote.trim()) { setForceError(...); return; }`) that blocked
+the request from ever firing. Both are now removed —
+`forceUnitStatusSchema.note` is `z.string().trim().max(2000).optional()`
+(matching `changeUnitStatusSchema`), and the client-side guard is gone.
+**Tested, not just asserted fixed**: a component test drives the real
+`UnitDetailDrawer`, selects a target status, leaves the note field
+empty, clicks "Force correction," and confirms the `POST
+/units/:id/force-status` request actually fires with `note: undefined`
+in the body — no client-side block, no server-side `422`. A backend
+router test independently confirms `POST /units/:id/force-status`
+returns `200` (not `422`) for both an empty-string note and a request
+that omits `note` entirely. Both pass.
 
 1 new component test (log in as SYSTEM_ADMIN, open a unit's drawer, use
 the panel to jump `VACANT_DIRTY → OCCUPIED` directly, confirm the request

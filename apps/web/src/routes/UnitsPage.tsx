@@ -99,18 +99,14 @@ function UnitDetailDrawer({
 
   async function forceStatusCorrection() {
     setForceError(null);
-    if (!forceNote.trim()) {
-      setForceError('A note is required when forcing a status correction.');
-      return;
-    }
     setForcing(true);
     try {
       const trimmedNote = forceNote.trim();
       const result = await api.post<{ id: string; status: UnitStatusKey; version: number }>(
         `/units/${unit.id}/force-status`,
-        { toStatus: forceToStatus, version: unit.version, note: trimmedNote },
+        { toStatus: forceToStatus, version: unit.version, note: trimmedNote || undefined },
       );
-      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote });
+      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote || null });
       setForceNote('');
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
@@ -204,7 +200,7 @@ function UnitDetailDrawer({
           <p className="text-sm font-medium text-rose-900">Force status correction</p>
           <p className="text-xs text-rose-800">
             Jump this unit directly to any status to fix data staff forgot to update in real time. Distinct from
-            "Change status" above — this skips the normal sequence entirely, so a note is required.
+            "Change status" above — this skips the normal sequence entirely.
           </p>
           <label className="flex flex-col gap-1 text-xs text-rose-900">
             Correct status to
@@ -222,7 +218,7 @@ function UnitDetailDrawer({
           </label>
           <input
             className="rounded border border-rose-300 px-2 py-1 text-sm"
-            placeholder="Note (required) — why is this being corrected?"
+            placeholder="Optional note — why is this being corrected?"
             value={forceNote}
             onChange={(e) => setForceNote(e.target.value)}
           />

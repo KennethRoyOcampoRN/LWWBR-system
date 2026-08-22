@@ -265,16 +265,49 @@ describe('POST /api/v1/units/:id/force-status', () => {
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 
-  it('requires a non-empty note (422)', async () => {
+  it('succeeds with an empty/missing note — note is optional, not required (client decision, 2026-08-22)', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 3 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/force-status')
       .set('Cookie', authCookie())
       .send({ toStatus: 'READY', version: 3, note: '' });
 
-    expect(res.status).toBe(422);
-    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith({
+      where: { id: 'unit_1', version: 3 },
+      data: { status: 'READY', version: { increment: 1 } },
+    });
+    expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith({
+      data: {
+        unitId: 'unit_1',
+        fromStatus: 'CLEANED',
+        toStatus: 'READY',
+        actorId: 'user_1',
+        note: '',
+        source: 'FORCED_CORRECTION',
+      },
+    });
+
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 3 }));
+    const res2 = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 3 });
+
+    expect(res2.status).toBe(200);
+    expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith({
+      data: {
+        unitId: 'unit_1',
+        fromStatus: 'CLEANED',
+        toStatus: 'READY',
+        actorId: 'user_1',
+        note: undefined,
+        source: 'FORCED_CORRECTION',
+      },
+    });
   });
 
   it('allows SYSTEM_ADMIN to jump directly to any status, bypassing the transition table, and audits it distinctly', async () => {
