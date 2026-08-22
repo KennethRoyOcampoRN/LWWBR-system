@@ -143,12 +143,40 @@ an actual failure rather than a log line.
   entirely in Postgres via `AuditLog` — never in memory, per spec §3.1's
   serverless rule (a module-level counter resets on every cold start,
   which would make rate limiting silently do nothing in production). A
-  fast per-request check (5 failures / 15 min, per account or IP) returns
-  `429` before password verification even runs; a slower check (10
-  failures / hour — spec's own M1 acceptance number) locks the account
-  with a duration that escalates on repeat lockouts (30 min, then 2h,
-  then 24h), derived by counting past `ACCOUNT_LOCKED` audit entries
-  rather than a separate counter column.
+  fast per-request check (5 failures / 15 min, per account **or** IP —
+  a single combined counter, not two independent ones: a failure against
+  either dimension counts toward the same threshold) returns `429`
+  before password verification even runs; a slower, per-account-only
+  check (10 failures / hour — spec's own M1 acceptance number) locks the
+  account with a duration that escalates on repeat lockouts (30 min,
+  then 2h, then 24h), derived by counting past `ACCOUNT_LOCKED` audit
+  entries rather than a separate counter column.
+  **Confirmed live 2026-08-22**: 5 wrong-password attempts against a
+  seeded account correctly returned `429`, the correct password was also
+  refused while locked (a genuine block, not just a wrong-password
+  message), and `AuditLog` showed exactly 5 `LOGIN_FAILURE` rows
+  clustered in the right window. Closes spec §11's "10 failed logins
+  lock the account and the attempts are visible in the audit log"
+  criterion (the 429 tier, not the 423 one, is what was actually
+  exercised — both share the same underlying failure-counting logic).
+  **Worth flagging as a product tradeoff, not a bug**: because the IP
+  and account checks are combined rather than independent, a resort
+  front desk behind one shared IP could have one busy shift's worth of
+  mistyped passwords across *different* staff accounts rate-limit the
+  whole property for 15 minutes, not just the repeat-offender account.
+  Not changed without a product decision either way.
+  **Also fixed 2026-08-22**: the 429 response previously carried no
+  timing information at all ("try again in a few minutes," no number) —
+  a real product gap on a resort floor where staff hitting this on a
+  phone would have no idea how long to wait. `assertNotLockedOrRateLimited`
+  now computes an actual `retryAt` (the oldest of the currently-counted
+  failures aging out of the 15-minute window, which is exactly when the
+  count drops back under threshold) and returns it in the error's
+  `details`, matching the shape `ACCOUNT_LOCKED` already used for
+  `lockedUntil`. `LoginPage` shows a live, ticking countdown ("Try again
+  in 4:32") for both the 429 and 423 cases, disables the Sign In button
+  while it's running, and re-enables it automatically the instant it
+  hits zero — no manual reload needed.
 - TOTP 2FA for SYSTEM_ADMIN only (spec §3.1.1, updated 2026-08-22 —
   client decision to exclude OWNER, a read-only role with materially
   lower blast radius), via `otpauth`. First
@@ -393,11 +421,10 @@ were real; neither alone explained everything observed that night.
 
 **Still not independently live-confirmed**, only covered by this
 session's mocked tests: a revoked session's refresh token actually
-being rejected immediately (needs two devices — planned separately);
-10 failed logins actually locking the account with the attempt visible
-in `AuditLog`. Neither is suspected broken — the same logic already
-has unit/router coverage — but "the code should work" and "this was
-watched work against the real system" are different claims, and spec
-§11's acceptance criteria are written as the latter.
+being rejected immediately (needs two devices — planned separately).
+Not suspected broken — the same logic already has unit/router coverage
+— but "the code should work" and "this was watched work against the
+real system" are different claims, and spec §11's acceptance criteria
+are written as the latter.
 
 See `spec.md` §11 for the full M1 acceptance criteria.

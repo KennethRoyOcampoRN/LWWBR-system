@@ -5,7 +5,7 @@ import { hashPassword } from '../../../src/modules/auth/passwords.js';
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
   session: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -33,6 +33,7 @@ beforeEach(() => {
   // the throttle logic itself is covered directly in service.test.ts.
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
+  mockPrisma.auditLog.findMany.mockResolvedValue([]);
 });
 
 describe('POST /api/v1/auth/login', () => {

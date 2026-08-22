@@ -73,20 +73,33 @@ export async function assertNotLockedOrRateLimited(
   }
 
   const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
-  let recentFailures: number;
+  // findMany + take, not count: a plain count can tell us the threshold
+  // was hit but not *when* it clears. The window is a sliding one (failures
+  // "age out" individually, there's no stored unlock timestamp the way
+  // ACCOUNT_LOCKED has one) — it clears the moment the oldest of the
+  // currently-counted failures turns RATE_LIMIT_WINDOW_MS old, so that
+  // row's timestamp is exactly what a countdown needs.
+  let recentFailures: { createdAt: Date }[];
   try {
-    recentFailures = await prisma.auditLog.count({
+    recentFailures = await prisma.auditLog.findMany({
       where: {
         action: 'LOGIN_FAILURE',
         createdAt: { gte: windowStart },
         OR: [{ entityId: accountKey }, ...(ip ? [{ ip }] : [])],
       },
+      orderBy: { createdAt: 'desc' },
+      take: RATE_LIMIT_THRESHOLD,
+      select: { createdAt: true },
     });
   } catch {
     return;
   }
-  if (recentFailures >= RATE_LIMIT_THRESHOLD) {
-    throw new ApiError(429, 'RATE_LIMITED', 'Too many login attempts — try again in a few minutes.');
+  if (recentFailures.length >= RATE_LIMIT_THRESHOLD) {
+    const oldestCounted = recentFailures[recentFailures.length - 1] as { createdAt: Date };
+    const retryAt = new Date(oldestCounted.createdAt.getTime() + RATE_LIMIT_WINDOW_MS);
+    throw new ApiError(429, 'RATE_LIMITED', 'Too many login attempts — try again in a few minutes.', {
+      retryAt: retryAt.toISOString(),
+    });
   }
 }
 

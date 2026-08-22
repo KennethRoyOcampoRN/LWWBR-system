@@ -6,7 +6,7 @@ import { generateTotpSecret, verifyTotpCode } from '../../../src/modules/auth/to
 const mockPrisma = {
   user: { findFirst: vi.fn(), update: vi.fn() },
   session: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
 // Mocked so these tests exercise the real password/token/TOTP logic
@@ -41,6 +41,7 @@ beforeEach(() => {
   // about it: no active lock, no recent failures.
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
+  mockPrisma.auditLog.findMany.mockResolvedValue([]);
 });
 
 describe('login', () => {
@@ -107,7 +108,14 @@ describe('login', () => {
     it('rejects with 429 once 5 recent failures exist for this account, before ever checking the password', async () => {
       const passwordHash = await hashPassword('Waku2026!');
       mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
-      mockPrisma.auditLog.count.mockResolvedValue(5); // >= RATE_LIMIT_THRESHOLD
+      // >= RATE_LIMIT_THRESHOLD, newest first, as the real query orders them.
+      mockPrisma.auditLog.findMany.mockResolvedValue([
+        { createdAt: new Date(Date.now() - 1_000) },
+        { createdAt: new Date(Date.now() - 2_000) },
+        { createdAt: new Date(Date.now() - 3_000) },
+        { createdAt: new Date(Date.now() - 4_000) },
+        { createdAt: new Date(Date.now() - 5_000) },
+      ]);
 
       // Correct password — still rejected, because the fast rate limit
       // fires before verifyPassword is ever reached.
@@ -116,6 +124,25 @@ describe('login', () => {
         code: 'RATE_LIMITED',
       });
       expect(mockPrisma.session.create).not.toHaveBeenCalled();
+    });
+
+    it('tells the caller when the rate limit clears, based on the oldest counted failure', async () => {
+      const passwordHash = await hashPassword('Waku2026!');
+      mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
+      const oldestFailureAt = new Date(Date.now() - 5_000);
+      mockPrisma.auditLog.findMany.mockResolvedValue([
+        { createdAt: new Date(Date.now() - 1_000) },
+        { createdAt: new Date(Date.now() - 2_000) },
+        { createdAt: new Date(Date.now() - 3_000) },
+        { createdAt: new Date(Date.now() - 4_000) },
+        { createdAt: oldestFailureAt },
+      ]);
+
+      await expect(login('LWW-001', 'Waku2026!', {})).rejects.toMatchObject({
+        status: 429,
+        code: 'RATE_LIMITED',
+        details: { retryAt: new Date(oldestFailureAt.getTime() + 15 * 60 * 1000).toISOString() },
+      });
     });
 
     it('rejects with 423 while an active lockout window is still in effect', async () => {
@@ -147,21 +174,16 @@ describe('login', () => {
     it('locks the account on the 10th failure within the window and reports it distinctly from a plain wrong password', async () => {
       const passwordHash = await hashPassword('Waku2026!');
       mockPrisma.user.findFirst.mockResolvedValue(fakeUser({ passwordHash }));
-      mockPrisma.auditLog.count.mockImplementation(
-        ({ where }: { where: { action: string; OR?: unknown } }) => {
-          // Both the fast rate-limit check and the lockout-threshold
-          // check query action: 'LOGIN_FAILURE' — they're told apart by
-          // shape, not value: the rate-limit check always queries with
-          // an OR (accountKey or ip), the lockout check doesn't. Keep
-          // the rate-limit check under its own threshold so this test
-          // actually reaches the lockout logic rather than getting
-          // stopped earlier by 429 RATE_LIMITED.
-          if (where.action === 'LOGIN_FAILURE' && !where.OR) {
-            return Promise.resolve(10);
-          }
-          return Promise.resolve(0);
-        },
-      );
+      // The fast rate-limit check now queries via findMany (mocked to []
+      // by beforeEach, safely under RATE_LIMIT_THRESHOLD) — only
+      // maybeLockAccount's own two counts (failure count, prior-lockout
+      // count for escalation) go through auditLog.count here.
+      mockPrisma.auditLog.count.mockImplementation(({ where }: { where: { action: string } }) => {
+        if (where.action === 'LOGIN_FAILURE') {
+          return Promise.resolve(10);
+        }
+        return Promise.resolve(0);
+      });
 
       await expect(login('LWW-001', 'wrong-password', {})).rejects.toMatchObject({
         status: 423,

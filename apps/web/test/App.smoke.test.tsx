@@ -150,4 +150,43 @@ describe('App', () => {
     expect(screen.getByText('1.1.1.1')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/auth/sessions/session_other/revoke'), expect.anything());
   });
+
+  it('shows a live countdown on a 429 and re-enables sign-in once it clears', async () => {
+    const user = userEvent.setup();
+    const retryAt = new Date(Date.now() + 1200).toISOString();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) {
+          return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'Not authenticated' } });
+        }
+        if (url.endsWith('/auth/login')) {
+          return jsonResponse(429, {
+            error: { code: 'RATE_LIMITED', message: 'Too many login attempts.', details: { retryAt } },
+          });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument());
+    await user.type(screen.getByLabelText(/employee code/i), 'LWW-014');
+    await user.type(screen.getByLabelText(/password/i), 'wrong');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    const submitButton = () => screen.getByRole('button', { name: /try again in|sign in/i });
+    await waitFor(() => expect(screen.getByTestId('lockout-countdown')).toHaveTextContent(/try again in 0:0\d/i));
+    expect(submitButton()).toBeDisabled();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId('lockout-countdown')).not.toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+    expect(screen.getByRole('button', { name: /sign in/i })).not.toBeDisabled();
+  });
 });

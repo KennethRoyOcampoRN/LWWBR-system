@@ -6,7 +6,7 @@ const mockPrisma = {
   role: { findFirst: vi.fn(), findFirstOrThrow: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
   permission: { findMany: vi.fn() },
   rolePermission: { deleteMany: vi.fn(), createMany: vi.fn() },
-  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 };
 
@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
+  mockPrisma.auditLog.findMany.mockResolvedValue([]);
   mockPrisma.$transaction.mockImplementation(async (ops: Promise<unknown>[]) => Promise.all(ops));
 });
 

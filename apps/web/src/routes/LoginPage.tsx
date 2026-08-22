@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.js';
 import { ApiRequestError } from '../lib/api.js';
@@ -17,6 +17,20 @@ function extractTotpSecret(provisioningUri: string): string | null {
   }
 }
 
+// mm:ss, floor-rounded — a resort front desk on a shared IP hits the
+// per-IP throttle far more than any one account gets truly locked, and
+// "try again in a few minutes" with no number was generating confused
+// calls to whoever's on duty. Both RATE_LIMITED (429, temporary — clears
+// as the sliding window ages out) and ACCOUNT_LOCKED (423, a real
+// lockout with a stored unlock time) resolve to the same countdown UI;
+// the caller only needs to know "how long," not which of the two it is.
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -28,6 +42,24 @@ export function LoginPage() {
   const [enrollment, setEnrollment] = useState<{ provisioningUri: string; secret: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [retryAt, setRetryAt] = useState<Date | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Ticks once a second only while a countdown is actually showing —
+  // no interval running (and nothing re-rendering) the rest of the time.
+  useEffect(() => {
+    if (!retryAt) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [retryAt]);
+
+  const remainingMs = retryAt ? retryAt.getTime() - now : 0;
+  useEffect(() => {
+    if (retryAt && remainingMs <= 0) {
+      setRetryAt(null);
+      setError(null);
+    }
+  }, [retryAt, remainingMs]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -51,13 +83,17 @@ export function LoginPage() {
           setError(null);
           return;
         }
-        if (err.code === 'ACCOUNT_LOCKED') {
-          const lockedUntil = (err.details as { lockedUntil?: string } | undefined)?.lockedUntil;
-          setError(
-            lockedUntil
-              ? `Account locked until ${new Date(lockedUntil).toLocaleString()}.`
-              : 'Account temporarily locked.',
-          );
+        if (err.code === 'ACCOUNT_LOCKED' || err.code === 'RATE_LIMITED') {
+          const details = err.details as { lockedUntil?: string; retryAt?: string } | undefined;
+          const until = details?.lockedUntil ?? details?.retryAt;
+          if (until) {
+            setRetryAt(new Date(until));
+            setNow(Date.now());
+          } else {
+            // Older/degraded response with no timestamp — still tell the
+            // caller something rather than nothing.
+            setError(err.code === 'ACCOUNT_LOCKED' ? 'Account temporarily locked.' : err.message);
+          }
           return;
         }
         setError(err.message);
@@ -68,6 +104,8 @@ export function LoginPage() {
       setSubmitting(false);
     }
   }
+
+  const locked = retryAt !== null && remainingMs > 0;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 p-6">
@@ -131,7 +169,12 @@ export function LoginPage() {
           </label>
         )}
 
-        {error && (
+        {locked && (
+          <p role="alert" className="text-sm text-red-600" data-testid="lockout-countdown">
+            Too many attempts — try again in {formatCountdown(remainingMs)}.
+          </p>
+        )}
+        {!locked && error && (
           <p role="alert" className="text-sm text-red-600">
             {error}
           </p>
@@ -139,10 +182,10 @@ export function LoginPage() {
 
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || locked}
           className="rounded bg-blue-600 px-3 py-2 font-medium text-white disabled:opacity-50"
         >
-          {submitting ? 'Signing in…' : needsTotp ? 'Verify code' : 'Sign in'}
+          {locked ? `Try again in ${formatCountdown(remainingMs)}` : submitting ? 'Signing in…' : needsTotp ? 'Verify code' : 'Sign in'}
         </button>
       </form>
     </main>
