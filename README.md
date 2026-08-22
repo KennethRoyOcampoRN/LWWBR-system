@@ -618,5 +618,37 @@ click an allowed transition button, confirm the status-change request
 fires. **Not yet live-verified against the real database** — same
 sandbox limitation as every prior milestone.
 
+### Unit/UnitType seeding — real gap found and closed (2026-08-22)
+
+Confirmed by the user live: the Units page loaded cleanly but
+`GET /units` returned an empty array — the seed script never seeded any
+units. It only ever covered what M1 needed (permissions, roles, demo
+users); spec §10's unit-related lines (`Standard Room`/`Family Room`/
+`Day Tour Cottage` unit types with placeholder rates, `R01`-`R13` rooms,
+`C01`-`C03` cottages, and the 7 named common areas) were never added.
+Added now, to `apps/api/prisma/seed.ts`.
+
+**Deliberately idempotent in a stricter way than the rest of the seed
+script**: the demo users/roles above unconditionally overwrite on every
+re-run (fine — they're meant to stay placeholders). Units and unit types
+are **create-if-missing only**, never overwritten once they exist. Spec
+§10 says this outright: "everything seeded here will be replaced on day
+one" by `SYSTEM_ADMIN` through the unit management UI (rename, re-code,
+capacity, type reassignment). If the seed script upserted-with-overwrite
+the way the rest of it does, running it again after the client has
+entered real property data — which will happen, since a future
+milestone's seed additions mean this script gets re-run — would silently
+revert their real unit names/rates back to `"Room 1"` placeholders. A
+zero-rate `Common Area` unit type was added too (not itself a spec §10
+line item) since `Unit.unitTypeId` is required and the 7 common areas
+need somewhere to point that isn't a fake room rate.
+
+**Not yet seeded, deliberately out of scope for this milestone**: spec
+§10's remaining seed data — amenity items, menu items, sample bookings,
+folios, work orders, pending payments — belongs to M3/M4/M5's own seed
+additions once those modules exist to make the data meaningful, not
+bulk-added now just because the list exists. Not yet live-verified —
+needs a fresh `npm run seed` and the Units page reload to confirm.
+
 **Not yet built**: realtime status updates (spec §11's "a status change
 in one browser appears in another within 2s without refresh") — next up.
