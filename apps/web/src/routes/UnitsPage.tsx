@@ -1,4 +1,9 @@
-import { allowedManualTransitions, allowedOverrideTransitions, type UnitStatusKey } from '@lwwbr/shared';
+import {
+  allowedManualTransitions,
+  allowedOverrideTransitions,
+  UNIT_STATUS_KEYS,
+  type UnitStatusKey,
+} from '@lwwbr/shared';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
@@ -16,6 +21,10 @@ interface UnitRow {
   version: number;
   notes: string | null;
   isActive: boolean;
+  // Set only while the unit's most recent status event is a forced
+  // correction (see ForceStatusPanel below) — disappears the instant any
+  // later transition, of any kind, happens.
+  forcedCorrectionNote: string | null;
 }
 
 interface UnitTypeRow {
@@ -48,6 +57,10 @@ function UnitDetailDrawer({
   const [note, setNote] = useState('');
   const [changingTo, setChangingTo] = useState<UnitStatusKey | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [forceToStatus, setForceToStatus] = useState<UnitStatusKey>(unit.status);
+  const [forceNote, setForceNote] = useState('');
+  const [forcing, setForcing] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
 
   useEffect(() => {
     setTimeline('loading');
@@ -78,6 +91,31 @@ function UnitDetailDrawer({
       }
     } finally {
       setChangingTo(null);
+    }
+  }
+
+  async function forceStatusCorrection() {
+    setForceError(null);
+    if (!forceNote.trim()) {
+      setForceError('A note is required when forcing a status correction.');
+      return;
+    }
+    setForcing(true);
+    try {
+      const result = await api.post<{ id: string; status: UnitStatusKey; version: number }>(
+        `/units/${unit.id}/force-status`,
+        { toStatus: forceToStatus, version: unit.version, note: forceNote.trim() },
+      );
+      onChanged({ ...unit, status: result.status, version: result.version, forcedCorrectionNote: forceNote.trim() });
+      setForceNote('');
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
+        setForceError('Someone else changed this unit — refresh the grid and try again.');
+      } else {
+        setForceError(err instanceof ApiRequestError ? err.message : 'Could not force the status correction.');
+      }
+    } finally {
+      setForcing(false);
     }
   }
 
@@ -157,6 +195,48 @@ function UnitDetailDrawer({
         </p>
       )}
 
+      {user?.permissions['unit:force_status'] && (
+        <div className="flex flex-col gap-2 rounded border-2 border-dashed border-rose-300 bg-rose-50 p-3">
+          <p className="text-sm font-medium text-rose-900">Force status correction</p>
+          <p className="text-xs text-rose-800">
+            Jump this unit directly to any status to fix data staff forgot to update in real time. Distinct from
+            "Change status" above — this skips the normal sequence entirely, so a note is required.
+          </p>
+          <label className="flex flex-col gap-1 text-xs text-rose-900">
+            Correct status to
+            <select
+              className="rounded border border-rose-300 px-2 py-1 text-sm text-gray-900"
+              value={forceToStatus}
+              onChange={(e) => setForceToStatus(e.target.value as UnitStatusKey)}
+            >
+              {UNIT_STATUS_KEYS.map((status) => (
+                <option key={status} value={status}>
+                  {UNIT_STATUS_LABELS[status]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <input
+            className="rounded border border-rose-300 px-2 py-1 text-sm"
+            placeholder="Note (required) — why is this being corrected?"
+            value={forceNote}
+            onChange={(e) => setForceNote(e.target.value)}
+          />
+          {forceError && (
+            <p role="alert" className="text-xs text-rose-700">
+              {forceError}
+            </p>
+          )}
+          <button
+            onClick={() => void forceStatusCorrection()}
+            disabled={forcing}
+            className="w-fit rounded border border-rose-600 bg-rose-100 px-3 py-1.5 text-sm font-medium text-rose-900 disabled:opacity-50"
+          >
+            {forcing ? 'Saving…' : 'Force correction'}
+          </button>
+        </div>
+      )}
+
       <div>
         <p className="mb-2 text-sm font-medium">Timeline</p>
         {timeline === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
@@ -221,8 +301,19 @@ export function UnitsPage() {
             <button
               key={unit.id}
               onClick={() => setSelectedUnitId(unit.id)}
-              className={`flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]}`}
+              className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]}`}
             >
+              {unit.forcedCorrectionNote && (
+                <span
+                  role="img"
+                  aria-label={`Forced status correction: ${unit.forcedCorrectionNote}`}
+                  title={`Forced status correction: ${unit.forcedCorrectionNote}`}
+                  tabIndex={0}
+                  className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold leading-none text-white"
+                >
+                  !
+                </span>
+              )}
               <span className="font-semibold">{unit.code}</span>
               <span className="text-xs">{unit.name}</span>
               <span className="text-xs font-medium">{UNIT_STATUS_LABELS[unit.status]}</span>

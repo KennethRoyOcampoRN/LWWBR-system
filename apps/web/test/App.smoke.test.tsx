@@ -331,4 +331,68 @@ describe('App', () => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/units/unit_1/status'))).toBe(true);
     });
   });
+
+  it('lets a caller with unit:force_status jump a unit to any status with a mandatory note, and shows the badge on the tile', async () => {
+    const user = userEvent.setup();
+    const adminUser = {
+      ...currentUser,
+      roles: ['SYSTEM_ADMIN'],
+      permissions: { 'unit:read': 'ALL', 'unit:force_status': 'ALL', 'unit:manage': 'ALL' },
+    };
+    const unit = {
+      id: 'unit_1',
+      code: 'R02',
+      name: 'Room 2',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: null,
+      status: 'VACANT_DIRTY',
+      version: 0,
+      notes: null,
+      isActive: true,
+      forcedCorrectionNote: null,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+      if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+      if (url.endsWith('/units/unit_1/force-status')) {
+        return jsonResponse(200, { id: 'unit_1', status: 'OCCUPIED', version: 1 });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Units' }));
+    await waitFor(() => expect(screen.getByText('R02')).toBeInTheDocument());
+    await user.click(screen.getByText('R02'));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /R02 — Room 2/i })).toBeInTheDocument());
+    const forceButton = await screen.findByRole('button', { name: /force correction/i });
+
+    // Mandatory note: submitting without one must not call the API.
+    await user.click(forceButton);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/force-status'))).toBe(false);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/note is required/i);
+
+    await user.selectOptions(screen.getByLabelText(/correct status to/i), 'OCCUPIED');
+    await user.type(screen.getByPlaceholderText(/note \(required\)/i), 'guest already checked in, staff forgot');
+    await user.click(forceButton);
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/units/unit_1/force-status'))).toBe(
+        true,
+      );
+    });
+
+    await user.click(screen.getByText(/close/i));
+    const badge = await screen.findByRole('img', { name: /forced status correction/i });
+    expect(badge).toBeInTheDocument();
+  });
 });

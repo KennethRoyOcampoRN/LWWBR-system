@@ -7,6 +7,7 @@ import {
   changeUnitStatusSchema,
   createUnitSchema,
   createUnitTypeSchema,
+  forceUnitStatusSchema,
   updateUnitSchema,
   updateUnitTypeSchema,
 } from './schema.js';
@@ -14,6 +15,7 @@ import {
   changeUnitStatus,
   createUnit,
   createUnitType,
+  forceUnitStatus,
   getUnitTimeline,
   listUnits,
   listUnitTypes,
@@ -99,6 +101,29 @@ unitsRouter.post(
       req.params.id as string,
       body,
       { id: me.id, roles: me.roles, permissions: me.permissions },
+      { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null },
+    );
+    res.status(200).json(result);
+  }),
+);
+
+// Forced status correction (client decision, 2026-08-22): distinct from
+// the transition above, this is gated by a single dedicated permission
+// (unit:force_status) rather than a per-transition lookup, since it
+// deliberately allows jumping to ANY of the 8 statuses. Still requireAuth
+// + getMe() (not requirePermission) because the service function needs
+// the caller's full permission set to produce a proper 403, and to stay
+// consistent with how changeUnitStatus does its own check.
+unitsRouter.post(
+  '/units/:id/force-status',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = forceUnitStatusSchema.parse(req.body);
+    const me = await getMe(req.userId as string);
+    const result = await forceUnitStatus(
+      req.params.id as string,
+      body,
+      { id: me.id, permissions: me.permissions },
       { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null },
     );
     res.status(200).json(result);

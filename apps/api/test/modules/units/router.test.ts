@@ -69,11 +69,25 @@ describe('GET /api/v1/units and /unit-types', () => {
   it('lists units for a caller with unit:read', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
     mockPrisma.unit.findMany.mockResolvedValue([fakeUnit()]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
 
     const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
     expect(res.status).toBe(200);
     expect(res.body.units).toHaveLength(1);
     expect(res.body.units[0].status).toBe('CLEANED');
+    expect(res.body.units[0].forcedCorrectionNote).toBeNull();
+  });
+
+  it('surfaces forcedCorrectionNote only while the latest event is still a forced correction', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit()]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      { unitId: 'unit_1', source: 'FORCED_CORRECTION', note: 'staff forgot to mark this cleaned yesterday' },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.units[0].forcedCorrectionNote).toBe('staff forgot to mark this cleaned yesterday');
   });
 
   it('serializes UnitType Decimal fields as plain numbers', async () => {
@@ -119,7 +133,14 @@ describe('POST /api/v1/units/:id/status', () => {
       data: { status: 'INSPECTED', version: { increment: 1 } },
     });
     expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith({
-      data: { unitId: 'unit_1', fromStatus: 'CLEANED', toStatus: 'INSPECTED', actorId: 'user_1', note: undefined },
+      data: {
+        unitId: 'unit_1',
+        fromStatus: 'CLEANED',
+        toStatus: 'INSPECTED',
+        actorId: 'user_1',
+        note: undefined,
+        source: 'MANUAL',
+      },
     });
   });
 
@@ -226,6 +247,96 @@ describe('POST /api/v1/units/:id/status', () => {
       .post('/api/v1/units/does_not_exist/status')
       .set('Cookie', authCookie())
       .send({ toStatus: 'CLEANING', version: 0 });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/units/:id/force-status', () => {
+  it('rejects a caller without unit:force_status', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 3, note: 'fixing stale data' });
+
+    expect(res.status).toBe(403);
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('requires a non-empty note (422)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 3, note: '' });
+
+    expect(res.status).toBe(422);
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('allows SYSTEM_ADMIN to jump directly to any status, bypassing the transition table, and audits it distinctly', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'VACANT_DIRTY', version: 0 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'OCCUPIED', version: 0, note: 'guest is already checked in, staff forgot to update' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'unit_1', status: 'OCCUPIED', version: 1 });
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith({
+      where: { id: 'unit_1', version: 0 },
+      data: { status: 'OCCUPIED', version: { increment: 1 } },
+    });
+    expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith({
+      data: {
+        unitId: 'unit_1',
+        fromStatus: 'VACANT_DIRTY',
+        toStatus: 'OCCUPIED',
+        actorId: 'user_1',
+        note: 'guest is already checked in, staff forgot to update',
+        source: 'FORCED_CORRECTION',
+      },
+    });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'UNIT_STATUS_FORCED_CORRECTION',
+          entity: 'Unit',
+          entityId: 'unit_1',
+          actorId: 'user_1',
+        }),
+      }),
+    );
+  });
+
+  it('returns 409 on a stale version', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 5 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 1, note: 'correcting stale data' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('VERSION_CONFLICT');
+  });
+
+  it('returns 404 for an unknown unit', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .post('/api/v1/units/does_not_exist/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 0, note: 'correcting stale data' });
 
     expect(res.status).toBe(404);
   });

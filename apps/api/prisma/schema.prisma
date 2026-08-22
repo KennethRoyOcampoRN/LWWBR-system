@@ -275,14 +275,27 @@ model Unit {
   @@index([status])
 }
 
+// Added 2026-08-22 (client decision) alongside the forced-status-
+// correction feature — distinguishes how a UnitStatusEvent came about,
+// so the unit grid can show a "why does this room look like this right
+// now" badge only for FORCED_CORRECTION, and only while it's still the
+// unit's latest event (the badge's whole point is that it disappears the
+// moment a later transition, of any kind, happens).
+enum UnitStatusEventSource {
+  MANUAL // an ordinary staff-driven transition (spec §7.1)
+  AUTOMATIC_OVERRIDE // the SYSTEM_ADMIN-only override for the 3 automatic-only transitions
+  FORCED_CORRECTION // a direct jump to any status, to correct stale data
+}
+
 model UnitStatusEvent {
-  id         String     @id @default(cuid())
+  id         String                @id @default(cuid())
   unitId     String
   fromStatus UnitStatus
   toStatus   UnitStatus
   actorId    String
   note       String?
-  createdAt  DateTime   @default(now())
+  source     UnitStatusEventSource @default(MANUAL)
+  createdAt  DateTime              @default(now())
 
   unit  Unit @relation(fields: [unitId], references: [id])
   actor User @relation(fields: [actorId], references: [id])

@@ -670,3 +670,75 @@ needs a fresh `npm run seed` and the Units page reload to confirm.
 
 **Not yet built**: realtime status updates (spec §11's "a status change
 in one browser appears in another within 2s without refresh") — next up.
+
+### Forced status correction — done, not yet live-tested (2026-08-22, client decision)
+
+A general-purpose data-correction tool, deliberately separate from the
+manual override above even though both let a unit's status move outside
+the normal flow: the override exists to substitute for a *specific*
+missing automatic trigger (the 3 spec §7.1 transitions M3/M4 will
+eventually fire); this exists because staff sometimes just forget to
+update the system in real time, and someone needs to fix a unit's status
+to match reality — to **any** of the 8 statuses, not limited to what the
+transition table allows next. The two features share nothing at the code
+level beyond the `Unit`/`UnitStatusEvent` models — separate permission,
+separate service function, separate audit tag, separate UI panel.
+
+Gated behind a new permission key, `unit:force_status`
+(`packages/shared/src/permissions.ts`), not a hardcoded role check —
+unlike the override's deliberate SYSTEM_ADMIN-only role check, the client
+asked for this to be grantable to any role later through the Roles admin
+UI with no code change. Seeded to `SYSTEM_ADMIN` only for now
+(`packages/shared/src/rolePermissions.ts`); `npm run seed` picks this up
+automatically since the seed script derives every role's grants
+mechanically from that shared source.
+
+Backend: `POST /units/:id/force-status` (`{ toStatus, note, version }` —
+`note` is **mandatory** here, `422` on empty/missing, unlike the optional
+note on the ordinary status-change endpoint). Bypasses
+`getTransition()`/the transition table entirely by design — any status
+to any status — but still goes through the same optimistic-concurrency
+check as every other status write (`409 VERSION_CONFLICT` on a stale
+`version`). Every use writes its own distinct audit entry,
+`UNIT_STATUS_FORCED_CORRECTION`, separate from both the generic `UPDATE`
+row and from `UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE`.
+
+A new `UnitStatusEventSource` enum (`MANUAL` / `AUTOMATIC_OVERRIDE` /
+`FORCED_CORRECTION`) was added to `UnitStatusEvent` so a forced
+correction's note can be surfaced on the unit grid tile without a
+separate flag/expiry mechanism: `GET /units` now looks up each unit's
+*single latest* `UnitStatusEvent` (`distinct: ['unitId']` +
+`orderBy: createdAt desc` — Postgres `DISTINCT ON` semantics) and
+attaches `forcedCorrectionNote` only when that latest event's `source`
+is `FORCED_CORRECTION`. The badge is therefore self-clearing: the moment
+*any* later transition happens — manual, override, or another forced
+correction — the latest event's source changes and the note disappears,
+with no expiry job or extra bookkeeping needed. **This requires the new
+`prisma/schema.prisma` field (`UnitStatusEvent.source`) — needs
+`npx prisma db push` before the next live test**, same as every prior
+schema change this session.
+
+Frontend (`UnitsPage.tsx`): a third drawer panel, visually distinct from
+both "Change status" (blue) and "Admin override" (amber) — a dashed
+rose-coloured "Force status correction" panel, shown only when
+`user.permissions['unit:force_status']` is set. A dropdown offers all 8
+statuses (`UNIT_STATUS_KEYS`, not filtered by the transition table), the
+note field is required client-side too (submit is blocked with an inline
+error if empty, mirroring the server's `422`). On the grid tile itself: a
+small rose "!" badge in the corner, shown only while
+`unit.forcedCorrectionNote` is set, carrying the note as both a `title`
+tooltip (hover, desktop) and an `aria-label` (screen readers / focus,
+mobile) — kept deliberately compact rather than showing note text
+directly on the tile. The full note is always visible in the drawer's
+timeline regardless, since every event's note already renders there.
+
+1 new component test (log in as SYSTEM_ADMIN, open a unit's drawer, use
+the panel to jump `VACANT_DIRTY → OCCUPIED` directly, confirm the request
+fires and the badge appears on the tile afterward) plus 6 new backend
+router tests (permission-denied `403`, empty-note `422`, a same-status
+non-adjacent jump succeeding with the distinct audit tag, `409` on a
+stale version, `404` on an unknown unit, and `GET /units` surfacing
+`forcedCorrectionNote` only while the latest event is still a forced
+correction). **Not yet live-verified against the real database** — same
+sandbox limitation as every prior milestone; also blocked on the pending
+`prisma db push` above.

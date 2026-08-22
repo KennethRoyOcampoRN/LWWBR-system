@@ -13,6 +13,7 @@ import type {
   ChangeUnitStatusInput,
   CreateUnitInput,
   CreateUnitTypeInput,
+  ForceUnitStatusInput,
   UpdateUnitInput,
   UpdateUnitTypeInput,
 } from './schema.js';
@@ -65,12 +66,37 @@ export interface UnitSummary {
   sortOrder: number;
 }
 
-export async function listUnits(): Promise<UnitSummary[]> {
+export interface UnitSummaryWithCorrection extends UnitSummary {
+  forcedCorrectionNote: string | null;
+}
+
+export async function listUnits(): Promise<UnitSummaryWithCorrection[]> {
   const units = await prisma.unit.findMany({
     where: { deletedAt: null },
     orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
   });
-  return units.map((u) => ({ ...u, status: u.status as UnitStatusKey }));
+
+  // The grid badge (see forceUnitStatus below) shows a note only while the
+  // unit's *latest* status event is still a forced correction — the badge
+  // disappears the instant any later transition happens, with no separate
+  // expiry/flag needed. `distinct: ['unitId']` + `orderBy: createdAt desc`
+  // gets exactly one (the latest) event per unit in a single query.
+  const latestEvents = await prisma.unitStatusEvent.findMany({
+    where: { unitId: { in: units.map((u) => u.id) } },
+    orderBy: { createdAt: 'desc' },
+    distinct: ['unitId'],
+    select: { unitId: true, source: true, note: true },
+  });
+  const latestByUnitId = new Map(latestEvents.map((e) => [e.unitId, e]));
+
+  return units.map((u) => {
+    const latest = latestByUnitId.get(u.id);
+    return {
+      ...u,
+      status: u.status as UnitStatusKey,
+      forcedCorrectionNote: latest?.source === 'FORCED_CORRECTION' ? (latest.note ?? null) : null,
+    };
+  });
 }
 
 export async function createUnit(input: CreateUnitInput) {
@@ -160,7 +186,14 @@ export async function changeUnitStatus(
   }
 
   await prisma.unitStatusEvent.create({
-    data: { unitId, fromStatus, toStatus: input.toStatus, actorId: actor.id, note: input.note },
+    data: {
+      unitId,
+      fromStatus,
+      toStatus: input.toStatus,
+      actorId: actor.id,
+      note: input.note,
+      source: isOverride ? 'AUTOMATIC_OVERRIDE' : 'MANUAL',
+    },
   });
 
   if (isOverride) {
@@ -178,6 +211,66 @@ export async function changeUnitStatus(
       userAgent: meta.userAgent,
     });
   }
+
+  return { id: unitId, status: input.toStatus, version: input.version + 1 };
+}
+
+// Forced status correction (client decision, 2026-08-22): deliberately
+// distinct from changeUnitStatus above. Staff sometimes forget to update
+// the system in real time, and someone with `unit:force_status` needs to
+// jump a unit straight to any of the 8 statuses to correct stale data —
+// not limited to the §7.1 sequence, so this bypasses getTransition()
+// entirely by design. Gated on a dedicated permission key (not a
+// hardcoded role check) so it can be granted to other roles later
+// through the Roles admin UI with no code change.
+export async function forceUnitStatus(
+  unitId: string,
+  input: ForceUnitStatusInput,
+  actor: { id: string; permissions: Partial<Record<PermissionKey, PermissionScope>> },
+  meta: { ip?: string | null; userAgent?: string | null } = {},
+) {
+  if (!actor.permissions['unit:force_status']) {
+    throw new ApiError(403, 'FORBIDDEN', 'Missing permission: unit:force_status');
+  }
+
+  const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
+  if (!unit) {
+    throw new ApiError(404, 'NOT_FOUND', 'Unit not found');
+  }
+  const fromStatus = unit.status as UnitStatusKey;
+
+  const result = await prisma.unit.updateMany({
+    where: { id: unitId, version: input.version },
+    data: { status: input.toStatus, version: { increment: 1 } },
+  });
+  if (result.count === 0) {
+    throw new ApiError(409, 'VERSION_CONFLICT', 'This unit was changed by someone else — refresh and try again.');
+  }
+
+  await prisma.unitStatusEvent.create({
+    data: {
+      unitId,
+      fromStatus,
+      toStatus: input.toStatus,
+      actorId: actor.id,
+      note: input.note,
+      source: 'FORCED_CORRECTION',
+    },
+  });
+
+  // Distinct from both the generic UPDATE row the audit extension already
+  // writes and from UNIT_STATUS_AUTOMATIC_TRANSITION_OVERRIDE above — this
+  // is a different kind of action (any-to-any correction, not a specific
+  // automatic transition) and needs its own tag to be identifiable later.
+  await logAudit({
+    actorId: actor.id,
+    action: 'UNIT_STATUS_FORCED_CORRECTION',
+    entity: 'Unit',
+    entityId: unitId,
+    after: { fromStatus, toStatus: input.toStatus, note: input.note },
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+  });
 
   return { id: unitId, status: input.toStatus, version: input.version + 1 };
 }

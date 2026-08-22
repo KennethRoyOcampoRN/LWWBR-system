@@ -90,6 +90,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'shift:read': 'ALL',
     'system:configure': 'ALL',
     'unit:block': 'ALL',
+    'unit:force_status': 'ALL', // client decision, 2026-08-22 — see permissions.ts's comment; SYSTEM_ADMIN only for now
     'unit:manage': 'ALL',
     'unit:read': 'ALL',
     'unit:update_status': 'ALL',

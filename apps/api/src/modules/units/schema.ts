@@ -49,8 +49,20 @@ export const changeUnitStatusSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
+// Forced status correction (client decision, 2026-08-22): jumps a unit
+// directly to any of the 8 statuses, bypassing the §7.1 transition table
+// entirely. The note is mandatory here — unlike changeUnitStatusSchema's
+// optional note — because this action exists specifically to explain why
+// the system's status didn't match reality.
+export const forceUnitStatusSchema = z.object({
+  toStatus: z.enum(UNIT_STATUS_KEYS),
+  note: z.string().trim().min(1, 'A note is required when forcing a status correction'),
+  version: z.number().int().nonnegative(),
+});
+
 export type CreateUnitTypeInput = z.infer<typeof createUnitTypeSchema>;
 export type UpdateUnitTypeInput = z.infer<typeof updateUnitTypeSchema>;
 export type CreateUnitInput = z.infer<typeof createUnitSchema>;
 export type UpdateUnitInput = z.infer<typeof updateUnitSchema>;
 export type ChangeUnitStatusInput = z.infer<typeof changeUnitStatusSchema>;
+export type ForceUnitStatusInput = z.infer<typeof forceUnitStatusSchema>;

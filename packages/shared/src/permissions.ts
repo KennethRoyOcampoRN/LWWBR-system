@@ -9,6 +9,14 @@ export const PERMISSION_KEYS = [
   'unit:update_status',
   'unit:manage',
   'unit:block',
+  // Not a spec §5.3 line item — added 2026-08-22 (client decision) for
+  // the "forced status correction" feature: jump a unit directly to any
+  // of the 8 statuses (not just the next valid one in the §7.1 sequence)
+  // to fix stale data staff forgot to update in real time. Deliberately
+  // its own permission, not gated by unit:manage/unit:block, so it can
+  // be granted independently per role through the Roles admin UI without
+  // a code change — seeded to SYSTEM_ADMIN only for now.
+  'unit:force_status',
   'unittype:manage',
   'booking:read',
   'booking:create',
