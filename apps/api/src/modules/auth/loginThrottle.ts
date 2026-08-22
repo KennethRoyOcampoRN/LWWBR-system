@@ -20,8 +20,15 @@ const LOCKOUT_FAILURE_WINDOW_MS = 60 * 60 * 1000;
 const LOCKOUT_FAILURE_THRESHOLD = 10;
 
 // Escalates each time an account is locked again within this window.
+// Client decision, 2026-08-22: first lockout is 5 minutes, second is 10,
+// capped at 10 for every lockout after that — deliberately not
+// continuing to escalate to hours/a full day the way the original
+// 30min -> 2h -> 24h scale did. Math.min below already clamps
+// durationIndex to the array's last entry, so a 2-element array is
+// enough to express "capped at the 2nd value forever after" without a
+// repeated third entry.
 const LOCKOUT_ESCALATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const LOCKOUT_DURATIONS_MS = [30 * 60 * 1000, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000];
+const LOCKOUT_DURATIONS_MS = [5 * 60 * 1000, 10 * 60 * 1000];
 
 interface LockoutDetails {
   lockedUntil?: string;
@@ -73,29 +80,40 @@ export async function assertNotLockedOrRateLimited(
   }
 
   const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
-  // findMany + take, not count: a plain count can tell us the threshold
-  // was hit but not *when* it clears. The window is a sliding one (failures
-  // "age out" individually, there's no stored unlock timestamp the way
-  // ACCOUNT_LOCKED has one) — it clears the moment the oldest of the
-  // currently-counted failures turns RATE_LIMIT_WINDOW_MS old, so that
-  // row's timestamp is exactly what a countdown needs.
-  let recentFailures: { createdAt: Date }[];
-  try {
-    recentFailures = await prisma.auditLog.findMany({
-      where: {
-        action: 'LOGIN_FAILURE',
-        createdAt: { gte: windowStart },
-        OR: [{ entityId: accountKey }, ...(ip ? [{ ip }] : [])],
-      },
+
+  // Two independent counters, not one shared one (client decision,
+  // 2026-08-22, after live testing showed one account's lockout was
+  // rate-limiting unrelated accounts sharing the same IP) — a busy shift
+  // where several different staff each mistype their own password a
+  // couple of times, on the resort's one shared IP, must not throttle
+  // everyone else at the front desk. Each dimension gets its own
+  // RATE_LIMIT_THRESHOLD, checked separately, and whichever one trips
+  // reports its own retryAt (see the comment on the old combined query,
+  // still true per-dimension: findMany + take, not count, because a
+  // plain count can't say *when* the window clears).
+  async function recentFailures(filter: { entityId: string } | { ip: string }): Promise<{ createdAt: Date }[]> {
+    return prisma.auditLog.findMany({
+      where: { action: 'LOGIN_FAILURE', createdAt: { gte: windowStart }, ...filter },
       orderBy: { createdAt: 'desc' },
       take: RATE_LIMIT_THRESHOLD,
       select: { createdAt: true },
     });
+  }
+
+  let accountFailures: { createdAt: Date }[];
+  let ipFailures: { createdAt: Date }[] = [];
+  try {
+    accountFailures = await recentFailures({ entityId: accountKey });
+    if (ip) {
+      ipFailures = await recentFailures({ ip });
+    }
   } catch {
     return;
   }
-  if (recentFailures.length >= RATE_LIMIT_THRESHOLD) {
-    const oldestCounted = recentFailures[recentFailures.length - 1] as { createdAt: Date };
+
+  const tripped = accountFailures.length >= RATE_LIMIT_THRESHOLD ? accountFailures : ipFailures;
+  if (tripped.length >= RATE_LIMIT_THRESHOLD) {
+    const oldestCounted = tripped[tripped.length - 1] as { createdAt: Date };
     const retryAt = new Date(oldestCounted.createdAt.getTime() + RATE_LIMIT_WINDOW_MS);
     throw new ApiError(429, 'RATE_LIMITED', 'Too many login attempts — try again in a few minutes.', {
       retryAt: retryAt.toISOString(),

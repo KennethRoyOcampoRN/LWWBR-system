@@ -143,14 +143,11 @@ an actual failure rather than a log line.
   entirely in Postgres via `AuditLog` — never in memory, per spec §3.1's
   serverless rule (a module-level counter resets on every cold start,
   which would make rate limiting silently do nothing in production). A
-  fast per-request check (5 failures / 15 min, per account **or** IP —
-  a single combined counter, not two independent ones: a failure against
-  either dimension counts toward the same threshold) returns `429`
-  before password verification even runs; a slower, per-account-only
-  check (10 failures / hour — spec's own M1 acceptance number) locks the
-  account with a duration that escalates on repeat lockouts (30 min,
-  then 2h, then 24h), derived by counting past `ACCOUNT_LOCKED` audit
-  entries rather than a separate counter column.
+  fast per-request check (5 failures / 15 min) returns `429` before
+  password verification even runs; a slower check (10 failures / hour —
+  spec's own M1 acceptance number, account-scoped only) locks the
+  account, derived by counting past `ACCOUNT_LOCKED` audit entries
+  rather than a separate counter column.
   **Confirmed live 2026-08-22**: 5 wrong-password attempts against a
   seeded account correctly returned `429`, the correct password was also
   refused while locked (a genuine block, not just a wrong-password
@@ -159,16 +156,10 @@ an actual failure rather than a log line.
   lock the account and the attempts are visible in the audit log"
   criterion (the 429 tier, not the 423 one, is what was actually
   exercised — both share the same underlying failure-counting logic).
-  **Worth flagging as a product tradeoff, not a bug**: because the IP
-  and account checks are combined rather than independent, a resort
-  front desk behind one shared IP could have one busy shift's worth of
-  mistyped passwords across *different* staff accounts rate-limit the
-  whole property for 15 minutes, not just the repeat-offender account.
-  Not changed without a product decision either way.
-  **Also fixed 2026-08-22**: the 429 response previously carried no
-  timing information at all ("try again in a few minutes," no number) —
-  a real product gap on a resort floor where staff hitting this on a
-  phone would have no idea how long to wait. `assertNotLockedOrRateLimited`
+  **Fixed 2026-08-22**: the 429 response previously carried no timing
+  information at all ("try again in a few minutes," no number) — a real
+  product gap on a resort floor where staff hitting this on a phone
+  would have no idea how long to wait. `assertNotLockedOrRateLimited`
   now computes an actual `retryAt` (the oldest of the currently-counted
   failures aging out of the 15-minute window, which is exactly when the
   count drops back under threshold) and returns it in the error's
@@ -177,14 +168,41 @@ an actual failure rather than a log line.
   in 4:32") for both the 429 and 423 cases, disables the Sign In button
   while it's running, and re-enables it automatically the instant it
   hits zero — no manual reload needed.
+  **Also changed 2026-08-22, both client decisions made after live
+  testing surfaced the old behavior**:
+  - The 15-min/5-failure check now runs as **two fully independent
+    counters** — one scoped strictly to `entityId` (the account),
+    one strictly to `ip` — rather than the original single query
+    (`OR: [{ entityId }, { ip }]`) that conflated them. The old version
+    meant one account's failures could inflate the count checked for a
+    completely different account sharing the same IP, which is exactly
+    what live testing hit (locking out one seeded account made every
+    other account briefly unreachable from the same machine). The IP
+    counter still counts failures against *any* account from that IP —
+    that's the actual point of per-IP throttling (catching failures
+    spread across many accounts from one source) — but a clean
+    account's own counter is never inflated by another account's
+    failures, and vice versa. 3 new tests in `loginThrottle.test.ts`
+    lock in this distinction, including one that deliberately confirms
+    the still-intended cross-account IP block, so it doesn't get
+    "fixed away" by a future change that only reads the account-facing
+    symptom.
+  - Lockout duration escalation is now **capped at 10 minutes**: 5
+    minutes on the first lockout, 10 minutes on the second and every
+    one after that — replacing the original 30 min → 2h → 24h scale
+    from task 9. `LOCKOUT_DURATIONS_MS` is now a 2-element array;
+    `Math.min(priorLockouts, array.length - 1)` already clamps to the
+    last entry, so a third array slot repeating the same value isn't
+    needed to express "capped forever after." 3 new tests confirm the
+    1st/2nd/3rd+ lockout durations directly against `maybeLockAccount`.
 - TOTP 2FA for SYSTEM_ADMIN only (spec §3.1.1, updated 2026-08-22 —
   client decision to exclude OWNER, a read-only role with materially
   lower blast radius), via `otpauth`. First
   login for an unenrolled account generates and persists a secret and
   returns `{ totpSetupRequired: true, provisioningUri }` — **no
   session is issued** until a subsequent login call includes a valid
-  code, so "an owner account cannot complete login without a TOTP code"
-  holds even on first-ever login, not just after enrollment. A missing
+  code, so "a system admin account cannot complete login without a TOTP
+  code" holds even on first-ever login, not just after enrollment. A missing
   code (password was right, just need the code) isn't logged as a
   failure or counted toward lockout; a wrong code is — a 6-digit TOTP
   code is brute-forceable within its validity window without that.
