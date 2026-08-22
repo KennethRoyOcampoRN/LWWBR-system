@@ -783,3 +783,88 @@ real Supabase database that an empty-note forced correction succeeds
 field even when no note was given. This closes out the forced
 status-correction feature for the night — no outstanding gaps between
 this feature and what the client asked for.
+
+### Realtime status updates — done, not yet live-tested (2026-08-22)
+
+Spec §11's M2 acceptance line: "two browsers open the grid; a status
+change in one appears in the other within 2s without refresh." Spec §3
+withdraws the Socket.IO implementation for MVP — **Supabase Realtime
+broadcast only** — so this uses the `RealtimeAdapter` interface and
+`SupabaseRealtimeAdapter` that M0 already built and round-trip tested,
+just never wired into any real domain code until now (the only prior
+caller was the M0 round-trip test itself and the health check's adapter
+name report).
+
+**Backend**: `changeUnitStatus()` and `forceUnitStatus()` in
+`apps/api/src/modules/units/service.ts` both call a shared
+`broadcastUnitStatusChanged()` helper after their `unit.updateMany()`
+write succeeds — one code path for both, so a normal status change, an
+admin override, and a forced correction all reach every open Units page
+the same way, per spec §9.1: channel `property`, event
+`unit.status.changed`, payload `{ entityId, actorId, at, summary,
+fromStatus, toStatus, version, note }` — the extra fields beyond spec's
+required four are what let the frontend patch its own state without a
+refetch. **The broadcast is best-effort**: wrapped in try/catch and
+merely logged on failure, never thrown — a Supabase Realtime outage or
+network hiccup must not fail the underlying status change itself. Two
+new router tests: one asserts the exact broadcast call for a normal
+status change, one asserts the status change still returns `200` when
+the broadcast itself rejects. The force-status test also asserts its
+broadcast call.
+
+**Frontend**: a new `apps/web/src/lib/realtime.ts` creates a browser
+Supabase client from `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (the
+**anon/public** key — never the service role key, which must never
+reach the browser bundle) and exposes
+`subscribeToUnitStatusChanges(onEvent, onStatusChange)`. If the env vars
+aren't set, it logs a warning and reports `'disabled'` rather than
+throwing — realtime is simply off, not broken, and the grid still works
+off the poll fallback below. New `apps/web/.env.example` documents the
+two vars; `apps/web/.env` itself isn't committed (already covered by the
+repo's blanket `.env` gitignore rule) and needs the real anon key from
+the Supabase dashboard (Settings → API) before this can be live-tested —
+**not yet set locally in this sandbox**, so this has not been (and
+cannot be, from here) tested against the real Supabase Realtime service;
+only the mocked component test below has run.
+
+`UnitsPage` subscribes on mount and patches the matching unit's
+`status`/`version`/`latestNote` in place when a broadcast arrives — no
+refetch of the whole grid, matching the compact-and-live goal. A version
+guard (`payload.version <= unit.version` → ignore) protects against a
+stale or out-of-order broadcast regressing a tile that's already moved
+past it (e.g. delivery reordering, or replaying an old event after a
+reconnect).
+
+**Resiliency (spec §3's "a dropped socket must never leave a stale board
+with no recovery path")**: since this codebase doesn't use TanStack
+Query, the same fallback principle is hand-rolled — a 60s poll
+(`setInterval` **in browser code**, not a serverless function; the
+spec's ban on `setInterval`-based scheduling is specifically about
+faking cron jobs in Netlify Functions, per §3.1, and doesn't apply to
+client-side UI polling) and a `window.addEventListener('focus', ...)`
+refetch, both independent of whether the realtime channel is currently
+connected. A subtle "Reconnecting…" badge appears next to the page
+heading only once the channel has reached `'connected'` at least once
+and then drops — so a normal page load's brief initial `'connecting'`
+state, or realtime being intentionally `'disabled'` (no env vars), never
+shows it.
+
+1 new component test drives this without touching
+`@supabase/supabase-js` at all: it mocks this app's own
+`lib/realtime.js` wrapper (not the library, keeping the test fast and
+independent of real websocket behaviour), captures the handlers
+`UnitsPage` registers, and then directly invokes the `onEvent` handler
+to simulate a broadcast from a different browser — asserting the tile's
+status label and note badge update with **no fetch call involved at
+all**, plus a second invocation with a lower `version` confirming the
+stale-event guard holds. Full repo verification (lint, typecheck, build
+across all 3 workspaces, all test suites) is green — the same 3
+pre-existing network-blocked tests as every prior milestone (2 storage
+round-trip + the M0 realtime round-trip test itself, all three
+requiring real network access this sandbox doesn't have — confirmed
+these are unrelated to tonight's changes by re-running the realtime
+round-trip test in isolation with no code changes of mine).
+
+**Not yet live-tested**: needs `VITE_SUPABASE_ANON_KEY` filled in from
+the Supabase dashboard, then the actual two-browser check spec §11
+describes.

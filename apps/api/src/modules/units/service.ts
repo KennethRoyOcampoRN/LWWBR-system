@@ -6,6 +6,7 @@ import {
   type RoleKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
+import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
@@ -17,6 +18,39 @@ import type {
   UpdateUnitInput,
   UpdateUnitTypeInput,
 } from './schema.js';
+
+// Spec §9.1: channel `property`, event `unit.status.changed`, payload
+// `{ entityId, actorId, at, summary }` plus whatever else a listener
+// needs to patch its own state without a refetch — the unit grid uses
+// toStatus/fromStatus/version/note to update the tile in place. A
+// broadcast failure (Supabase Realtime down, network hiccup) must never
+// fail the status change itself — best-effort, logged, non-fatal; every
+// open Units page still recovers via its 60s poll / window-focus
+// refetch fallback.
+async function broadcastUnitStatusChanged(params: {
+  unitId: string;
+  code: string;
+  fromStatus: UnitStatusKey;
+  toStatus: UnitStatusKey;
+  actorId: string;
+  version: number;
+  note: string | null;
+}): Promise<void> {
+  try {
+    await getRealtimeAdapter().emit('property', 'unit.status.changed', {
+      entityId: params.unitId,
+      actorId: params.actorId,
+      at: new Date().toISOString(),
+      summary: `${params.code} moved to ${params.toStatus}`,
+      fromStatus: params.fromStatus,
+      toStatus: params.toStatus,
+      version: params.version,
+      note: params.note,
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for unit.status.changed failed:', error);
+  }
+}
 
 // Prisma's Decimal doesn't serialize to a plain JSON number on its own
 // (res.json() would emit its internal object shape) — every UnitType
@@ -213,7 +247,18 @@ export async function changeUnitStatus(
     });
   }
 
-  return { id: unitId, status: input.toStatus, version: input.version + 1 };
+  const newVersion = input.version + 1;
+  await broadcastUnitStatusChanged({
+    unitId,
+    code: unit.code,
+    fromStatus,
+    toStatus: input.toStatus,
+    actorId: actor.id,
+    version: newVersion,
+    note: input.note ?? null,
+  });
+
+  return { id: unitId, status: input.toStatus, version: newVersion };
 }
 
 // Forced status correction (client decision, 2026-08-22): deliberately
@@ -283,6 +328,17 @@ export async function forceUnitStatus(
     userAgent: meta.userAgent,
   });
 
-  return { id: unitId, status: input.toStatus, version: input.version + 1 };
+  const newVersion = input.version + 1;
+  await broadcastUnitStatusChanged({
+    unitId,
+    code: unit.code,
+    fromStatus,
+    toStatus: input.toStatus,
+    actorId: actor.id,
+    version: newVersion,
+    note: input.note ?? null,
+  });
+
+  return { id: unitId, status: input.toStatus, version: newVersion };
 }
 

@@ -1,7 +1,39 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
+
+// Realtime status updates: rather than mocking @supabase/supabase-js's
+// websocket internals, mock this app's own thin wrapper so a test can
+// simulate an incoming broadcast directly and assert the grid patches
+// itself — exercising exactly the same code path UnitsPage uses, without
+// needing a real (or fake) Supabase Realtime connection.
+let capturedRealtimeHandlers: {
+  onEvent: (payload: {
+    entityId: string;
+    actorId: string;
+    at: string;
+    summary: string;
+    fromStatus: string;
+    toStatus: string;
+    version: number;
+    note: string | null;
+  }) => void;
+  onStatusChange: (status: 'connecting' | 'connected' | 'reconnecting' | 'disabled') => void;
+} | null = null;
+
+vi.mock('../src/lib/realtime.js', () => ({
+  subscribeToUnitStatusChanges: (
+    onEvent: NonNullable<typeof capturedRealtimeHandlers>['onEvent'],
+    onStatusChange: NonNullable<typeof capturedRealtimeHandlers>['onStatusChange'],
+  ) => {
+    capturedRealtimeHandlers = { onEvent, onStatusChange };
+    onStatusChange('connected');
+    return () => {
+      capturedRealtimeHandlers = null;
+    };
+  },
+}));
 
 function jsonResponse(status: number, body: unknown) {
   return Promise.resolve({
@@ -32,6 +64,7 @@ describe('App', () => {
   // matches it instead of starting fresh at "/".
   beforeEach(() => {
     window.history.pushState({}, '', '/');
+    capturedRealtimeHandlers = null;
   });
 
   afterEach(() => {
@@ -393,5 +426,81 @@ describe('App', () => {
     await user.click(screen.getByText(/close/i));
     // No note was given, so no badge on the tile.
     expect(screen.queryByRole('img', { name: /^note:/i })).not.toBeInTheDocument();
+  });
+
+  it('updates the grid tile live when a realtime unit.status.changed broadcast arrives — no refetch, no manual refresh', async () => {
+    const housekeepingUser = {
+      ...currentUser,
+      roles: ['HOUSEKEEPING_STAFF'],
+      permissions: { 'unit:read': 'ALL', 'unit:update_status': 'ALL' },
+    };
+    const unit = {
+      id: 'unit_1',
+      code: 'R03',
+      name: 'Room 3',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: null,
+      status: 'CLEANING',
+      version: 1,
+      notes: null,
+      isActive: true,
+      latestNote: null,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Units' }));
+    await waitFor(() => expect(screen.getByText('Cleaning')).toBeInTheDocument());
+
+    await waitFor(() => expect(capturedRealtimeHandlers).not.toBeNull());
+
+    // Simulate a status change made in a *different* browser (e.g. via
+    // the Admin override panel there) — this page never called any
+    // status-change endpoint itself, only the realtime subscription
+    // fired, exactly as spec §11 requires: "a status change in one
+    // browser appears in another within 2s without refresh."
+    act(() => {
+      capturedRealtimeHandlers?.onEvent({
+        entityId: 'unit_1',
+        actorId: 'user_2',
+        at: new Date().toISOString(),
+        summary: 'R03 moved to CLEANED',
+        fromStatus: 'CLEANING',
+        toStatus: 'CLEANED',
+        version: 2,
+        note: 'finished early',
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText('Cleaned')).toBeInTheDocument());
+    expect(screen.queryByText('Cleaning')).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /note: finished early/i })).toBeInTheDocument();
+
+    // A stale/out-of-order broadcast (lower version than what's already
+    // applied) must not regress the tile.
+    act(() => {
+      capturedRealtimeHandlers?.onEvent({
+        entityId: 'unit_1',
+        actorId: 'user_2',
+        at: new Date().toISOString(),
+        summary: 'stale replay',
+        fromStatus: 'VACANT_DIRTY',
+        toStatus: 'CLEANING',
+        version: 1,
+        note: null,
+      });
+    });
+    expect(screen.getByText('Cleaned')).toBeInTheDocument();
   });
 });

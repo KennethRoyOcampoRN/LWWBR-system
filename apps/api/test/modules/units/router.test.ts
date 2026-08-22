@@ -11,6 +11,11 @@ const mockPrisma = {
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
+const mockRealtimeEmit = vi.fn();
+vi.mock('../../../src/adapters/realtime/index.js', () => ({
+  getRealtimeAdapter: () => ({ emit: mockRealtimeEmit }),
+}));
+
 const { createApp } = await import('../../../src/app.js');
 const { signAccessToken } = await import('../../../src/modules/auth/tokens.js');
 
@@ -57,6 +62,7 @@ beforeEach(() => {
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
+  mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
 describe('GET /api/v1/units and /unit-types', () => {
@@ -142,6 +148,35 @@ describe('POST /api/v1/units/:id/status', () => {
         source: 'MANUAL',
       },
     });
+    // Spec §9.1: channel `property`, event `unit.status.changed`, payload
+    // carries enough for the grid to patch its own state without a refetch.
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'property',
+      'unit.status.changed',
+      expect.objectContaining({
+        entityId: 'unit_1',
+        actorId: 'user_1',
+        fromStatus: 'CLEANED',
+        toStatus: 'INSPECTED',
+        version: 4,
+        note: null,
+      }),
+    );
+  });
+
+  it('does not fail the status change when the realtime broadcast itself fails', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 3 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+    mockRealtimeEmit.mockRejectedValue(new Error('Supabase Realtime unreachable'));
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'INSPECTED', version: 3 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'unit_1', status: 'INSPECTED', version: 4 });
   });
 
   it('rejects a room attendant (unit:update_status only) trying to do the QC step', async () => {
@@ -347,6 +382,18 @@ describe('POST /api/v1/units/:id/force-status', () => {
             label: 'Forced correction — bypassed the normal status sequence',
           }),
         }),
+      }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'property',
+      'unit.status.changed',
+      expect.objectContaining({
+        entityId: 'unit_1',
+        actorId: 'user_1',
+        fromStatus: 'VACANT_DIRTY',
+        toStatus: 'OCCUPIED',
+        version: 1,
+        note: 'guest is already checked in, staff forgot to update',
       }),
     );
   });

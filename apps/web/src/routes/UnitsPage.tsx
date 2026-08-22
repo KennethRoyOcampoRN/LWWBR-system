@@ -4,10 +4,19 @@ import {
   UNIT_STATUS_KEYS,
   type UnitStatusKey,
 } from '@lwwbr/shared';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
+import { subscribeToUnitStatusChanges, type RealtimeConnectionStatus } from '../lib/realtime.js';
 import { UNIT_STATUS_CLASSES, UNIT_STATUS_LABELS } from '../lib/unitStatusStyle.js';
+
+// Spec §3 resiliency rule (adapted from the Socket.IO-era "TanStack Query
+// still polls every 60s as a fallback and refetches on window focus" —
+// same principle, this app just doesn't use TanStack Query): a dropped
+// realtime connection must never leave a stale board with no recovery
+// path, so the grid also refetches on this interval regardless of
+// whether the realtime channel is connected.
+const UNITS_POLL_INTERVAL_MS = 60_000;
 
 interface UnitRow {
   id: string;
@@ -84,7 +93,12 @@ function UnitDetailDrawer({
         `/units/${unit.id}/status`,
         { toStatus, version: unit.version, note: trimmedNote || undefined },
       );
-      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote || null });
+      onChanged({
+        ...unit,
+        status: result.status,
+        version: result.version,
+        latestNote: trimmedNote || null,
+      });
       setNote('');
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
@@ -106,13 +120,20 @@ function UnitDetailDrawer({
         `/units/${unit.id}/force-status`,
         { toStatus: forceToStatus, version: unit.version, note: trimmedNote || undefined },
       );
-      onChanged({ ...unit, status: result.status, version: result.version, latestNote: trimmedNote || null });
+      onChanged({
+        ...unit,
+        status: result.status,
+        version: result.version,
+        latestNote: trimmedNote || null,
+      });
       setForceNote('');
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
         setForceError('Someone else changed this unit — refresh the grid and try again.');
       } else {
-        setForceError(err instanceof ApiRequestError ? err.message : 'Could not force the status correction.');
+        setForceError(
+          err instanceof ApiRequestError ? err.message : 'Could not force the status correction.',
+        );
       }
     } finally {
       setForcing(false);
@@ -170,9 +191,9 @@ function UnitDetailDrawer({
         <div className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-3">
           <p className="text-sm font-medium text-amber-900">Admin override</p>
           <p className="text-xs text-amber-800">
-            These transitions normally happen automatically (inspection pass / booking check-in / check-out) —
-            no inspection or booking module exists yet, so this is a manual stopgap. Every use is audited
-            distinctly. Prefer waiting for the real flow once M3/M4 land.
+            These transitions normally happen automatically (inspection pass / booking check-in /
+            check-out) — no inspection or booking module exists yet, so this is a manual stopgap.
+            Every use is audited distinctly. Prefer waiting for the real flow once M3/M4 land.
           </p>
           <div className="flex flex-wrap gap-2">
             {overrideNext.map((status) => (
@@ -199,8 +220,8 @@ function UnitDetailDrawer({
         <div className="flex flex-col gap-2 rounded border-2 border-dashed border-rose-300 bg-rose-50 p-3">
           <p className="text-sm font-medium text-rose-900">Force status correction</p>
           <p className="text-xs text-rose-800">
-            Jump this unit directly to any status to fix data staff forgot to update in real time. Distinct from
-            "Change status" above — this skips the normal sequence entirely.
+            Jump this unit directly to any status to fix data staff forgot to update in real time.
+            Distinct from "Change status" above — this skips the normal sequence entirely.
           </p>
           <label className="flex flex-col gap-1 text-xs text-rose-900">
             Correct status to
@@ -268,29 +289,97 @@ export function UnitsPage() {
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
   const [unitTypes, setUnitTypes] = useState<UnitTypeRow[]>([]);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus>('connecting');
+  // Tracks whether the realtime channel has ever reached 'connected', so
+  // the reconnecting banner only shows for an actual drop, not for the
+  // brief 'connecting' state every page load starts in.
+  const hasConnectedOnce = useRef(false);
+
+  const fetchUnits = useCallback(() => {
+    return api
+      .get<{ units: UnitRow[] }>('/units')
+      .then((res) => setUnits(res.units))
+      .catch(() => setUnits((prev) => (Array.isArray(prev) ? prev : 'error')));
+  }, []);
 
   useEffect(() => {
     Promise.all([
-      api.get<{ units: UnitRow[] }>('/units'),
-      api.get<{ unitTypes: UnitTypeRow[] }>('/unit-types'),
-    ])
-      .then(([unitsRes, unitTypesRes]) => {
-        setUnits(unitsRes.units);
-        setUnitTypes(unitTypesRes.unitTypes);
-      })
-      .catch(() => setUnits('error'));
+      fetchUnits(),
+      api
+        .get<{ unitTypes: UnitTypeRow[] }>('/unit-types')
+        .then((res) => setUnitTypes(res.unitTypes)),
+    ]).catch(() => setUnits('error'));
+  }, [fetchUnits]);
+
+  // Fallback recovery path (spec §3): a 60s poll and a window-focus
+  // refetch, independent of whether the realtime channel below is
+  // currently connected — the grid can never get permanently stale just
+  // because a socket dropped and didn't come back.
+  useEffect(() => {
+    const interval = setInterval(() => void fetchUnits(), UNITS_POLL_INTERVAL_MS);
+    const onFocus = () => void fetchUnits();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [fetchUnits]);
+
+  // Live updates: every open Units page reflects a status change from
+  // any of the three panels (normal, override, forced correction) as
+  // soon as it's broadcast — spec §11's "a status change in one browser
+  // appears in another within 2s without refresh."
+  useEffect(() => {
+    const unsubscribe = subscribeToUnitStatusChanges(
+      (payload) => {
+        setUnits((prev) => {
+          if (!Array.isArray(prev)) return prev;
+          return prev.map((u) => {
+            if (u.id !== payload.entityId || payload.version <= u.version) {
+              return u;
+            }
+            return {
+              ...u,
+              status: payload.toStatus as UnitStatusKey,
+              version: payload.version,
+              latestNote: payload.note,
+            };
+          });
+        });
+      },
+      (status) => {
+        if (status === 'connected') hasConnectedOnce.current = true;
+        setRealtimeStatus(status);
+      },
+    );
+    return unsubscribe;
   }, []);
 
   function handleChanged(updated: UnitRow) {
-    setUnits((prev) => (Array.isArray(prev) ? prev.map((u) => (u.id === updated.id ? updated : u)) : prev));
+    setUnits((prev) =>
+      Array.isArray(prev) ? prev.map((u) => (u.id === updated.id ? updated : u)) : prev,
+    );
   }
 
   const unitTypeName = (id: string) => unitTypes.find((t) => t.id === id)?.name ?? 'Unknown type';
-  const selectedUnit = Array.isArray(units) ? units.find((u) => u.id === selectedUnitId) : undefined;
+  const selectedUnit = Array.isArray(units)
+    ? units.find((u) => u.id === selectedUnitId)
+    : undefined;
+  const showReconnecting = realtimeStatus === 'reconnecting' && hasConnectedOnce.current;
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">Units</h1>
+      <div className="flex items-center gap-2">
+        <h1 className="text-lg font-semibold">Units</h1>
+        {showReconnecting && (
+          <span
+            role="status"
+            className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+          >
+            Reconnecting…
+          </span>
+        )}
+      </div>
 
       {units === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
       {units === 'error' && <p role="alert">Could not load units.</p>}
