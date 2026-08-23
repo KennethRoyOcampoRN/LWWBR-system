@@ -285,6 +285,49 @@ describe('WorkOrdersPage', () => {
     const rowTitles = screen.getAllByText(/Fix the generator|Already fixed AC/).map((el) => el.textContent);
     expect(rowTitles).toEqual(['Fix the generator', 'Already fixed AC']);
   });
+
+  it('regression: a DEPARTMENT_QUEUE caller (POC) sees an additive "Assigned to you" section, including a ticket assigned to them from a DIFFERENT department', async () => {
+    const user = userEvent.setup();
+    // currentUser is a DEPARTMENT-scoped POC_MAINTENANCE — real case that
+    // surfaced this: a ticket assigned to a POC Housekeeping account from
+    // a different department, notification fired correctly, but the
+    // ticket didn't appear anywhere in that account's department queue.
+    const crossDeptTicket = {
+      id: 'wo_cross',
+      referenceNo: 'WO-260823-0003',
+      type: 'HOUSEKEEPING',
+      title: 'Deep clean function hall carpet',
+      priority: 'NORMAL',
+      status: 'ASSIGNED',
+      department: 'HOUSEKEEPING',
+      unit: null,
+      assignedTo: { fullName: 'POC Maintenance (Demo)' },
+      createdAt: new Date().toISOString(),
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: currentUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.includes('/work-orders?mine=true')) return jsonResponse(200, { workOrders: [crossDeptTicket] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Department Work Orders' })).toBeInTheDocument());
+
+    expect(screen.getByText('Assigned to you')).toBeInTheDocument();
+    await screen.findByText('WO-260823-0003');
+    expect(screen.getByText('Deep clean function hall carpet')).toBeInTheDocument();
+
+    // Still additive — the department buckets render too, unaffected.
+    expect(screen.getByText(/Unassigned/)).toBeInTheDocument();
+    expect(screen.getAllByText('Nothing here right now.').length).toBeGreaterThan(0);
+  });
 });
 
 describe('WorkOrderDetailDrawer', () => {

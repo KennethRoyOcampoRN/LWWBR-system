@@ -356,6 +356,28 @@ describe('GET /api/v1/work-orders — read scoping', () => {
     );
   });
 
+  it('regression: ?mine=true for a DEPARTMENT-scoped POC surfaces a ticket assigned to them from a DIFFERENT department — must not be ANDed with their own department filter', async () => {
+    // Bug found live-testing: WO-260823-0003 was assigned to a POC
+    // Housekeeping account, the "assigned to you" notification fired
+    // correctly, but the ticket never appeared in that account's
+    // Department Work Orders page because ?mine=true used to be spread
+    // alongside {department: 'HOUSEKEEPING'} rather than replacing it —
+    // silently excluding a real, valid cross-department assignment.
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/work-orders?mine=true').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const whereArg = mockPrisma.workOrder.findMany.mock.calls[0]?.[0]?.where;
+    expect(whereArg).toEqual(expect.objectContaining({ assignedToId: 'user_1' }));
+    // The department filter must be entirely absent, not just failing to
+    // match — a ticket in any department the caller was assigned to must
+    // be able to come back.
+    expect(whereArg.department).toBeUndefined();
+    expect(whereArg.OR).toBeUndefined();
+  });
+
   it('?assignedTo= lets a department dashboard filter its already-scoped queue to one person', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
     mockPrisma.workOrder.findMany.mockResolvedValue([]);

@@ -2093,3 +2093,54 @@ tests); `apps/web` 26/26 (+1).
 
 **Holding here per client instruction**, same queue as before: EXIF
 capture-time verification and anything else not explicitly requested.
+
+### "Assigned to you" added to the department-queue dashboard, plus a real backend bug it uncovered (2026-08-23)
+
+Same gap as the earlier SYSTEM_ADMIN fix, this time for `DEPARTMENT_QUEUE`
+(POC roles): a notification says "assigned to you," but if the ticket
+belongs to a different department than the POC's own, it was invisible
+— the department queue only shows tickets in the POC's own department,
+and there was no cross-department personal view to catch it. Real case
+that surfaced this: WO-260823-0003 assigned to a POC Housekeeping
+account, notification fired correctly, ticket nowhere in that account's
+Department Work Orders page.
+
+Investigating turned up a real backend bug, not just a missing frontend
+section: `GET /work-orders?mine=true` was spreading `{assignedToId:
+actor.id}` *alongside* `visibilityWhereClause(actor)` rather than
+replacing it, so for a DEPARTMENT-scoped caller the two combined into
+`{department: actor.department, assignedToId: actor.id}` — an AND, not
+an OR. A ticket assigned to the POC from a *different* department was
+silently excluded by the department half of that filter; `?mine=true`
+could never have surfaced it, no matter what the frontend did. Fixed in
+`listWorkOrders()`: `mine` now replaces `visibilityWhereClause()`
+entirely rather than layering on top of it — "assigned to me" is the
+`workorder:read` floor itself (spec's own reasoning, see this
+function's comment), so it must never be narrowed further by whatever
+elevated scope the caller also happens to hold. `assignedTo=<id>` (the
+separate, other-person filter powering "let a department dashboard
+narrow its queue to one tech") is intentionally untouched — that one
+should stay layered on top of the caller's own scope, since it's asking
+who among what they can already see, not what's theirs.
+
+With the backend actually correct, the frontend fix was the same pattern
+as the SYSTEM_ADMIN slice: the existing `myWorkOrders` state/fetch/
+render (`?mine=true` + `sortForMyTasks()`) now also fires for
+`DEPARTMENT_QUEUE`, not just `FULL_LIST`, rendering "Assigned to you"
+above the existing status-grouped buckets — additive, buckets
+unchanged.
+
+1 new backend regression test (a DEPARTMENT-scoped POC's `?mine=true`
+must return no `department` filter at all, not just fail to match one).
+1 new frontend regression test: a POC sees a ticket from a different
+department in "Assigned to you," with the (correctly empty) department
+buckets still rendering alongside it. Re-verified in a real headless
+browser with the exact reported scenario: a MAINTENANCE ticket assigned
+to a POC Housekeeping account now shows in that account's "Assigned to
+you," while the (empty) HOUSEKEEPING buckets render correctly beside it.
+
+Full repo lint/typecheck/build clean; `apps/api` 188/191 (+1, same 3
+pre-existing network-blocked tests); `apps/web` 27/27 (+1).
+
+**Holding here per client instruction**, same queue as before: EXIF
+capture-time verification and anything else not explicitly requested.

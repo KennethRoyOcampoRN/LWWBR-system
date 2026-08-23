@@ -860,11 +860,18 @@ export function WorkOrdersPage() {
   const { user } = useAuth();
   const mode = deriveDashboardMode(user);
   const [workOrders, setWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
-  // FULL_LIST-only: a property-wide role (SYSTEM_ADMIN, RESORT_MANAGER,
-  // ...) can genuinely be assigned a ticket too, but had no quick way to
-  // see just their own without scanning the entire property's list —
-  // real gap found live-testing. Additive to the full list below, not a
-  // replacement — MY_TASKS and DEPARTMENT_QUEUE are unaffected.
+  // FULL_LIST and DEPARTMENT_QUEUE only: a property-wide role (SYSTEM_ADMIN,
+  // RESORT_MANAGER, ...) or a department POC can genuinely be assigned a
+  // ticket too, but had no quick way to see just their own without
+  // scanning the whole list — and for a POC specifically, a ticket
+  // assigned to them from a *different* department (spec allows
+  // cross-department assignment, see the assignee-picker fix earlier
+  // this session) is otherwise invisible: the department queue only
+  // shows tickets in their own department, and there was no
+  // cross-department personal view to catch it. Real gap found live-
+  // testing both times. Additive to the existing view in each case, not
+  // a replacement — MY_TASKS is unaffected (its whole view is already
+  // "mine").
   const [myWorkOrders, setMyWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -881,11 +888,15 @@ export function WorkOrdersPage() {
       .get<{ workOrders: WorkOrderRow[] }>(mode === 'MY_TASKS' ? '/work-orders?mine=true' : '/work-orders')
       .then((res) => setWorkOrders(res.workOrders))
       .catch(() => setWorkOrders('error'));
-    // FULL_LIST also fetches its own ?mine=true — the same query MY_TASKS
-    // uses — purely to power the additive "Assigned to you" section; a
-    // property-wide role's ALL-scope visibility already lets this same
-    // filter narrow correctly, same backend rule, no new endpoint needed.
-    if (mode === 'FULL_LIST') {
+    // FULL_LIST and DEPARTMENT_QUEUE both also fetch their own
+    // ?mine=true — the same query MY_TASKS uses — purely to power the
+    // additive "Assigned to you" section. For DEPARTMENT_QUEUE this is
+    // the one place a caller's own visibility isn't department-scoped:
+    // assignedToId: actor.id is checked before any department filter in
+    // visibilityWhereClause, so this correctly surfaces a ticket
+    // assigned to them from outside their own department too — no new
+    // endpoint needed, same backend rule as everywhere else.
+    if (mode === 'FULL_LIST' || mode === 'DEPARTMENT_QUEUE') {
       setMyWorkOrders('loading');
       api
         .get<{ workOrders: WorkOrderRow[] }>('/work-orders?mine=true')
@@ -947,6 +958,21 @@ export function WorkOrdersPage() {
         </section>
       )}
 
+      {(mode === 'FULL_LIST' || mode === 'DEPARTMENT_QUEUE') && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
+          {myWorkOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+          {myWorkOrders === 'error' && <p role="alert">Could not load your assigned tickets.</p>}
+          {Array.isArray(myWorkOrders) && (
+            <WorkOrderList
+              workOrders={sortForMyTasks(myWorkOrders)}
+              onSelect={setSelectedId}
+              emptyMessage="Nothing assigned to you right now."
+            />
+          )}
+        </section>
+      )}
+
       {Array.isArray(workOrders) && mode === 'DEPARTMENT_QUEUE' && (
         <>
           {DEPARTMENT_QUEUE_GROUPS.map((group) => {
@@ -962,21 +988,6 @@ export function WorkOrdersPage() {
             );
           })}
         </>
-      )}
-
-      {mode === 'FULL_LIST' && (
-        <section>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
-          {myWorkOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-          {myWorkOrders === 'error' && <p role="alert">Could not load your assigned tickets.</p>}
-          {Array.isArray(myWorkOrders) && (
-            <WorkOrderList
-              workOrders={sortForMyTasks(myWorkOrders)}
-              onSelect={setSelectedId}
-              emptyMessage="Nothing assigned to you right now."
-            />
-          )}
-        </section>
       )}
 
       {Array.isArray(workOrders) && mode === 'FULL_LIST' && (

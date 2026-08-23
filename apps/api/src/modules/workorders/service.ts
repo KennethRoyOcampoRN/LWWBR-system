@@ -159,16 +159,31 @@ function visibilityWhereClause(actor: WorkOrderActor) {
 }
 
 export async function listWorkOrders(query: ListWorkOrdersQuery, actor: WorkOrderActor) {
+  // Bug found live-testing, 2026-08-23: `mine` used to be spread
+  // alongside visibilityWhereClause() rather than replacing it, so for a
+  // DEPARTMENT-scoped caller (a POC) it got ANDed with `{department:
+  // actor.department}` — silently hiding a ticket assigned to them from
+  // a *different* department, even though cross-department assignment
+  // is deliberately allowed (see the assignee-picker fix earlier this
+  // session) and a notification had already told them it was theirs.
+  // "Assigned to me" is the workorder:read floor itself (see this
+  // function's own comment above) — it must never be narrowed further
+  // by whatever elevated department/property scope the caller also
+  // happens to hold, so `mine` replaces visibilityWhereClause() entirely
+  // rather than layering on top of it. `assignedTo=<id>` (a different,
+  // *other-person* filter — spec's "let a department dashboard narrow
+  // its queue to one tech") is intentionally NOT changed: that one
+  // should stay layered on top of the caller's own scope, since it's
+  // asking "who among what I can already see," not "what's mine."
   return prisma.workOrder.findMany({
     where: {
       deletedAt: null,
-      ...visibilityWhereClause(actor),
+      ...(query.mine ? { assignedToId: actor.id } : visibilityWhereClause(actor)),
       ...(query.status ? { status: query.status } : {}),
       ...(query.department ? { department: query.department } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.unitId ? { unitId: query.unitId } : {}),
       ...(query.assignedTo ? { assignedToId: query.assignedTo } : {}),
-      ...(query.mine ? { assignedToId: actor.id } : {}),
     },
     orderBy: [{ createdAt: 'desc' }],
     include: { unit: { select: { id: true, code: true, name: true } }, assignedTo: { select: { fullName: true } } },
