@@ -1371,3 +1371,84 @@ broadcasts.
 start, mark done — with the `COMPLETION`-photo gate, verify, reopen with
 `attemptNo` increment, cancel), the department-match check on `verify`
 flagged above, then department dashboards and "My tasks."
+
+### Two real bugs found live 2026-08-23, fixed the same day
+
+**Drawer Timeline didn't update via realtime.** The unit grid tile
+updated live (task 14) but an already-open drawer's Timeline list only
+refreshed on close/reopen or switching units. Root cause:
+`UnitDetailDrawer`'s timeline-fetch `useEffect` depended only on
+`[unit.id]`. A realtime-driven status change on the *currently open*
+unit patches `UnitsPage`'s `units` array (task 14's existing handler,
+untouched) and flows down to the drawer as a new `unit` prop with a
+bumped `version` — but nothing about that prop change was in the
+effect's dependency array, so it never re-ran. Fixed by adding
+`unit.version` to the dependency list: `[unit.id, unit.version]`. Now
+*any* status change to the open unit — from a button in this same
+drawer, or a broadcast from elsewhere — refetches the timeline, since
+`version` bumps on every real change regardless of source. New
+component test opens a drawer, fires a realtime event for that unit,
+and confirms both a second `GET /units/:id/timeline` call and the new
+event actually rendering.
+
+**R11 showed the retired `INSPECTED` status again after being
+force-corrected to `READY`.** Investigated, but **could not reproduce
+or directly verify from this sandbox** — no network access to the
+hosted Supabase project to query the live data. What was confirmed in
+code: no current write path can produce `INSPECTED` any more. Both
+`changeUnitStatusSchema` and `forceUnitStatusSchema` (`apps/api/src/
+modules/units/schema.ts`) validate `toStatus` against
+`UNIT_STATUS_KEYS`, which no longer includes it since the 2026-08-22
+retirement — any attempt is rejected with `422 VALIDATION_ERROR` before
+the request ever reaches the database, from either endpoint. Two
+concrete ways to check what actually happened, since this needs the
+live DB:
+
+```sql
+-- R11's current status and version
+SELECT id, code, status, version, "updatedAt" FROM "Unit" WHERE code = 'R11';
+
+-- Full status history for R11, newest first — did a FORCED_CORRECTION
+-- event to READY actually get recorded, and is anything after it?
+SELECT e."fromStatus", e."toStatus", e.note, e.source, e."createdAt", u."fullName" AS actor
+FROM "UnitStatusEvent" e
+JOIN "Unit" un ON un.id = e."unitId"
+JOIN "User" u ON u.id = e."actorId"
+WHERE un.code = 'R11'
+ORDER BY e."createdAt" DESC;
+
+-- AuditLog entries for R11 — is the UNIT_STATUS_FORCED_CORRECTION entry
+-- from earlier actually there?
+SELECT a.action, a."createdAt", a.after
+FROM "AuditLog" a
+WHERE a.entity = 'Unit' AND a."entityId" = (SELECT id FROM "Unit" WHERE code = 'R11')
+ORDER BY a."createdAt" DESC;
+```
+
+If the event history shows the `FORCED_CORRECTION` to `READY` and
+nothing after it, but the `Unit.status` column itself still reads
+`INSPECTED`, that would point at the write not actually completing (a
+silently-swallowed error, or the response never reaching the row) rather
+than a later revert — worth flagging back if that's what the query
+shows. Also worth double-checking: was the browser tab that showed
+`INSPECTED` again freshly loaded (hard refresh) on today's pulled code,
+frontend *and* backend both restarted? A stale dev server process
+serving yesterday's bundle — from before the `INSPECTED` retirement —
+is the single most mundane explanation and wouldn't be caught by any of
+the above.
+
+**Found and fixed while investigating, a real separate gap**: no route
+under `/api/v1` set any `Cache-Control` header at all. Express sets an
+ETag on JSON bodies by default, but with no explicit cache directive a
+browser can in principle serve a cached read of live operational data
+(unit status, work orders, sessions) under some conditions — a
+back/forward-cache restore, a stale revalidation — without the request
+ever reaching the server to get fresh data. There is no cacheable `GET`
+anywhere in this API; added a blanket `Cache-Control: no-store` for
+every `/api/v1` route. Not confirmed as *the* cause of the `R11` report
+above, but a real gap regardless, and cheap enough to close outright
+rather than leave as a maybe. New test asserts the header on
+`GET /units`.
+
+`apps/api` 145/148 (same 3 pre-existing network-blocked round-trip
+tests); `apps/web` 16/16.
