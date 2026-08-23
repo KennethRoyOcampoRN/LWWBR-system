@@ -82,6 +82,11 @@ describe('GET /api/v1/units and /unit-types', () => {
     expect(res.body.units).toHaveLength(1);
     expect(res.body.units[0].status).toBe('CLEANED');
     expect(res.body.units[0].latestNote).toBeNull();
+    // Real-world caching gap found live 2026-08-23 while investigating a
+    // report of a stale unit status persisting in the UI: every /api/v1
+    // response now sets Cache-Control: no-store so a browser can never
+    // legitimately serve a cached read of live operational state.
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 
   it('surfaces latestNote from any status-change panel, only while it is still attached to the latest event', async () => {

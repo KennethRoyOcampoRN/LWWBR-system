@@ -89,13 +89,21 @@ function UnitDetailDrawer({
   const [forcing, setForcing] = useState(false);
   const [forceError, setForceError] = useState<string | null>(null);
 
+  // Refetches on unit.id (opening a different unit) AND unit.version
+  // (this same unit's status changed, from any source — clicking a
+  // button in this very drawer, or a realtime broadcast from another
+  // browser patching UnitsPage's `units` state, which flows down here as
+  // a new `unit` prop with a bumped version). Without the version
+  // dependency, the tile's colour/label updated live but this list sat
+  // stale until the drawer was closed and reopened — real bug, reported
+  // live 2026-08-23.
   useEffect(() => {
     setTimeline('loading');
     api
       .get<{ events: TimelineEvent[] }>(`/units/${unit.id}/timeline`)
       .then((res) => setTimeline(res.events))
       .catch(() => setTimeline('error'));
-  }, [unit.id]);
+  }, [unit.id, unit.version]);
 
   // Both functions defensively return [] for a retired/unknown `from`
   // status rather than throwing (see unitStatus.ts) — the cast here is

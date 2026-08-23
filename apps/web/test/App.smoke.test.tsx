@@ -507,6 +507,88 @@ describe('App', () => {
     expect(screen.getByText('Cleaned')).toBeInTheDocument();
   });
 
+  it('refreshes the open drawer\'s Timeline list live when a realtime broadcast changes this unit — real bug, reported live 2026-08-23', async () => {
+    const housekeepingUser = {
+      ...currentUser,
+      roles: ['HOUSEKEEPING_STAFF'],
+      permissions: { 'unit:read': 'ALL', 'unit:update_status': 'ALL' },
+    };
+    const unit = {
+      id: 'unit_1',
+      code: 'R04',
+      name: 'Room 4',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: null,
+      status: 'CLEANING',
+      version: 1,
+      notes: null,
+      isActive: true,
+      latestNote: null,
+    };
+    let timelineCallCount = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+      if (url.endsWith('/units/unit_1/timeline')) {
+        timelineCallCount += 1;
+        if (timelineCallCount === 1) {
+          return jsonResponse(200, { events: [] });
+        }
+        return jsonResponse(200, {
+          events: [
+            {
+              id: 'event_new',
+              fromStatus: 'CLEANING',
+              toStatus: 'CLEANED',
+              note: null,
+              createdAt: new Date().toISOString(),
+              actor: { id: 'user_2', fullName: 'Someone Else', employeeCode: 'LWW-099' },
+            },
+          ],
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Units' }));
+    await waitFor(() => expect(screen.getByText('R04')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByText('R04'));
+
+    await waitFor(() => expect(screen.getByText('No status changes recorded yet.')).toBeInTheDocument());
+    expect(timelineCallCount).toBe(1);
+
+    await waitFor(() => expect(capturedRealtimeHandlers).not.toBeNull());
+
+    // A status change on this exact unit, broadcast from elsewhere,
+    // while its drawer is open here. UnitsPage patches its own `units`
+    // state directly from this event (not a refetch of GET /units), so
+    // the drawer's timeline refetch is the thing actually being tested.
+    act(() => {
+      capturedRealtimeHandlers?.onEvent({
+        entityId: 'unit_1',
+        actorId: 'user_2',
+        at: new Date().toISOString(),
+        summary: 'R04 moved to CLEANED',
+        fromStatus: 'CLEANING',
+        toStatus: 'CLEANED',
+        version: 2,
+        note: null,
+      });
+    });
+
+    await waitFor(() => expect(timelineCallCount).toBe(2));
+    await waitFor(() => expect(screen.queryByText('No status changes recorded yet.')).not.toBeInTheDocument());
+    expect(screen.getByText('Someone Else', { exact: false })).toBeInTheDocument();
+  });
+
   it('renders the Command Center: real KPI counts, an explicitly-stubbed KPI/attention item, a dirty-room alert, and the activity feed', async () => {
     const managerUser = {
       ...currentUser,

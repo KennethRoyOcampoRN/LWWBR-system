@@ -39,6 +39,19 @@ export function createApp(options: CreateAppOptions = {}) {
   // Prisma extension (lib/prisma.ts) reads actor/ip/userAgent from.
   app.use(attachRequestContext);
 
+  // Every route here reads live operational state (unit status, work
+  // orders, sessions...) — Express sets an ETag on JSON bodies by
+  // default, and with no Cache-Control at all a browser can legitimately
+  // reuse a cached response under some conditions (a back/forward-cache
+  // restore, a stale 304 revalidation) without the app ever getting a
+  // chance to serve fresh data. There is no cacheable GET in this API;
+  // `no-store` on everything under /api/v1 removes an entire class of
+  // "why is the UI showing old data" reports before they start.
+  app.use('/api/v1', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   app.use('/api/v1', healthRouter);
   app.use('/api/v1', authRouter);
   app.use('/api/v1', usersRouter);
