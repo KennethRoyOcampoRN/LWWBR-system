@@ -4,9 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   setting: { findMany: vi.fn() },
-  unit: { findMany: vi.fn() },
+  unit: { findMany: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
+  unitStatusEvent: { create: vi.fn() },
   bookingUnit: { findMany: vi.fn() },
-  booking: { create: vi.fn() },
+  booking: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn() },
+  checkInRecord: { create: vi.fn() },
+  checkOutRecord: { create: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
@@ -68,6 +71,52 @@ function validOvernightBody(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function fakeBookingUnit(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'bu_1',
+    bookingId: 'booking_1',
+    unitId: 'unit_1',
+    rate: '2500.00',
+    unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'READY' },
+    ...overrides,
+  };
+}
+
+function fakeBooking(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'booking_1',
+    referenceNo: 'LWW-260823-0003',
+    guestName: 'Jane Dela Cruz',
+    guestPhone: null,
+    guestEmail: null,
+    source: 'WALK_IN',
+    type: 'OVERNIGHT',
+    status: 'PENDING',
+    pax: 2,
+    childrenPax: 0,
+    arrivalDate: new Date('2026-08-25T00:00:00.000Z'),
+    departureDate: new Date('2026-08-26T00:00:00.000Z'),
+    startAt: new Date('2026-08-25T06:00:00.000Z'),
+    endAt: new Date('2026-08-26T04:00:00.000Z'),
+    totalAmount: '2500.00',
+    notes: null,
+    createdById: 'user_2',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    deletedAt: null,
+    units: [fakeBookingUnit()],
+    ...overrides,
+  };
+}
+
+// The plain unit row applyAutomaticUnitStatusChange fetches on its own
+// (a separate query from the booking's nested `units[].unit` include) —
+// kept in sync with fakeBookingUnit's nested unit by each test that
+// needs a specific status.
+function fakeUnitForCheckin(overrides: Partial<Record<string, unknown>> = {}) {
+  return { id: 'unit_1', code: 'R01', status: 'READY', version: 0, deletedAt: null, ...overrides };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
@@ -77,6 +126,11 @@ beforeEach(() => {
   mockPrisma.setting.findMany.mockResolvedValue([]); // fall back to shared defaults
   mockPrisma.referenceSequence.upsert.mockResolvedValue({ scope: 'LWW-260823', seq: 1 });
   mockPrisma.bookingUnit.findMany.mockResolvedValue([]); // no conflicts by default
+  mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+  mockPrisma.unitStatusEvent.create.mockResolvedValue({});
+  mockPrisma.booking.update.mockResolvedValue({});
+  mockPrisma.checkInRecord.create.mockResolvedValue({});
+  mockPrisma.checkOutRecord.create.mockResolvedValue({});
 });
 
 describe('POST /api/v1/bookings — creation with real availability checking (spec §6/§7.5)', () => {
@@ -405,5 +459,252 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
     const res = await request(createApp()).get('/api/v1/units/unit_1/bookings').set('Cookie', authCookie());
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/v1/bookings/:id — accepts either the cuid or referenceNo', () => {
+  it('finds a booking by referenceNo', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(fakeBooking());
+
+    const res = await request(createApp()).get('/api/v1/bookings/LWW-260823-0003').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.booking.referenceNo).toBe('LWW-260823-0003');
+    const whereArg = mockPrisma.booking.findFirst.mock.calls[0]?.[0]?.where;
+    expect(whereArg.OR).toEqual([{ id: 'LWW-260823-0003' }, { referenceNo: 'LWW-260823-0003' }]);
+  });
+
+  it('returns 404 for an unknown booking', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp()).get('/api/v1/bookings/does_not_exist').set('Cookie', authCookie());
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/bookings?search= — the guest-name-lookup half of check-in', () => {
+  it('searches by guest name, scoped to PENDING/CONFIRMED bookings', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findMany.mockResolvedValue([fakeBooking()]);
+
+    const res = await request(createApp()).get('/api/v1/bookings?search=Jane').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.bookings).toHaveLength(1);
+    const whereArg = mockPrisma.booking.findMany.mock.calls[0]?.[0]?.where;
+    expect(whereArg.status.in).toEqual(['PENDING', 'CONFIRMED', 'CHECKED_IN']);
+    expect(whereArg.OR).toEqual([
+      { guestName: { contains: 'Jane', mode: 'insensitive' } },
+      { referenceNo: { contains: 'Jane', mode: 'insensitive' } },
+    ]);
+  });
+
+  it('rejects a search with no query string (422, schema-level)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+
+    const res = await request(createApp()).get('/api/v1/bookings').set('Cookie', authCookie());
+
+    expect(res.status).toBe(422);
+  });
+});
+
+describe('POST /api/v1/bookings/:id/checkin — urgent gap, spec §7.5 (client decision 2026-08-23)', () => {
+  it('checks in a PENDING booking against a READY unit: unit -> OCCUPIED, booking -> CHECKED_IN', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(fakeBooking())
+      .mockResolvedValueOnce(fakeBooking({ status: 'CHECKED_IN' }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForCheckin());
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.booking.status).toBe('CHECKED_IN');
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'unit_1', version: 0 }, data: expect.objectContaining({ status: 'OCCUPIED' }) }),
+    );
+    expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fromStatus: 'READY', toStatus: 'OCCUPIED', source: 'AUTOMATIC' }) }),
+    );
+    expect(mockPrisma.booking.update).toHaveBeenCalledWith({ where: { id: 'booking_1' }, data: { status: 'CHECKED_IN' } });
+    expect(mockPrisma.checkInRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ bookingId: 'booking_1', checkedInById: 'user_1' }) }),
+    );
+  });
+
+  it('also allows checking in a CONFIRMED booking', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(fakeBooking({ status: 'CONFIRMED' }))
+      .mockResolvedValueOnce(fakeBooking({ status: 'CHECKED_IN' }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForCheckin());
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['CHECKED_IN', 'CHECKED_OUT', 'CANCELLED', 'NO_SHOW'])(
+    'rejects checking in a booking already at %s (422 INVALID_TRANSITION)',
+    async (status) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(fakeBooking({ status }));
+
+      const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('INVALID_TRANSITION');
+      expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['OUT_OF_ORDER', 'BLOCKED'])('hard-blocks check-in when the unit is %s (409 UNIT_UNAVAILABLE)', async (status) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(
+      fakeBooking({ units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status } })] }),
+    );
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_UNAVAILABLE');
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('hard-blocks check-in when the unit is already OCCUPIED by another booking, never overridable', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(
+      fakeBooking({ units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } })] }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/checkin')
+      .set('Cookie', authCookie())
+      .send({ acknowledgeNotReady: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_UNAVAILABLE');
+  });
+
+  it.each(['VACANT_DIRTY', 'CLEANING', 'CLEANED'])(
+    'warns rather than hard-blocking check-in when the unit is %s and not yet acknowledged (409 UNIT_NOT_READY) — real edge case flagged in the report',
+    async (status) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(
+        fakeBooking({ units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status } })] }),
+      );
+
+      const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('UNIT_NOT_READY');
+      expect(res.body.error.details).toEqual(expect.objectContaining({ unitId: 'unit_1', unitStatus: status }));
+      expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('proceeds with check-in from a non-READY unit once acknowledgeNotReady is true', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(fakeBooking({ units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'VACANT_DIRTY' } })] }))
+      .mockResolvedValueOnce(fakeBooking({ status: 'CHECKED_IN' }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForCheckin({ status: 'VACANT_DIRTY' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/checkin')
+      .set('Cookie', authCookie())
+      .send({ acknowledgeNotReady: true });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'OCCUPIED' }) }),
+    );
+  });
+
+  it('requires authentication', async () => {
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').send({});
+    expect(res.status).toBe(401);
+  });
+
+  it('is forbidden for a caller without booking:checkin', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER', { roles: [] }));
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkin').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(403);
+    expect(mockPrisma.booking.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/v1/bookings/:id/checkout — unconditional, no payment gate now or ever (client decision 2026-08-23)', () => {
+  it('checks out a CHECKED_IN booking: unit -> VACANT_DIRTY, booking -> CHECKED_OUT, regardless of any balance', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(
+        fakeBooking({ status: 'CHECKED_IN', units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } })] }),
+      )
+      .mockResolvedValueOnce(fakeBooking({ status: 'CHECKED_OUT' }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForCheckin({ status: 'OCCUPIED' }));
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkout').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.booking.status).toBe('CHECKED_OUT');
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'VACANT_DIRTY' }) }),
+    );
+    expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fromStatus: 'OCCUPIED', toStatus: 'VACANT_DIRTY', source: 'AUTOMATIC' }) }),
+    );
+    expect(mockPrisma.booking.update).toHaveBeenCalledWith({ where: { id: 'booking_1' }, data: { status: 'CHECKED_OUT' } });
+    // No balance/payment field anywhere in the request or the write path.
+    expect(mockPrisma.checkOutRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.not.objectContaining({ balance: expect.anything() }) }),
+    );
+  });
+
+  it.each(['PENDING', 'CONFIRMED', 'CHECKED_OUT', 'CANCELLED', 'NO_SHOW'])(
+    'rejects checking out a booking not currently CHECKED_IN (422 INVALID_TRANSITION), from %s',
+    async (status) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(fakeBooking({ status }));
+
+      const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkout').set('Cookie', authCookie()).send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('INVALID_TRANSITION');
+      expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('requires authentication', async () => {
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkout').send({});
+    expect(res.status).toBe(401);
+  });
+
+  it('is forbidden for a caller without booking:checkout', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER', { roles: [] }));
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkout').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('does not fail checkout when the realtime broadcast itself fails', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(
+        fakeBooking({ status: 'CHECKED_IN', units: [fakeBookingUnit({ unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } })] }),
+      )
+      .mockResolvedValueOnce(fakeBooking({ status: 'CHECKED_OUT' }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForCheckin({ status: 'OCCUPIED' }));
+    mockRealtimeEmit.mockRejectedValue(new Error('Supabase Realtime unreachable'));
+
+    const res = await request(createApp()).post('/api/v1/bookings/booking_1/checkout').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
   });
 });

@@ -1,3 +1,5 @@
+import type { PermissionKey } from './permissions.js';
+
 // Spec §6's Booking model + §7.5's availability rules. Mirrors
 // workOrder.ts's split: enum-shaped keys/types the frontend and backend
 // both need, plus pure helpers with no Prisma/Express dependency so they
@@ -14,13 +16,54 @@ export type BookingSourceKey = (typeof BOOKING_SOURCE_KEYS)[number];
 // the doc (§7.6 "a booking currently CHECKED_IN", §8.4 needs a NO_SHOW
 // state to report on) rather than spelling it out as a pipe list — see
 // the Prisma schema's own comment on BookingStatus for the full
-// reasoning. The transition table between these states (PENDING ->
-// CONFIRMED -> CHECKED_IN -> CHECKED_OUT, CANCELLED/NO_SHOW as escapes)
-// is out of scope for this creation-only first M4 slice — every booking
-// this slice creates starts at PENDING; check-in/check-out/cancellation
-// are later slices.
+// reasoning.
 export const BOOKING_STATUS_KEYS = ['PENDING', 'CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT', 'CANCELLED', 'NO_SHOW'] as const;
 export type BookingStatusKey = (typeof BOOKING_STATUS_KEYS)[number];
+
+export interface BookingTransition {
+  to: BookingStatusKey;
+  permission: PermissionKey;
+}
+
+// Urgent real-world gap found live-testing, 2026-08-23: a booking
+// created for today had no way to actually process the guest's arrival
+// — check-in didn't exist yet. This is the transition table §7 asks
+// for ("implement each as an explicit transition table... never
+// duplicate this logic"), but deliberately minimal: only the two edges
+// this slice actually builds an endpoint for. PENDING and CONFIRMED
+// both go straight to CHECKED_IN — spec never describes a manual
+// PENDING -> CONFIRMED step, and since payment/confirmation tracking is
+// explicitly out of scope for this system (client decision, 2026-08-23:
+// "payment is handled entirely outside this system... this system's
+// purpose is monitoring and coordinating, not handling money"), there's
+// no trigger that would ever move a booking to CONFIRMED anyway — both
+// states mean the same thing here: "not yet arrived." CANCELLED/NO_SHOW
+// have no triggering endpoint yet either — the enum values exist (spec
+// §6) but nothing in this codebase can produce them, so their edges
+// stay empty rather than advertising a button with nowhere to wire up.
+export const BOOKING_TRANSITIONS: Record<BookingStatusKey, BookingTransition[]> = {
+  PENDING: [{ to: 'CHECKED_IN', permission: 'booking:checkin' }],
+  CONFIRMED: [{ to: 'CHECKED_IN', permission: 'booking:checkin' }],
+  CHECKED_IN: [{ to: 'CHECKED_OUT', permission: 'booking:checkout' }],
+  CHECKED_OUT: [],
+  CANCELLED: [],
+  NO_SHOW: [],
+};
+
+export function getBookingTransition(from: BookingStatusKey, to: BookingStatusKey): BookingTransition | undefined {
+  return (BOOKING_TRANSITIONS[from] ?? []).find((t) => t.to === to);
+}
+
+export function canTransitionBooking(from: BookingStatusKey, to: BookingStatusKey): boolean {
+  return getBookingTransition(from, to) !== undefined;
+}
+
+export function allowedBookingTransitions(
+  from: BookingStatusKey,
+  permissions: Partial<Record<PermissionKey, unknown>>,
+): BookingStatusKey[] {
+  return (BOOKING_TRANSITIONS[from] ?? []).filter((t) => permissions[t.permission]).map((t) => t.to);
+}
 
 // A booking in either of these states no longer holds its unit(s) — it
 // never happened (CANCELLED) or already ended (CHECKED_OUT) — so it must

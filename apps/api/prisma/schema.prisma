@@ -296,6 +296,7 @@ enum UnitStatusEventSource {
   MANUAL // an ordinary staff-driven transition (spec §7.1)
   AUTOMATIC_OVERRIDE // the SYSTEM_ADMIN-only override for the 3 automatic-only transitions
   FORCED_CORRECTION // a direct jump to any status, to correct stale data
+  AUTOMATIC // the real trigger: booking check-in (READY->OCCUPIED) / check-out (OCCUPIED->VACANT_DIRTY), M4. Distinct from AUTOMATIC_OVERRIDE, which is the SYSTEM_ADMIN-only stopgap for when this doesn't fire.
 }
 
 model UnitStatusEvent {

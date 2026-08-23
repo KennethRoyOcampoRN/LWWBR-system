@@ -52,6 +52,49 @@ async function broadcastUnitStatusChanged(params: {
   }
 }
 
+// Exported for the bookings module — check-in/check-out are the real
+// "automatic" trigger the transition table's own comment has been
+// waiting for since M2 ("No booking module yet (M4) to call this
+// automatically"). First real cross-module import in this codebase,
+// deliberately: Unit/UnitStatusEvent lifecycle is owned here, and a
+// booking action is exactly the kind of caller that comment describes —
+// this avoids duplicating the version-increment / event-write /
+// broadcast logic a second time in the bookings module. Bypasses
+// getTransition()'s own permission check entirely (unlike
+// changeUnitStatus above): the caller has already gated on its own
+// booking:checkin/booking:checkout permission, and this was never a
+// manual transition to begin with — this function trusts its caller
+// rather than re-deriving authorization for a transition the manual
+// table doesn't (and shouldn't) grant to anyone.
+export async function applyAutomaticUnitStatusChange(
+  unitId: string,
+  toStatus: 'OCCUPIED' | 'VACANT_DIRTY',
+  actorId: string,
+): Promise<{ id: string; code: string; fromStatus: UnitStatusKey; toStatus: UnitStatusKey; version: number }> {
+  const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
+  if (!unit) {
+    throw new ApiError(404, 'NOT_FOUND', 'Unit not found');
+  }
+  const fromStatus = unit.status as UnitStatusKey;
+
+  const result = await prisma.unit.updateMany({
+    where: { id: unitId, version: unit.version },
+    data: { status: toStatus, version: { increment: 1 } },
+  });
+  if (result.count === 0) {
+    throw new ApiError(409, 'VERSION_CONFLICT', 'This unit was changed by someone else — refresh and try again.');
+  }
+
+  await prisma.unitStatusEvent.create({
+    data: { unitId, fromStatus, toStatus, actorId, source: 'AUTOMATIC' },
+  });
+
+  const newVersion = unit.version + 1;
+  await broadcastUnitStatusChanged({ unitId, code: unit.code, fromStatus, toStatus, actorId, version: newVersion, note: null });
+
+  return { id: unitId, code: unit.code, fromStatus, toStatus, version: newVersion };
+}
+
 // Prisma's Decimal doesn't serialize to a plain JSON number on its own
 // (res.json() would emit its internal object shape) — every UnitType
 // response goes through this so the API surface is always plain numbers.

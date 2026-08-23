@@ -2358,3 +2358,112 @@ LWW-260823-0003" now renders in its own section.
 Full repo lint/typecheck/build clean; `apps/api` 210/213 (+4, same 3
 pre-existing network-blocked round-trip tests); `apps/web` 30/30
 (existing test extended, not a new file).
+
+### Check-in / check-out (M4, urgent priority) + a durable scope correction: monitoring, not transactions (2026-08-23)
+
+Client report, real and urgent: "I created a test booking for today's
+date... with check-in not yet built, there's currently no way to
+process this guest's arrival at all." Booking creation alone left every
+new reservation stuck at `PENDING` forever — nothing in the codebase
+could ever move a booking forward, and nothing could trigger the
+`READY -> OCCUPIED` / `OCCUPIED -> VACANT_DIRTY` automatic Unit
+transitions `unitStatus.ts` had been modeled for (as `trigger:
+'automatic'`) since M2, with a comment literally saying "No booking
+module yet (M4) to call this automatically." This slice is that call.
+
+Also carries a durable architectural correction from the client that
+applies to every milestone from here on, not just this one: **this
+system monitors and coordinates the resort's operations — it does not
+handle money.** Guests pay via a separate booking website or the
+cashier's own POS. Concretely for this slice: checkout is an
+unconditional `OCCUPIED -> VACANT_DIRTY` status flip, never gated on a
+balance or payment-settlement check, now or later — there is no balance
+field anywhere in the check-out schema or `CheckOutRecord` write. The
+same principle carries forward to M5 (restaurant) and M6 (reports):
+"charge to room" on a future F&B order will be a simple informational
+flag ("guest wants this billed to their room, settled separately via
+the POS"), never a balance calculation.
+
+**Backend.** New `BOOKING_TRANSITIONS` table in `packages/shared`
+(spec §7's "implement each as an explicit transition table" pattern,
+now a fourth domain alongside unit/work-order transitions):
+`PENDING`/`CONFIRMED` -> `CHECKED_IN` (`booking:checkin`), `CHECKED_IN`
+-> `CHECKED_OUT` (`booking:checkout`); every other edge is empty on
+purpose — nothing in this codebase can produce `CANCELLED`/`NO_SHOW`
+yet, so no button advertises a transition with nowhere to wire up.
+
+`POST /bookings/:id/checkin` and `POST /bookings/:id/checkout`
+(`:id` accepts either the internal id or the human-readable
+`referenceNo` — spec §6.1 calls that the thing "staff will read aloud
+over radio and type into Messenger"). Check-in is deliberately
+lightweight per the client's own ask — every field is optional with a
+default, so a bare `{}` completes it; no new date or payment fields,
+since those already exist on the booking from creation.
+
+Handled the real edge case the client explicitly called out — "don't
+assume check-in only ever happens from a Ready room." Spec §7.5: "A
+unit that simply isn't READY yet at check-in raises a warning the front
+desk acknowledges rather than a hard block." Implemented as a two-step
+protocol: the first attempt omits `acknowledgeNotReady`; if any unit
+isn't `READY`, the server responds `409 UNIT_NOT_READY` with the
+offending unit's code/status, and the client resubmits with
+`acknowledgeNotReady: true` to proceed. Genuinely hard blocks —
+`OUT_OF_ORDER`/`BLOCKED`, or a unit already `OCCUPIED` by a different
+booking — reuse the existing `409 UNIT_UNAVAILABLE` code and are never
+overridable by that flag. A multi-unit booking validates every one of
+its units before writing any change to any of them.
+
+`applyAutomaticUnitStatusChange`, exported from `units/service.ts` and
+imported into `bookings/service.ts`, is the first real cross-module
+service import in this codebase — a deliberate, documented exception to
+the established "no cross-module imports" rule: Unit/`UnitStatusEvent`
+lifecycle is owned by the units module, and this reuses its existing
+version-increment / event-write / realtime-broadcast logic rather than
+duplicating it. It bypasses the manual transition table's own
+permission check entirely — the caller has already gated on its own
+`booking:checkin`/`booking:checkout` permission, and this was never a
+manual transition to begin with.
+
+Added a new, distinct `AUTOMATIC` value to the `UnitStatusEventSource`
+enum (schema change — **run `npx prisma db push` before live-testing
+this slice**), kept separate from the existing `AUTOMATIC_OVERRIDE`
+(the `SYSTEM_ADMIN`-only stopgap for when this real trigger doesn't
+fire) so the audit trail can still tell "this really happened via
+check-in" apart from "someone manually forced it."
+
+`GET /bookings?search=` powers a single lookup panel serving both
+directions — the same guest-name-or-reference-number search finds a
+booking awaiting arrival (`PENDING`/`CONFIRMED`) and one currently
+in-house (`CHECKED_IN`) to check out, so front desk never needs two
+different screens.
+
+**Frontend.** `BookingsPage` gained a "Check-in / check-out" panel,
+placed above "New booking" — a guest waiting at the desk is more
+time-sensitive than starting a new reservation. Search finds a booking
+by reference or name, selecting it shows the guest, dates, and each
+unit's live status badge; check-in shows "Confirm arrival" normally, or
+an amber warning with a "Check in anyway" button when a unit isn't
+Ready yet; check-out shows "Confirm departure" unconditionally for a
+`CHECKED_IN` booking — no balance display anywhere. A successful action
+refetches the unit list so the "New booking" picker immediately
+reflects the just-changed status.
+
+7 new frontend tests (successful check-in from a Ready unit; the
+not-ready-warning-then-acknowledge round trip, asserting the second
+request actually carries `acknowledgeNotReady: true`; the hard
+`UNIT_UNAVAILABLE` block when a unit is already occupied; unconditional
+check-out). Re-verified the not-ready-warning-then-acknowledge flow in a
+real headless browser against a mocked API: the warning renders, "Check
+in anyway" sends the acknowledged retry, and the success message
+appears.
+
+Full repo lint/typecheck/build clean; `packages/shared` 62/62 (+8, the
+new `BOOKING_TRANSITIONS`/`allowedBookingTransitions` tests); `apps/api`
+238/241 (+28, same 3 pre-existing network-blocked round-trip tests);
+`apps/web` 34/34 (+4). **Not yet built:** `CANCELLED`/`NO_SHOW`
+transitions (no triggering endpoint yet), folio/payment tracking
+(deliberately out of scope per the client's own correction above), and
+this slice has **not yet been live-tested against the real Supabase
+database** — same sandbox limitation as every prior milestone. Requires
+a schema push before the client's own test:
+`cd apps/api && npx prisma db push`.

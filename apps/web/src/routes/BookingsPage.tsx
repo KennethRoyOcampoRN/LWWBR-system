@@ -3,12 +3,243 @@ import {
   BOOKING_TYPE_KEYS,
   type AnyUnitStatusKey,
   type BookingSourceKey,
+  type BookingStatusKey,
   type BookingTypeKey,
 } from '@lwwbr/shared';
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_SOURCE_LABELS, BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
 import { UNIT_STATUS_CLASSES, UNIT_STATUS_LABELS } from '../lib/unitStatusStyle.js';
+
+interface BookingSearchUnit {
+  unitId: string;
+  rate: number;
+  unit: { id: string; code: string; name: string; status: AnyUnitStatusKey };
+}
+
+interface BookingSearchResult {
+  id: string;
+  referenceNo: string;
+  guestName: string;
+  type: BookingTypeKey;
+  status: BookingStatusKey;
+  startAt: string;
+  endAt: string;
+  units: BookingSearchUnit[];
+}
+
+function formatBookingWindow(booking: { type: BookingTypeKey; startAt: string; endAt: string }): string {
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'short' };
+  return `${new Date(booking.startAt).toLocaleString('en-PH', opts)} – ${new Date(booking.endAt).toLocaleString('en-PH', opts)}`;
+}
+
+// Urgent gap, 2026-08-23: "with check-in not yet built, there's
+// currently no way to process this guest's arrival at all." One lookup
+// panel drives both actions — "input an existing Booking ID (or guest
+// name lookup), confirm arrival" — since the same search (guest name or
+// reference number) finds both a booking awaiting arrival and one
+// currently checked in, the button shown just follows whatever the
+// booking's own status allows next, via the shared BOOKING_TRANSITIONS
+// table (mirrors how the work order detail drawer derives its own
+// transition buttons).
+function CheckInOutPanel({ onProcessed }: { onProcessed: () => void }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<BookingSearchResult[] | 'idle' | 'loading' | 'error'>('idle');
+  const [selected, setSelected] = useState<BookingSearchResult | null>(null);
+  const [notReadyWarning, setNotReadyWarning] = useState<{ unitCode: string; unitStatus: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  async function handleSearch(e: FormEvent) {
+    e.preventDefault();
+    setSelected(null);
+    setNotReadyWarning(null);
+    setActionError(null);
+    setSuccessMessage(null);
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setResults('loading');
+    try {
+      const res = await api.get<{ bookings: BookingSearchResult[] }>(`/bookings?search=${encodeURIComponent(trimmed)}`);
+      setResults(res.bookings);
+    } catch {
+      setResults('error');
+    }
+  }
+
+  function selectBooking(booking: BookingSearchResult) {
+    setSelected(booking);
+    setNotReadyWarning(null);
+    setActionError(null);
+    setSuccessMessage(null);
+  }
+
+  async function confirmArrival(acknowledgeNotReady = false) {
+    if (!selected) return;
+    setSubmitting(true);
+    setActionError(null);
+    try {
+      await api.post(`/bookings/${selected.id}/checkin`, acknowledgeNotReady ? { acknowledgeNotReady: true } : {});
+      setSuccessMessage(`${selected.referenceNo} checked in — ${selected.guestName}.`);
+      setNotReadyWarning(null);
+      setSelected(null);
+      setResults('idle');
+      setQuery('');
+      onProcessed();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'UNIT_NOT_READY') {
+        const details = err.details as { unitCode?: string; unitStatus?: string } | undefined;
+        setNotReadyWarning({ unitCode: details?.unitCode ?? 'The unit', unitStatus: details?.unitStatus ?? 'not ready' });
+      } else if (err instanceof ApiRequestError && err.code === 'UNIT_UNAVAILABLE') {
+        const details = err.details as { unitCode?: string } | undefined;
+        setActionError(`${details?.unitCode ?? 'That unit'} cannot be checked in right now — ${err.message}`);
+      } else {
+        setActionError(err instanceof ApiRequestError ? err.message : 'Could not check in this booking.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function confirmDeparture() {
+    if (!selected) return;
+    setSubmitting(true);
+    setActionError(null);
+    try {
+      await api.post(`/bookings/${selected.id}/checkout`, {});
+      setSuccessMessage(`${selected.referenceNo} checked out — ${selected.guestName}.`);
+      setSelected(null);
+      setResults('idle');
+      setQuery('');
+      onProcessed();
+    } catch (err) {
+      setActionError(err instanceof ApiRequestError ? err.message : 'Could not check out this booking.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded border border-blue-300 bg-blue-50 p-4">
+      <h2 className="text-sm font-semibold">Check-in / check-out</h2>
+      <form onSubmit={(e) => void handleSearch(e)} className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1 text-sm">
+          Booking reference or guest name
+          <input
+            className="w-64 rounded border border-gray-300 px-2 py-1"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="e.g. LWW-260823-0003 or Jane"
+          />
+        </label>
+        <button type="submit" className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white">
+          Look up
+        </button>
+      </form>
+
+      {results === 'loading' && <p className="text-sm text-gray-500">Searching…</p>}
+      {results === 'error' && <p role="alert" className="text-sm text-red-600">Could not search bookings.</p>}
+      {Array.isArray(results) && results.length === 0 && (
+        <p className="text-sm text-gray-500">No matching bookings awaiting arrival or currently checked in.</p>
+      )}
+      {Array.isArray(results) && results.length > 0 && !selected && (
+        <ul className="flex flex-col gap-1">
+          {results.map((booking) => (
+            <li key={booking.id}>
+              <button
+                type="button"
+                onClick={() => selectBooking(booking)}
+                className="flex w-full flex-wrap items-center gap-2 rounded border border-gray-200 bg-white p-2 text-left text-sm hover:border-blue-400"
+              >
+                <span className="font-mono text-xs text-gray-500">{booking.referenceNo}</span>
+                <span className="font-medium">{booking.guestName}</span>
+                <span className="text-xs text-gray-500">
+                  {BOOKING_TYPE_LABELS[booking.type]} · {formatBookingWindow(booking)}
+                </span>
+                <span className="text-xs text-gray-500">{booking.status === 'CHECKED_IN' ? 'Checked in' : 'Awaiting arrival'}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {selected && (
+        <div className="flex flex-col gap-2 rounded border border-gray-200 bg-white p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">{selected.guestName}</p>
+              <p className="text-xs font-mono text-gray-500">{selected.referenceNo}</p>
+            </div>
+            <button onClick={() => setSelected(null)} className="text-xs text-gray-500 hover:underline">
+              Back to results
+            </button>
+          </div>
+          <p className="text-sm text-gray-700">
+            {BOOKING_TYPE_LABELS[selected.type]} · {formatBookingWindow(selected)}
+          </p>
+          <ul className="flex flex-wrap gap-2">
+            {selected.units.map((u) => (
+              <li key={u.unitId} className="flex items-center gap-1 text-sm">
+                {u.unit.code} — {u.unit.name}
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${UNIT_STATUS_CLASSES[u.unit.status]}`}>
+                  {UNIT_STATUS_LABELS[u.unit.status]}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          {notReadyWarning && (
+            <div role="alert" className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+              <p>
+                {notReadyWarning.unitCode} is not Ready yet (currently {UNIT_STATUS_LABELS[notReadyWarning.unitStatus as AnyUnitStatusKey] ?? notReadyWarning.unitStatus}). Spec §7.5: real
+                check-ins happen while the room is still being finished — this is a warning, not a hard block.
+              </p>
+              <button
+                onClick={() => void confirmArrival(true)}
+                disabled={submitting}
+                className="w-fit rounded border border-amber-600 bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-900 disabled:opacity-50"
+              >
+                {submitting ? 'Checking in…' : 'Check in anyway'}
+              </button>
+            </div>
+          )}
+
+          {actionError && (
+            <p role="alert" className="text-sm text-red-600">
+              {actionError}
+            </p>
+          )}
+
+          {!notReadyWarning && (selected.status === 'PENDING' || selected.status === 'CONFIRMED') && (
+            <button
+              onClick={() => void confirmArrival(false)}
+              disabled={submitting}
+              className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {submitting ? 'Checking in…' : 'Confirm arrival'}
+            </button>
+          )}
+          {selected.status === 'CHECKED_IN' && (
+            <button
+              onClick={() => void confirmDeparture()}
+              disabled={submitting}
+              className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {submitting ? 'Checking out…' : 'Confirm departure (check out)'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {successMessage && (
+        <p role="status" className="text-sm font-medium text-green-800">
+          {successMessage}
+        </p>
+      )}
+    </div>
+  );
+}
 
 interface UnitOption {
   id: string;
@@ -68,11 +299,15 @@ export function BookingsPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedBooking | null>(null);
 
-  useEffect(() => {
+  function refetchUnits() {
     api
       .get<{ units: UnitOption[] }>('/units')
       .then((res) => setUnits(res.units))
       .catch(() => setUnits('error'));
+  }
+
+  useEffect(() => {
+    refetchUnits();
     api
       .get<{ unitTypes: UnitTypeOption[] }>('/unit-types')
       .then((res) => setUnitTypes(res.unitTypes))
@@ -156,6 +391,11 @@ export function BookingsPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-lg font-semibold">Bookings</h1>
+
+      {/* Urgent priority, 2026-08-23: check-in/check-out sits above "New
+          booking" — a guest waiting at the desk to arrive or depart is a
+          more time-sensitive action than starting a new reservation. */}
+      <CheckInOutPanel onProcessed={refetchUnits} />
 
       <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
         <h2 className="text-sm font-semibold">New booking</h2>

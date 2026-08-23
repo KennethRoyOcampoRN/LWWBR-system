@@ -1,8 +1,10 @@
 import { TZDate } from '@date-fns/tz';
 import {
   BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
+  canTransitionBooking,
   DEFAULT_BOOKING_WINDOW_SETTINGS,
   windowsConflict,
+  type BookingStatusKey,
   type BookingTypeKey,
   type BookingWindowSettings,
 } from '@lwwbr/shared';
@@ -10,7 +12,13 @@ import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { prisma } from '../../lib/prisma.js';
 import { generateReferenceNo } from '../../lib/referenceNo.js';
-import type { CreateBookingInput } from './schema.js';
+// First real cross-module import in this codebase — see
+// applyAutomaticUnitStatusChange's own doc comment in units/service.ts
+// for why: Unit/UnitStatusEvent lifecycle is owned there, check-in/
+// check-out are the trigger, and this avoids a second copy of the
+// version-increment / event-write / broadcast logic.
+import { applyAutomaticUnitStatusChange } from '../units/service.js';
+import type { CheckInBookingInput, CheckOutBookingInput, CreateBookingInput } from './schema.js';
 
 // Spec §3.2: "Timezone Asia/Manila everywhere... never store naive local
 // time." A guest checking in at "2:00 PM" means 2:00 PM in Manila
@@ -239,6 +247,195 @@ export async function createBooking(input: CreateBookingInput, actor: BookingAct
   }
 
   return bookingToJson(booking);
+}
+
+// `id` accepts either the internal cuid or the human-readable
+// referenceNo — front desk staff think of "LWW-260823-0003" as the
+// booking's id, not the cuid backing it, and spec §6.1 itself calls
+// referenceNo the thing "staff will read aloud over radio and type into
+// Messenger." Shared by getBooking, checkInBooking, and
+// checkOutBooking, all of which need the same booking-with-units shape
+// to validate their own transition.
+async function findBookingWithUnits(idOrReferenceNo: string) {
+  const booking = await prisma.booking.findFirst({
+    where: { OR: [{ id: idOrReferenceNo }, { referenceNo: idOrReferenceNo }], deletedAt: null },
+    include: { units: { include: { unit: true } } },
+  });
+  if (!booking) {
+    throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
+  }
+  return booking;
+}
+
+export async function getBooking(idOrReferenceNo: string) {
+  const booking = await findBookingWithUnits(idOrReferenceNo);
+  return bookingToJson({
+    ...booking,
+    units: booking.units.map((bu) => ({
+      id: bu.id,
+      unitId: bu.unitId,
+      rate: bu.rate,
+      unit: { id: bu.unit.id, code: bu.unit.code, name: bu.unit.name, status: bu.unit.status },
+    })),
+  });
+}
+
+// Powers the single lookup panel that drives both check-in and
+// check-out — "input an existing Booking ID (or guest name lookup),
+// confirm arrival" reuses the exact same search for finding a
+// CHECKED_IN booking to check out, so the status filter here covers
+// both: PENDING/CONFIRMED (awaiting arrival, checkinable) and
+// CHECKED_IN (currently in-house, checkoutable). CHECKED_OUT/CANCELLED/
+// NO_SHOW are excluded — nothing actionable left to do with those from
+// this panel.
+export async function searchBookings(query: string) {
+  const bookings = await prisma.booking.findMany({
+    where: {
+      deletedAt: null,
+      status: { in: ['PENDING', 'CONFIRMED', 'CHECKED_IN'] },
+      OR: [
+        { guestName: { contains: query, mode: 'insensitive' } },
+        { referenceNo: { contains: query, mode: 'insensitive' } },
+      ],
+    },
+    include: { units: { include: { unit: { select: { id: true, code: true, name: true, status: true } } } } },
+    orderBy: { startAt: 'asc' },
+    take: 10,
+  });
+  return bookings.map((booking) => bookingToJson(booking));
+}
+
+// Urgent gap found live-testing, 2026-08-23: "with check-in not yet
+// built, there's currently no way to process this guest's arrival at
+// all." Deliberately lightweight per the client's own instruction — no
+// new date/payment fields, just confirm-arrival against a booking that
+// already exists. Validates every unit *before* writing anything
+// (all-or-nothing for a multi-unit booking), then applies the real
+// automatic READY -> OCCUPIED transition unitStatus.ts's own comment
+// has been waiting on since M2.
+export async function checkInBooking(idOrReferenceNo: string, input: CheckInBookingInput, actor: BookingActor) {
+  const booking = await findBookingWithUnits(idOrReferenceNo);
+
+  const fromStatus = booking.status as BookingStatusKey;
+  if (!canTransitionBooking(fromStatus, 'CHECKED_IN')) {
+    throw new ApiError(422, 'INVALID_TRANSITION', `Cannot check in a booking from ${fromStatus}`);
+  }
+
+  for (const bu of booking.units) {
+    const unit = bu.unit;
+    if (unit.status === 'OUT_OF_ORDER' || unit.status === 'BLOCKED') {
+      throw new ApiError(
+        409,
+        'UNIT_UNAVAILABLE',
+        `${unit.code} is ${unit.status === 'OUT_OF_ORDER' ? 'out of order' : 'blocked'} and cannot be checked in.`,
+        { unitId: unit.id, unitCode: unit.code, reason: unit.status },
+      );
+    }
+    if (unit.status === 'OCCUPIED') {
+      throw new ApiError(409, 'UNIT_UNAVAILABLE', `${unit.code} is already occupied by another booking.`, {
+        unitId: unit.id,
+        unitCode: unit.code,
+        reason: 'OCCUPIED',
+      });
+    }
+    // Spec §7.5: "A unit that simply isn't READY yet at check-in raises
+    // a warning the front desk acknowledges rather than a hard block —
+    // real check-ins happen while the room is still being finished."
+    // Real edge case flagged in the same report: don't assume check-in
+    // only ever happens from a READY room.
+    if (unit.status !== 'READY' && !input.acknowledgeNotReady) {
+      throw new ApiError(
+        409,
+        'UNIT_NOT_READY',
+        `${unit.code} is not Ready yet (currently ${unit.status}) — confirm to check in anyway.`,
+        { unitId: unit.id, unitCode: unit.code, unitStatus: unit.status },
+      );
+    }
+  }
+
+  for (const bu of booking.units) {
+    await applyAutomaticUnitStatusChange(bu.unit.id, 'OCCUPIED', actor.id);
+  }
+
+  await prisma.checkInRecord.create({
+    data: {
+      bookingId: booking.id,
+      checkedInAt: new Date(),
+      checkedInById: actor.id,
+      waiverSigned: input.waiverSigned,
+      wristbandsIssued: input.wristbandsIssued,
+      keyDepositAmount: input.keyDepositAmount,
+      vehiclePlate: input.vehiclePlate,
+      idPresented: input.idPresented,
+      notes: input.notes,
+    },
+  });
+  await prisma.booking.update({ where: { id: booking.id }, data: { status: 'CHECKED_IN' } });
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: booking.id,
+      actorId: actor.id,
+      at: new Date().toISOString(),
+      summary: `${booking.referenceNo} checked in — ${booking.guestName}`,
+      fromStatus,
+      toStatus: 'CHECKED_IN',
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (check-in) failed:', error);
+  }
+
+  return getBooking(booking.id);
+}
+
+// "Build checkout as a simple, permanent status flip: OCCUPIED ->
+// VACANT_DIRTY, unconditional — not gated on any payment-settlement
+// check, now or later." No balance/folio check anywhere in this
+// function, deliberately — payment lives entirely outside this system
+// per the client's own architectural correction, 2026-08-23.
+export async function checkOutBooking(idOrReferenceNo: string, input: CheckOutBookingInput, actor: BookingActor) {
+  const booking = await findBookingWithUnits(idOrReferenceNo);
+
+  const fromStatus = booking.status as BookingStatusKey;
+  if (!canTransitionBooking(fromStatus, 'CHECKED_OUT')) {
+    throw new ApiError(422, 'INVALID_TRANSITION', `Cannot check out a booking from ${fromStatus}`);
+  }
+
+  for (const bu of booking.units) {
+    if (bu.unit.status !== 'OCCUPIED') {
+      throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code} is not currently Occupied.`);
+    }
+  }
+
+  for (const bu of booking.units) {
+    await applyAutomaticUnitStatusChange(bu.unit.id, 'VACANT_DIRTY', actor.id);
+  }
+
+  await prisma.checkOutRecord.create({
+    data: {
+      bookingId: booking.id,
+      checkedOutAt: new Date(),
+      checkedOutById: actor.id,
+      damagesNoted: input.damagesNoted,
+      depositRefunded: input.depositRefunded,
+    },
+  });
+  await prisma.booking.update({ where: { id: booking.id }, data: { status: 'CHECKED_OUT' } });
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: booking.id,
+      actorId: actor.id,
+      at: new Date().toISOString(),
+      summary: `${booking.referenceNo} checked out — ${booking.guestName}`,
+      fromStatus,
+      toStatus: 'CHECKED_OUT',
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (check-out) failed:', error);
+  }
+
+  return getBooking(booking.id);
 }
 
 // Real gap found live-testing, 2026-08-23: bookings existed in complete

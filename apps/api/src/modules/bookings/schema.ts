@@ -48,3 +48,49 @@ export const createBookingSchema = z
   });
 
 export type CreateBookingInput = z.infer<typeof createBookingSchema>;
+
+// Urgent gap, 2026-08-23: "input an existing Booking ID... confirm
+// arrival — no new date/payment fields needed, those already exist on
+// the booking record from creation." Deliberately lightweight — every
+// field here is optional with a default, so a bare `{}` completes a
+// check-in. The CheckInRecord columns these map to (waiverSigned,
+// wristbandsIssued, keyDepositAmount, idPresented) are NOT NULL in the
+// schema, so the defaults exist to satisfy that constraint without ever
+// forcing the front desk to fill them in under pressure — they can be
+// captured later if the front desk wants the detail, never required to
+// complete the actual check-in action.
+export const checkInBookingSchema = z.object({
+  // Spec §7.5: "A unit that simply isn't READY yet at check-in raises a
+  // warning the front desk acknowledges rather than a hard block — real
+  // check-ins happen while the room is still being finished." First
+  // attempt omits this; the server responds 409 UNIT_NOT_READY if any
+  // unit isn't READY, and the client resubmits with this set to true to
+  // proceed anyway. OUT_OF_ORDER/BLOCKED/already-OCCUPIED units are
+  // never overridable this way — hard blocks regardless.
+  acknowledgeNotReady: z.boolean().optional().default(false),
+  waiverSigned: z.boolean().optional().default(false),
+  wristbandsIssued: z.number().int().min(0).optional().default(0),
+  keyDepositAmount: z.number().nonnegative().optional().default(0),
+  vehiclePlate: z.string().trim().max(50).optional(),
+  idPresented: z.boolean().optional().default(false),
+  notes: z.string().trim().max(2000).optional(),
+});
+export type CheckInBookingInput = z.infer<typeof checkInBookingSchema>;
+
+// "Build checkout as a simple, permanent status flip... unconditional —
+// not gated on any payment-settlement check, now or later." No balance
+// field anywhere in this schema, deliberately — see the client's own
+// architectural note: payment lives entirely outside this system.
+export const checkOutBookingSchema = z.object({
+  damagesNoted: z.string().trim().max(2000).optional(),
+  depositRefunded: z.boolean().optional().default(false),
+});
+export type CheckOutBookingInput = z.infer<typeof checkOutBookingSchema>;
+
+// Powers the "guest name lookup" half of the check-in flow — the other
+// half is pasting a known booking id/referenceNo directly into
+// GET /bookings/:id, which needs no query schema of its own.
+export const searchBookingsQuerySchema = z.object({
+  search: z.string().trim().min(1).max(200),
+});
+export type SearchBookingsQuery = z.infer<typeof searchBookingsQuerySchema>;
