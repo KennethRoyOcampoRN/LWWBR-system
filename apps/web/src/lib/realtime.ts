@@ -41,7 +41,22 @@ function getSupabaseClient() {
     cachedClient = null;
     return cachedClient;
   }
-  cachedClient = createClient(url, anonKey);
+  try {
+    // Real bug, found live 2026-08-22: .env.example's placeholder
+    // (`https://<project-ref>.supabase.co`) left in .env untouched
+    // crashed createClient() with an uncaught "Invalid supabaseUrl" —
+    // thrown synchronously from inside a React effect, with no error
+    // boundary in this app, so it took down the whole Units page to a
+    // blank screen with no visible message. A malformed value (leftover
+    // placeholder, typo) must degrade to 'disabled' the same way a
+    // missing one does, not crash the tree.
+    cachedClient = createClient(url, anonKey);
+  } catch (error) {
+    console.error(
+      `VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are set but invalid (still a placeholder from .env.example, or a typo?) — realtime status updates are disabled; the grid still refreshes via its 60s poll fallback. Underlying error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    cachedClient = null;
+  }
   return cachedClient;
 }
 

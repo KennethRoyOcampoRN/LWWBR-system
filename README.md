@@ -784,7 +784,7 @@ field even when no note was given. This closes out the forced
 status-correction feature for the night — no outstanding gaps between
 this feature and what the client asked for.
 
-### Realtime status updates — done, not yet live-tested (2026-08-22)
+### Realtime status updates — done, live-verified (2026-08-22)
 
 Spec §11's M2 acceptance line: "two browsers open the grid; a status
 change in one appears in the other within 2s without refresh." Spec §3
@@ -822,10 +822,7 @@ throwing — realtime is simply off, not broken, and the grid still works
 off the poll fallback below. New `apps/web/.env.example` documents the
 two vars; `apps/web/.env` itself isn't committed (already covered by the
 repo's blanket `.env` gitignore rule) and needs the real anon key from
-the Supabase dashboard (Settings → API) before this can be live-tested —
-**not yet set locally in this sandbox**, so this has not been (and
-cannot be, from here) tested against the real Supabase Realtime service;
-only the mocked component test below has run.
+the Supabase dashboard (Settings → API).
 
 `UnitsPage` subscribes on mount and patches the matching unit's
 `status`/`version`/`latestNote` in place when a broadcast arrives — no
@@ -865,6 +862,61 @@ requiring real network access this sandbox doesn't have — confirmed
 these are unrelated to tonight's changes by re-running the realtime
 round-trip test in isolation with no code changes of mine).
 
-**Not yet live-tested**: needs `VITE_SUPABASE_ANON_KEY` filled in from
-the Supabase dashboard, then the actual two-browser check spec §11
-describes.
+**Real bug, found live 2026-08-22, fixed same day**: `apps/web/.env`
+had `VITE_SUPABASE_URL` still set to `.env.example`'s literal placeholder
+(`https://<project-ref>.supabase.co`) rather than the real project URL —
+one variable filled in, the one next to it missed. `createClient()`
+throws synchronously on a malformed URL; `getSupabaseClient()` called it
+with no `try/catch`, and that throw happened inside a React effect with
+no error boundary anywhere in the app, so it took down the entire Units
+page to a blank screen with no visible error message — worse than the
+already-handled "env vars simply unset" case, which correctly logs a
+warning and degrades to `'disabled'`. Fixed by wrapping the
+`createClient()` call in `try/catch` too: a malformed URL (leftover
+placeholder, typo) now degrades to `'disabled'` exactly the same way a
+missing one does, with a `console.error` naming the likely cause, instead
+of crashing the tree. New test (`apps/web/test/realtime.test.ts`) mocks
+`@supabase/supabase-js`'s `createClient` to throw and asserts
+`subscribeToUnitStatusChanges` reports `'disabled'` without throwing.
+**Checked for the same risk elsewhere**: `apps/api/.env.example` has an
+analogous pair of easy-to-half-fill-in placeholders
+(`SUPABASE_URL=https://<project-ref>.supabase.co` next to
+`DATABASE_URL`/`DIRECT_URL`, which embed the same `<project-ref>`) — left
+as-is for now since the failure mode there is different in kind (a
+backend process fails loudly in its own logs/terminal on a bad
+connection string, not a silent blank browser screen with no error
+surfaced to a user) and wasn't reported as broken; worth the same
+crash-safety treatment if it ever causes a similar report.
+
+**Live-verified by the user, 2026-08-22, two ways**: (1) changed a
+unit's status in one browser, watched it update live with no manual
+refresh in a separate browser/session; (2) cross-role — changed status
+logged in as one demo user, watched it update live logged in as a
+different demo user in the other browser, confirming the broadcast
+pipeline works regardless of which role triggers the change or which
+role is watching it. This closes out spec §11's M2 acceptance line for
+real.
+
+**Open item, not urgent, noted by the user for a future milestone**:
+every role tested tonight holds full `unit:read` — whether a role with
+*partial* unit visibility (not yet built anywhere in this system) would
+correctly receive broadcasts only for units it's permitted to see, versus
+receiving every unit's broadcast regardless of role, has not been
+exercised. The current `property` channel broadcasts unit status changes
+to every subscriber unconditionally — there's no per-role filtering on
+the wire. Revisit once/if a role with restricted unit visibility is
+built.
+
+---
+
+**Stopping point, 2026-08-22.** Everything built tonight is now
+live-verified against real infrastructure (the hosted Supabase project),
+not just code-reviewed or unit-tested: the unit status state machine and
+transition table, the SYSTEM_ADMIN-only automatic-transition override,
+forced status correction (including its note-visibility redesign and the
+empty-note bugfix), and realtime status updates via Supabase Realtime
+broadcast. Task 14 closes out the units/status-machine portion of M2.
+**Not started**: the rest of spec §8.2's Command Center — the KPI strip,
+live activity feed, and attention queue widgets — `DashboardPage` is
+still the placeholder landing page noted above. Holding here on explicit
+instruction; no further M2 work until given the go-ahead.
