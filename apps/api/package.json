@@ -13,7 +13,8 @@
     "pretest": "prisma generate && npm --prefix ../../packages/shared run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "fix:stale-inspected-units": "tsx scripts/fixStaleInspectedUnits.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
