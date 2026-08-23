@@ -182,7 +182,7 @@ describe('WorkOrdersPage', () => {
     expect(screen.queryByText('New ticket')).not.toBeInTheDocument();
   });
 
-  it('an ALL-scoped workorder:read_all holder (e.g. SYSTEM_ADMIN) gets the flat "Work Orders" / "Tickets" list, unchanged from before department dashboards existed', async () => {
+  it('an ALL-scoped workorder:read_all holder (e.g. SYSTEM_ADMIN) gets the flat "Work Orders" / "Tickets" list, unchanged from before department dashboards existed, plus an additive "Assigned to you" section', async () => {
     const user = userEvent.setup();
     const managerUser = { ...currentUser, permissions: { ...currentUser.permissions, 'workorder:read_all': 'ALL' } };
     const listRow = {
@@ -197,10 +197,26 @@ describe('WorkOrdersPage', () => {
       assignedTo: null,
       createdAt: new Date().toISOString(),
     };
+    // A ticket assigned to the manager themself — proves a property-wide
+    // role can genuinely be assigned work, and that this shows up in the
+    // new "Assigned to you" section without it replacing the full list.
+    const myTicket = {
+      id: 'wo_6',
+      referenceNo: 'WO-260823-0006',
+      type: 'MAINTENANCE',
+      title: 'Fix the lobby AC',
+      priority: 'HIGH',
+      status: 'IN_PROGRESS',
+      department: 'MAINTENANCE',
+      unit: null,
+      assignedTo: { fullName: 'POC Maintenance (Demo)' },
+      createdAt: new Date().toISOString(),
+    };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.includes('/work-orders?mine=true')) return jsonResponse(200, { workOrders: [myTicket] });
       if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -215,6 +231,13 @@ describe('WorkOrdersPage', () => {
     expect(screen.getByText('WO-260823-0005')).toBeInTheDocument();
     // No department grouping, no "My Tasks" framing for this role.
     expect(screen.queryByText('Unassigned')).not.toBeInTheDocument();
+
+    // The additive section: both the full list and "Assigned to you" render.
+    expect(screen.getByText('Assigned to you')).toBeInTheDocument();
+    await screen.findByText('WO-260823-0006');
+    expect(screen.getByText('Fix the lobby AC')).toBeInTheDocument();
+    // Still shows the full list too — additive, not a replacement.
+    expect(screen.getByText('Broken chair in function hall')).toBeInTheDocument();
   });
 
   it('"My Tasks" sorts active work ahead of completed work, for a caller with only the floor permission', async () => {

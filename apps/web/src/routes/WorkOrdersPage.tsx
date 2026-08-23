@@ -847,6 +847,12 @@ export function WorkOrdersPage() {
   const { user } = useAuth();
   const mode = deriveDashboardMode(user);
   const [workOrders, setWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
+  // FULL_LIST-only: a property-wide role (SYSTEM_ADMIN, RESORT_MANAGER,
+  // ...) can genuinely be assigned a ticket too, but had no quick way to
+  // see just their own without scanning the entire property's list —
+  // real gap found live-testing. Additive to the full list below, not a
+  // replacement — MY_TASKS and DEPARTMENT_QUEUE are unaffected.
+  const [myWorkOrders, setMyWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -862,6 +868,17 @@ export function WorkOrdersPage() {
       .get<{ workOrders: WorkOrderRow[] }>(mode === 'MY_TASKS' ? '/work-orders?mine=true' : '/work-orders')
       .then((res) => setWorkOrders(res.workOrders))
       .catch(() => setWorkOrders('error'));
+    // FULL_LIST also fetches its own ?mine=true — the same query MY_TASKS
+    // uses — purely to power the additive "Assigned to you" section; a
+    // property-wide role's ALL-scope visibility already lets this same
+    // filter narrow correctly, same backend rule, no new endpoint needed.
+    if (mode === 'FULL_LIST') {
+      setMyWorkOrders('loading');
+      api
+        .get<{ workOrders: WorkOrderRow[] }>('/work-orders?mine=true')
+        .then((res) => setMyWorkOrders(res.workOrders))
+        .catch(() => setMyWorkOrders('error'));
+    }
     // Best-effort: not every role that can create a ticket also holds
     // unit:read (e.g. Restaurant Staff filing a GENERAL ticket) — if
     // this fails, the "Related unit" field just doesn't render rather
@@ -878,6 +895,9 @@ export function WorkOrdersPage() {
 
   function handleDetailChanged(workOrder: WorkOrderRow) {
     setWorkOrders((prev) =>
+      Array.isArray(prev) ? prev.map((wo) => (wo.id === workOrder.id ? { ...wo, ...workOrder } : wo)) : prev,
+    );
+    setMyWorkOrders((prev) =>
       Array.isArray(prev) ? prev.map((wo) => (wo.id === workOrder.id ? { ...wo, ...workOrder } : wo)) : prev,
     );
   }
@@ -929,6 +949,21 @@ export function WorkOrdersPage() {
             );
           })}
         </>
+      )}
+
+      {mode === 'FULL_LIST' && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
+          {myWorkOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+          {myWorkOrders === 'error' && <p role="alert">Could not load your assigned tickets.</p>}
+          {Array.isArray(myWorkOrders) && (
+            <WorkOrderList
+              workOrders={sortForMyTasks(myWorkOrders)}
+              onSelect={setSelectedId}
+              emptyMessage="Nothing assigned to you right now."
+            />
+          )}
+        </section>
       )}
 
       {Array.isArray(workOrders) && mode === 'FULL_LIST' && (

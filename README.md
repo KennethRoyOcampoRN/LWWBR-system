@@ -1720,6 +1720,65 @@ HOUSEKEEPING employee with their department shown.
 Full repo lint/typecheck/build clean; `apps/api` 162/165 (same 3
 pre-existing network-blocked tests); `apps/web` 23/23.
 
+### M3 core work-order slice confirmed end to end (2026-08-23) — client live-tested against the real Supabase database
+
+Client ran a fresh end-to-end test on the real hosted database (ticket
+WO-260823-0002) covering the whole slice built so far: creation with
+the mandatory issue-photo gate, the assignee picker (now showing all
+employees with department context, including SYSTEM_ADMIN), assignment
+persisting correctly (status Open -> Assigned, "Assigned to" updated),
+and the full status lifecycle through Start -> Done (the completion-
+photo gate fired correctly and was resolved by attaching a photo) ->
+Verify. All confirmed working as designed.
+
+M3's core work-order functionality is genuinely done: creation with
+photo evidence enforcement, the ticket detail view with photo viewing,
+assignment across departments, and the complete status lifecycle
+(Assign -> Start -> Done -> Verify/Reopen -> Cancel). Four real bugs
+were found and fixed along the way through live testing rather than
+code review alone — the department-filtered assignee picker, the
+competing "Mark Assigned" button that bypassed the real picker, the
+unit detail drawer's timeline not refreshing on a realtime status
+change, and a stale `INSPECTED` unit status left over from a direct
+database write outside the app.
+
+**Holding here per client instruction.** Still queued, no action until
+given the go-ahead: department dashboards, a "My tasks" view,
+per-assignee realtime notifications (today's broadcasts cover the
+property-wide activity feed only), and EXIF capture-time verification
+on uploaded photos.
+
+### "Assigned to you" added to the full-list dashboard (2026-08-23) — real gap found live-testing
+
+Client feedback: an ALL-scoped `workorder:read_all` holder (SYSTEM_ADMIN,
+RESORT_MANAGER, ...) can genuinely be assigned a ticket — confirmed live
+(LWW-001 shows up as a valid assignee option, and a floor-staff account's
+My Tasks view correctly shows a real assigned ticket, so the underlying
+mechanism clearly works) — but the full-list dashboard those roles get
+had no way to see just their own assigned work without scanning the
+entire property's ticket list.
+
+Added an "Assigned to you" section above the existing flat "Tickets"
+list, `FULL_LIST` mode only — additive, not a replacement. It reuses
+the exact `?mine=true` query the `MY_TASKS` dashboard already uses
+(`assignedToId: actor.id`, layered on top of whatever visibility scope
+the caller already has), fetched as a second, independent request
+alongside the existing full-list fetch, and sorted with the same
+active-work-first `sortForMyTasks()` helper — no new backend endpoint,
+no new query semantics, same code paths already proven correct for
+`MY_TASKS`. `DEPARTMENT_QUEUE` and `MY_TASKS` are both unchanged.
+
+Updated the existing "flat list, unchanged" test to also assert the new
+section renders correctly alongside the full list, without one crowding
+out the other. Re-verified in a real headless browser: a SYSTEM_ADMIN
+account's Work Orders page now shows both "Assigned to you" (one
+ticket) and "Tickets" (the full property-wide list, including that same
+ticket) at once.
+
+Full repo lint/typecheck/build clean; `apps/web` 25/25 (no new test
+count — the existing "flat list, unchanged" test was extended with the
+new assertions rather than split into a separate test).
+
 ### Client-confirmed: M3's core work-order slice is done (2026-08-23)
 
 Client ran a fresh live end-to-end test against the real hosted
