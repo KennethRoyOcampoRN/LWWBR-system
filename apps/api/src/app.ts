@@ -2,14 +2,17 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import helmet from 'helmet';
+import { MulterError } from 'multer';
 import { ZodError } from 'zod';
 import { ApiError } from './lib/apiError.js';
 import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { authRouter } from './modules/auth/router.js';
+import { filesRouter } from './modules/files/router.js';
 import { rolesRouter } from './modules/roles/router.js';
 import { unitsRouter } from './modules/units/router.js';
 import { usersRouter } from './modules/users/router.js';
+import { workOrdersRouter } from './modules/workorders/router.js';
 import { healthRouter } from './routes/health.js';
 
 export interface CreateAppOptions {
@@ -41,6 +44,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', usersRouter);
   app.use('/api/v1', rolesRouter);
   app.use('/api/v1', unitsRouter);
+  app.use('/api/v1', filesRouter);
+  app.use('/api/v1', workOrdersRouter);
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);
@@ -72,6 +77,21 @@ export function createApp(options: CreateAppOptions = {}) {
           code: 'VALIDATION_ERROR',
           message: 'Invalid request body',
           details: err.issues,
+        },
+      });
+      return;
+    }
+
+    // Spec §7.2.1: "Max 10MB per file post-compression." multer throws
+    // its own error class for this (and other upload-limit violations)
+    // before our route handler ever runs, so it needs the same clean
+    // 422 shape as every other validation failure rather than falling
+    // through to the generic 500 below.
+    if (err instanceof MulterError) {
+      res.status(422).json({
+        error: {
+          code: err.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'UPLOAD_ERROR',
+          message: err.message,
         },
       });
       return;

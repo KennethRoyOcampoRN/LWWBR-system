@@ -1137,3 +1137,234 @@ should the KPI strip grow a fifth card — a combined "Cleaning/Cleaned"
 `occupied`/`outOfOrder` already work — or is that explicitly a follow-up
 for later? Not decided here; needs the client's call before building
 either way.
+
+---
+
+## M3 — Work orders — in progress
+
+First slice, per instruction to check in early rather than deliver the
+whole milestone at once: the transition table, the file-upload
+infrastructure every photo-evidence feature in this system will reuse,
+and ticket **creation** with spec §7.2.1's mandatory-photo gate enforced
+server-side — the milestone's headline acceptance criterion. Status
+transitions beyond creation (assign, start, complete, verify, reopen,
+cancel), the `DONE`-requires-`COMPLETION`-photo gate, department
+dashboards, and "My tasks" are **not** in this slice — next up.
+
+### Work order transition table (spec §7.2) — done
+
+`packages/shared/src/workOrder.ts`, same explicit-table pattern as
+`unitStatus.ts` (spec §7: "never duplicate this logic"):
+`OPEN → ASSIGNED → IN_PROGRESS → DONE → VERIFIED`, plus `CANCELLED` from
+`ASSIGNED`/`IN_PROGRESS` and `REOPENED` from `DONE` (looping back to
+`IN_PROGRESS`). Every transition's permission gate is a reasoned,
+documented choice since spec states the target states but not every
+gate explicitly — full reasoning is in the file's comments, summarized:
+`workorder:assign` for `OPEN → ASSIGNED`; `workorder:update_status` for
+the assigned tech progressing their own ticket
+(`ASSIGNED → IN_PROGRESS`, `IN_PROGRESS → DONE`, `REOPENED → IN_PROGRESS`);
+`workorder:close` for both cancellation paths — the one operational
+permission spec lists that isn't used anywhere else in this table, and
+"closing" a ticket without finishing it is exactly what cancelling
+mid-flight is; `workorder:verify` for **both** `DONE` outcomes
+(`VERIFIED` and `REOPENED`) — spec: "`DONE → VERIFIED` requires
+`workorder:verify`... `DONE → REOPENED` when QC fails," and verifying vs.
+rejecting are the same QC check's two outcomes, done by the same person.
+
+**Flagged, not silently decided**: spec's own ASCII diagram for §7.2
+draws a `CANCELLED` arrow from `ASSIGNED` and `IN_PROGRESS` only, not
+from `OPEN` — so an unassigned ticket currently has no cancel path in
+this table. Implemented to match the diagram literally rather than
+assume it's an omission (a mis-filed or duplicate `OPEN` ticket would
+currently need to be assigned first before it can be cancelled). Worth
+confirming with the client whether that's intentional.
+
+**Not yet resolved, needs the client's confirmation before the verify
+endpoint is built**: spec says "`DONE → VERIFIED` requires
+`workorder:verify`. Only the department POC or above may verify" — but
+the seeded matrix grants `workorder:verify` at `ALL` scope to
+`POC_HOUSEKEEPING`/`POC_MAINTENANCE` (not `DEPARTMENT` scope), so the
+"own department only" restriction isn't expressible through the generic
+permission-scope mechanism alone the way `workorder:read_all`'s
+`DEPARTMENT` scope is. Will need an explicit
+`actor.department === workOrder.department` check in the service layer
+once the verify endpoint is actually built (next slice) — noted here so
+it isn't silently forgotten.
+
+Spec §7.2.1's photo-requirements table (which `WorkOrderType` needs an
+`ISSUE` photo on create / a `COMPLETION` photo on `DONE`) lives as
+`DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS` — the seed value for a real
+`workOrder.photoRequirements` `Setting` row (see below), per spec's "so
+the client can loosen or tighten it later without a deploy."
+
+16 new `packages/shared` tests (transition coverage including the
+diagram-literal `CANCELLED` gap above, both `DONE` outcomes needing
+`workorder:verify`, a defensive check that an unrecognized `from` status
+degrades to "no transitions" rather than throwing — same defensive
+pattern as `unitStatus.ts` after the `INSPECTED` retirement — and the
+photo-requirements table itself).
+
+### File upload infrastructure — done, first real usage
+
+`StorageAdapter`/`SupabaseStorageAdapter` existed since M0 but had no
+real caller until now (same situation `RealtimeAdapter` was in before
+task 14). New `apps/api/src/modules/files`: `POST /files` accepts a
+single multipart field (`file`), validates it against spec §7.2.1's
+allowlist (`image/jpeg|png|webp|heic`, max 10MB) **before** it ever
+reaches the storage adapter — both in `multer`'s `fileFilter` (rejects
+before the body is even fully read) and again in the service layer (so
+the same check protects a future non-HTTP caller too) — stores it under
+a `randomUUID()`-prefixed key (never the client-supplied filename alone,
+which would be both a collision risk and a path-injection vector), and
+creates a `FileObject` row. Gated on `requireAuth` only, not a specific
+permission: uploading a raw file to your own account isn't itself a
+privileged action — each module that *attaches* a file to something
+(work-order photos today) enforces its own domain permission at that
+point instead.
+
+**Deliberately not built this slice: a generic `GET /files/:id` read
+route.** The storage adapter's own doc comment says "every read goes
+through the authenticated `/files/:id` route," but a single generic
+route can't meaningfully authorize *which* files a caller may see across
+every future module (a maintenance photo, a payment proof, a check-in
+waiver all have different visibility rules). Instead, `GET
+/work-orders/:id` embeds each photo's signed URL directly in its own
+response, authorized by that endpoint's own `workorder:read`/
+`workorder:read_all` scoping — reading a photo is only ever exposed
+through the domain endpoint that already knows whether this caller can
+see it. Revisit if a true cross-module generic read route turns out to
+be needed later.
+
+**Deliberately not built this slice: EXIF `capturedAt` extraction.**
+Spec §7.2.1: "Store `capturedAt` from EXIF when present, falling back to
+upload time... a 'completion' photo taken three days before the ticket
+existed is the fraud case to catch." No EXIF-parsing library is
+installed yet; `WorkOrderPhoto.capturedAt` is set to upload time
+unconditionally for now. Real, flagged gap — the fraud-detection
+"differs by >24h" check this field exists for isn't functional until
+EXIF extraction is added.
+
+4 new router tests: auth required, a successful upload creates the
+`FileObject` row with the right `contentType` passed to the storage
+adapter, an unsupported MIME type is rejected before storage is ever
+touched, and a request with no file attached is rejected.
+
+### Reference number generator (spec §6.1) — done, first real usage
+
+`apps/api/src/lib/referenceNo.ts`: spec's own instruction — "generate in
+a single shared service with a per-day sequence" — for the `referenceNo`
+every `WorkOrder`/`Booking`/`FnbOrder`/`AmenityRequest`/`StockRequest`/
+`Incident` gets. New `ReferenceSequence` model (`scope`, `seq`) — one row
+per `"<prefix>-<YYMMDD>"` scope (e.g. `"WO-260823"`); a Prisma `upsert`
+atomically increments `seq`, relying on Postgres's row-level locking
+during the upsert's implicit insert-or-update to stay correct under
+concurrent requests rather than a separate advisory lock. Produces
+`WO-260823-0001`, `WO-260823-0002`, etc., exactly matching spec's
+`WO-260821-0031` example format. First real user is `WorkOrder`;
+`Booking`/`FnbOrder`/`AmenityRequest`/`StockRequest`/`Incident` reuse the
+same function as their own milestones land, per spec's "single shared
+service" instruction — this was built now specifically so it doesn't
+get duplicated four more times later.
+
+**Schema change, additive only, low risk**: a new `ReferenceSequence`
+table — nothing existing is touched, no data migration needed, just
+`npx prisma db push` to create the table before this can be
+live-tested.
+
+### Work order creation with the mandatory photo-evidence gate (spec §7.2.1) — done, not yet live-tested
+
+The milestone's headline acceptance criterion: "a maintenance ticket
+cannot be created without an `ISSUE` photo... enforced by an API test
+that posts without the photo and asserts `422`, not just by a disabled
+button." `POST /work-orders` (`apps/api/src/modules/workorders`):
+photos are uploaded first via `POST /files`, then referenced by `fileId`
++ `kind` in the create request body (`photos: [{ fileId, kind,
+caption? }]`, max 6) — not embedded as raw bytes in the same request.
+`createWorkOrder()` reads the live `workOrder.photoRequirements`
+`Setting` (falling back to the shared default if that row is somehow
+missing — the gate must never go silently unenforced), and for each
+required `onCreate` photo kind for this ticket's `type`, checks the
+`photos` array actually contains one; if not, `422` with
+`{ code: 'PHOTO_REQUIRED', details: { kind } }`, exactly the shape spec
+specifies. Every referenced `fileId` is also verified to actually exist
+before the ticket is created (`422 VALIDATION_ERROR` otherwise) — a
+typo'd or already-deleted file id doesn't silently create a ticket with
+a broken photo reference.
+
+`referenceNo` is generated via the new shared service above.
+`department` is **explicit on creation, not derived from `type`** — a
+deliberate design call: the `WorkOrder.department` column has always
+been a plain required field, not something computed from `type`
+elsewhere in the schema, and a `type→department` mapping wouldn't be
+unambiguous anyway (a `GENERAL` ticket could reasonably belong to any
+department). The caller (front desk/ops staff filing the ticket) picks
+the department explicitly.
+
+Broadcasts `workorder.created` on the `property` channel on success —
+same best-effort pattern as task 14's `unit.status.changed` (wrapped in
+try/catch, logged not thrown, never fails the ticket creation itself).
+Spec §7.2's separate "urgent work orders push a realtime notification to
+everyone in the target department immediately" (a targeted
+`dept:{department}` channel, not the property-wide broadcast this uses)
+is **not yet built** — this broadcast alone covers the property-wide
+activity-feed use case the Command Center will eventually want from
+work orders, the same way it already does for unit status changes.
+
+**`GET /work-orders` and `GET /work-orders/:id`** were also built this
+slice — not strictly required for "create," but needed to verify
+creation actually worked and to unblock a future frontend. Read
+visibility is **not** a flat permission check: spec's own reasoning
+(documented in `rolePermissions.ts`'s header comment) is that
+`workorder:read` — granted to every role — is "the floor... read at
+least your own," while `workorder:read_all` is the elevated capability
+that actually gates "see the department queue / everything." So
+`listWorkOrders()`/`getWorkOrder()` branch on whether the caller also
+holds `workorder:read_all` and at what scope: `ALL` scope sees
+everything, `DEPARTMENT` scope sees only their own department's
+tickets, and a caller with only the floor `workorder:read` sees only
+tickets they created or are assigned to. This is a real, reasoned
+extension of the `requirePermission` middleware's own documented
+contract ("filtering query results... is the resource module's job") —
+not something the M1/M2 modules needed since none of them had a
+role-relative "your own vs. everyone's" distinction before.
+`GET /work-orders/:id` embeds each photo's signed URL (see the files
+section above) and returns `403` if the caller can't see this
+particular ticket under the same visibility rule.
+
+**Photo-requirements `Setting` seeded** (`apps/api/prisma/seed.ts`):
+`workOrder.photoRequirements`, upsert-with-overwrite like
+permissions/roles (config that should always match code until a
+`SYSTEM_ADMIN` deliberately edits it through an admin UI that doesn't
+exist yet — unlike units/unit-types, which are deliberately
+create-if-missing since they become real client data).
+
+14 new router tests: the photo gate rejects a `MAINTENANCE` ticket with
+no photos at all and with only a wrong-kind (`PROGRESS`) photo, both
+`422 PHOTO_REQUIRED` with the right `details.kind`; succeeds with the
+right `ISSUE` photo attached and broadcasts `workorder.created`;
+succeeds with no photos for `HOUSEKEEPING` (not required for that type);
+rejects an unresolvable `fileId`; survives a realtime-broadcast failure
+without failing creation; every seeded role (including `OWNER`, spec's
+own resolved-ambiguity case) can create a ticket; the three read-scoping
+tiers (own-only / department / everything) each produce the right Prisma
+`where` clause; `404` for an unknown ticket; `403` for a ticket outside
+the caller's visibility.
+
+Full repo verification: lint, typecheck, and build clean across all 3
+workspaces; `packages/shared` 44/44 (up from 28, +16 for the work-order
+transition table); `apps/api` 145/148 (same 3 pre-existing
+network-blocked round-trip tests, unrelated — confirmed stable across
+repeated runs); `apps/web` 15/15, unaffected by this slice.
+
+**Not yet live-tested against the real Supabase database** — same
+sandbox limitation as every prior milestone, plus this slice specifically
+needs `npx prisma db push` first (the new `ReferenceSequence` table —
+additive only, no data migration) and a real photo upload through
+`POST /files` to confirm the Supabase Storage round trip works for this
+new caller the way task 14's realtime round trip eventually did for
+broadcasts.
+
+**Next slice**: `PATCH`/`POST` status-transition endpoints (assign,
+start, mark done — with the `COMPLETION`-photo gate, verify, reopen with
+`attemptNo` increment, cancel), the department-match check on `verify`
+flagged above, then department dashboards and "My tasks."

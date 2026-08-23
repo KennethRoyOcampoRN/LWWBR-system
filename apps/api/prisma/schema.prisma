@@ -1173,3 +1173,20 @@ model Setting {
 
   updatedBy User? @relation(fields: [updatedById], references: [id])
 }
+
+// Spec §6.1: "WorkOrder, Booking, FnbOrder, AmenityRequest, StockRequest,
+// Incident each get a human-readable referenceNo... generate in a single
+// shared service with a per-day sequence." One row per (prefix, date)
+// scope (e.g. "WO-260823"); `apps/api/src/lib/referenceNo.ts` atomically
+// increments `seq` via a Prisma upsert, which relies on Postgres's
+// row-level locking during the upsert's implicit INSERT-or-UPDATE to
+// stay correct under concurrent requests — no separate advisory lock
+// needed. First real user is WorkOrder (M3); Booking/FnbOrder/
+// AmenityRequest/StockRequest/Incident reuse the same service as their
+// own milestones land.
+model ReferenceSequence {
+  id  String @id @default(cuid())
+  // "<prefix>-<YYMMDD>", e.g. "WO-260823".
+  scope String @unique
+  seq   Int    @default(0)
+}

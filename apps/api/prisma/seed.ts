@@ -6,6 +6,7 @@
 // No real staff names anywhere (spec §12 rule 9) — every demo user's
 // fullName is the role label itself, never a person.
 import {
+  DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS,
   PERMISSION_KEYS,
   ROLE_KEYS,
   ROLE_LABELS,
@@ -228,6 +229,21 @@ async function main() {
       data: { code: seed.code, name: seed.name, unitTypeId, type: seed.type, capacity },
     });
   }
+
+  console.warn('Seeding workOrder.photoRequirements setting...');
+  // Spec §7.2.1: "lives in a Setting... so the client can loosen or
+  // tighten it later without a deploy." Unlike units/unit-types, this is
+  // config that should always match the shared default until a
+  // SYSTEM_ADMIN deliberately edits it — upsert-with-overwrite, same
+  // idempotency treatment as permissions/roles above, not create-if-
+  // missing. If the client has already customized this Setting through
+  // an admin UI (not yet built), overwriting it here would be wrong —
+  // revisit this once that UI exists.
+  await prisma.setting.upsert({
+    where: { key: 'workOrder.photoRequirements' },
+    create: { key: 'workOrder.photoRequirements', value: DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS },
+    update: { value: DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS },
+  });
 
   console.warn('Verifying final role assignments...');
   const demoUsers = await prisma.user.findMany({
