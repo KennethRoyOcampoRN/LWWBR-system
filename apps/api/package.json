@@ -20,12 +20,14 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@date-fns/tz": "^1.5.0",
     "@lwwbr/shared": "*",
     "@prisma/client": "^6.2.1",
     "@supabase/supabase-js": "^2.47.10",
     "argon2": "^0.41.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "date-fns": "^4.4.0",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",

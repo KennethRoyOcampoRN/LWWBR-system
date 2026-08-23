@@ -6,6 +6,7 @@
 // No real staff names anywhere (spec §12 rule 9) — every demo user's
 // fullName is the role label itself, never a person.
 import {
+  DEFAULT_BOOKING_WINDOW_SETTINGS,
   DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS,
   PERMISSION_KEYS,
   ROLE_KEYS,
@@ -243,6 +244,35 @@ async function main() {
     where: { key: 'workOrder.photoRequirements' },
     create: { key: 'workOrder.photoRequirements', value: DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS },
     update: { value: DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS },
+  });
+
+  console.warn('Seeding booking window settings...');
+  // Spec §7.5: four separate Setting rows (not one combined blob, unlike
+  // workOrder.photoRequirements above), so the client can loosen or
+  // tighten one independently — e.g. change the turnaround buffer
+  // without touching check-in/out times. Same overwrite-on-seed
+  // treatment as photoRequirements: this should always match the shared
+  // default until a SYSTEM_ADMIN deliberately edits it through an admin
+  // UI (not yet built).
+  await prisma.setting.upsert({
+    where: { key: 'booking.dayTourWindow' },
+    create: { key: 'booking.dayTourWindow', value: DEFAULT_BOOKING_WINDOW_SETTINGS.dayTourWindow },
+    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.dayTourWindow },
+  });
+  await prisma.setting.upsert({
+    where: { key: 'booking.checkInTime' },
+    create: { key: 'booking.checkInTime', value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkInTime },
+    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkInTime },
+  });
+  await prisma.setting.upsert({
+    where: { key: 'booking.checkOutTime' },
+    create: { key: 'booking.checkOutTime', value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkOutTime },
+    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkOutTime },
+  });
+  await prisma.setting.upsert({
+    where: { key: 'booking.turnaroundMinutes' },
+    create: { key: 'booking.turnaroundMinutes', value: DEFAULT_BOOKING_WINDOW_SETTINGS.turnaroundMinutes },
+    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.turnaroundMinutes },
   });
 
   console.warn('Verifying final role assignments...');

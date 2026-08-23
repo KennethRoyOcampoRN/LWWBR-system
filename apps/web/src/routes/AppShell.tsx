@@ -9,7 +9,7 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read';
+  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'booking:create';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -18,6 +18,10 @@ const NAV_ITEMS: {
   // to read at least your own") — this nav item is effectively always
   // visible, same as the pattern already established for it server-side.
   { to: '/work-orders', label: 'Work Orders', permission: 'workorder:read' },
+  // Gated on booking:create rather than booking:read since this first M4
+  // slice is creation-only — there's no booking list/detail view yet for
+  // a read-only holder to land on. Revisit once GET /bookings exists.
+  { to: '/bookings', label: 'Bookings', permission: 'booking:create' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

@@ -1,6 +1,7 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.js';
 import { AppShell } from './routes/AppShell.js';
+import { BookingsPage } from './routes/BookingsPage.js';
 import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
 import { LoginPage } from './routes/LoginPage.js';
@@ -37,6 +38,14 @@ export function App() {
                   element={
                     <RequirePermission permission="workorder:read">
                       <WorkOrdersPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/bookings"
+                  element={
+                    <RequirePermission permission="booking:create">
+                      <BookingsPage />
                     </RequirePermission>
                   }
                 />

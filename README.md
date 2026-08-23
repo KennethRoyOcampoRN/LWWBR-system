@@ -2163,3 +2163,140 @@ one of them caught by the test suites alone until reproduced afterward.
 
 **Holding here per client instruction.** EXIF capture-time verification
 remains the one queued item — no action until given the go-ahead.
+
+## M4 — Bookings & availability
+
+### Booking creation with real availability checking (spec §6/§7.5) — first M4 slice, done, not yet live-tested
+
+M3 is fully closed — client confirmed the whole work-order lifecycle,
+all three dashboard shapes, notifications, and reassignment live against
+the real database. This starts M4 with its smallest coherent first
+slice per the client's own instruction: booking creation with real
+availability checking, not a scaffold.
+
+**`Booking`/`BookingUnit` already existed** in the schema from M0 —
+confirmed by reading `schema.prisma` directly rather than assuming;
+nothing recreated. Neither carries a `version` field (no optimistic-
+concurrency need yet, since this slice only creates — no update/cancel
+endpoint exists to race against).
+
+**`POST /bookings`** (`apps/api/src/modules/bookings/`): guest name/
+contact, type (`OVERNIGHT`/`DAY_TOUR`), date(s), one or more units, pax.
+Gated on `booking:create`, same `requirePermission` + fresh-`authUser`
+pattern as every other create route in this codebase.
+
+**Timezone resolution is the actual hard part of this slice** — spec
+§3.2: "Timezone Asia/Manila everywhere... never store naive local
+time." A guest checking in at "2:00 PM" means 2:00 PM in Manila
+regardless of what timezone the server process runs in. Installed
+`@date-fns/tz` (pre-approved in spec §12's dependency list specifically
+for this) — `TZDate(year, month, day, hours, minutes, 'Asia/Manila')`
+resolves a wall-clock instant to the correct UTC value Prisma actually
+stores, rather than hand-rolling offset arithmetic. `startAt`/`endAt`
+resolve from `arrivalDate`/`departureDate` plus three separate Setting
+rows (`booking.dayTourWindow`, `booking.checkInTime`,
+`booking.checkOutTime`) — separate rows, not one combined blob like
+`workOrder.photoRequirements`, so the client can loosen one
+independently (e.g. the turnaround buffer) without touching the others.
+Each falls back to spec's own stated default if the row is missing,
+same "never silently unenforced" reasoning as the work-order photo
+gate. Day tours never collect a `departureDate` from the client at
+all — enforced at the schema level (`.refine()`), not just left
+optional — since spec says day tours "have no such concept" and a
+mismatched pair should never even be constructible.
+
+**Real availability checking** (`packages/shared/src/booking.ts`'s
+`windowsConflict()`, a pure function with no Prisma dependency, unit-
+tested directly): a genuine datetime overlap check on `startAt`/`endAt`
+across `BookingUnit`, not date-equality — spec's own example: a cottage
+hosting a 9–5 day tour and a 14:00 overnight arrival on the same
+calendar day must not collide. Layered with the turnaround buffer
+(`booking.turnaroundMinutes`, default 60): spec states the buffer
+directionally ("a booking cannot start within the buffer of the
+previous one's end"), but the same housekeeping-gap reasoning applies
+symmetrically regardless of which of the two bookings is chronologically
+first — implemented that way and flagged as a deliberate reading beyond
+the literal text, not a silent assumption. `CANCELLED`/`CHECKED_OUT`
+bookings are excluded from the conflict query itself (they never hold a
+unit), while `NO_SHOW` deliberately still counts (it held the unit for
+its original window even though no guest arrived). A unit that's
+`OUT_OF_ORDER` or `BLOCKED` is rejected before any date math runs at
+all — spec: "cannot be assigned at all."
+
+**Overlap violations return `409 UNIT_UNAVAILABLE`** with the
+conflicting booking's `referenceNo` in `details` (plus `unitId`/
+`unitCode` for the frontend to name the unit in its error message) —
+"so the cashier can see who already holds it instead of guessing," per
+spec's own reasoning. The same status code covers an `OUT_OF_ORDER`/
+`BLOCKED` unit, unified under one "this unit isn't available for this
+booking" code since spec only specified the overlap case explicitly —
+a deliberate unification, not an oversight.
+
+**Rate and pricing**, kept deliberately simple for this first slice:
+rate auto-fills from `UnitType.baseRate` (or `dayTourRate`, falling
+back to `baseRate` if unset, for `DAY_TOUR`) and is overridable per
+unit, per spec §8.3's Cashier form. `totalAmount` = sum of resolved
+per-unit rates × nights for `OVERNIGHT`, a flat sum for `DAY_TOUR` (no
+per-hour math — spec's single fixed block). Extra-person rates, promo
+pricing, and multi-night discounting are real features but explicitly
+out of scope here, flagged rather than silently assumed away.
+`referenceNo` reuses the same shared `generateReferenceNo()` service
+from the work-order slice, prefix `LWW`.
+
+**Frontend** (`BookingsPage.tsx`, new nav item gated on
+`booking:create` — there's no list/detail view yet for a `booking:read`-
+only holder to land on, so the nav gate is intentionally narrower than
+the long-term permission): a single creation form, availability-aware
+in the sense spec asks for at this stage — `OUT_OF_ORDER`/`BLOCKED`
+units are shown (so the cashier isn't confused about what happened to
+them) but their checkbox is disabled, never selectable, with the real
+server-side check still the actual gate. A live estimated-total preview
+computes client-side from the same rate × nights logic, labeled
+explicitly as an estimate since the server computes the canonical
+figure. The day-tour/overnight toggle swaps the date fields entirely
+(no departure-date field rendered at all for `DAY_TOUR`, matching the
+schema's own refusal to accept one) rather than showing then ignoring
+it. A `409 UNIT_UNAVAILABLE` response renders inline with the
+conflicting reference number, the same pattern as the work-order
+photo-gate error.
+
+**Tests**: 7 new `packages/shared` tests for `windowsConflict()`
+directly (direct overlap, zero-buffer back-to-back, inside-the-buffer
+rejection matching spec's own day-tour/evening-arrival example, exactly-
+at-the-boundary allowed, well-clear allowed, buffer applied
+symmetrically in the reverse chronological order, and a nested-window
+sanity check). 18 new backend router tests: OVERNIGHT and DAY_TOUR
+creation with the exact resolved UTC instants asserted (not just "some
+date"), both departure-date `.refine()` rejections, duplicate-unit-in-
+one-booking rejection, unknown-unit rejection, `OUT_OF_ORDER`/`BLOCKED`
+rejection (parametrized), a direct-overlap conflict, a
+turnaround-buffer conflict, an exactly-at-the-boundary success, proof
+the `bookingUnit` query's `where` clause itself excludes
+`CANCELLED`/`CHECKED_OUT` (not just that a particular mock happened to
+return empty), rate auto-fill vs. override, auth/permission checks, a
+realtime-broadcast-failure-doesn't-fail-creation test (same pattern as
+work orders), and a live-Setting-overrides-the-default test. 3 new
+frontend component tests: end-to-end creation with the confirmation
+banner, the real 409 rendering inline, and the day-tour toggle hiding
+the departure-date field. Re-verified in a real headless browser: the
+`OUT_OF_ORDER` unit's checkbox is genuinely disabled, a real create
+succeeds and shows "8/25/2026, 2:00 PM – 8/26/2026, 12:00 PM" (correct
+Asia/Manila wall-clock display of the resolved UTC instants), and a
+second, overlapping create attempt against the same unit/dates surfaces
+the real `409` with the first booking's reference number inline.
+
+Full repo lint/typecheck/build clean; `packages/shared` 55/55 (+7);
+`apps/api` 206/209 (+18, same 3 pre-existing network-blocked round-trip
+tests); `apps/web` 30/30 (+3).
+
+**Not yet built this slice** (flagged, not silently skipped): no
+`GET /bookings` list/detail endpoint yet (this slice is creation-only,
+per the client's own explicit scope), no check-in/check-out, no
+`BookingStatus` transition table beyond every booking starting at
+`PENDING`, no payment/folio integration, no `Setting`-editing admin UI
+(the four `booking.*` rows are seeded with spec's defaults but not yet
+editable without a direct DB write). **Not yet live-tested against the
+real Supabase database** — same sandbox limitation as every prior
+milestone. Ready for the client's own live test: pull, run both
+servers, try to create overlapping bookings against real data to
+confirm the availability logic holds outside the mocked test suite.
