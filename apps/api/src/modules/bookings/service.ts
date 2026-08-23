@@ -240,3 +240,41 @@ export async function createBooking(input: CreateBookingInput, actor: BookingAct
 
   return bookingToJson(booking);
 }
+
+// Real gap found live-testing, 2026-08-23: bookings existed in complete
+// isolation from the Units view — a room could have a guest arriving in
+// an hour and the unit drawer showed nothing about it, only its live
+// status (correctly still governed by check-in/check-out, not bookings)
+// and its status-change Timeline (correctly scoped to status transitions
+// only, not reservations). This is a third, separate concept the drawer
+// needs: "does this unit have a reservation," shown alongside but never
+// blended into either of those two.
+//
+// Deliberately reuses BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY (the
+// same set the overlap check itself ignores) rather than inventing a
+// second definition of "not relevant anymore" — a booking that can't
+// block a new reservation shouldn't be shown as an active one here
+// either. The additional `endAt >= now` filter is what actually makes
+// this "current or future": excluding CANCELLED/CHECKED_OUT alone would
+// still let a merely-old PENDING/NO_SHOW booking linger in the list.
+export async function listUpcomingBookingsForUnit(unitId: string) {
+  const bookingUnits = await prisma.bookingUnit.findMany({
+    where: {
+      unitId,
+      deletedAt: null,
+      booking: {
+        deletedAt: null,
+        status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] },
+        endAt: { gte: new Date() },
+      },
+    },
+    include: {
+      booking: {
+        select: { id: true, referenceNo: true, guestName: true, type: true, status: true, startAt: true, endAt: true },
+      },
+    },
+    orderBy: { booking: { startAt: 'asc' } },
+    take: 5,
+  });
+  return bookingUnits.map((bu) => bu.booking);
+}

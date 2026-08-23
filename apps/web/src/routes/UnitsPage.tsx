@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
+import { BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
 import { subscribeToUnitStatusChanges, type RealtimeConnectionStatus } from '../lib/realtime.js';
 import { UNIT_STATUS_CLASSES, UNIT_STATUS_LABELS } from '../lib/unitStatusStyle.js';
 
@@ -48,6 +49,20 @@ interface UnitTypeRow {
   name: string;
 }
 
+// Real gap found live-testing, 2026-08-23: bookings existed in complete
+// isolation from the Units view. This is deliberately a separate concept
+// from TimelineEvent below — a reservation, not a status transition —
+// and never blended into the status badge or the Timeline list.
+interface UpcomingBooking {
+  id: string;
+  referenceNo: string;
+  guestName: string;
+  type: 'OVERNIGHT' | 'DAY_TOUR';
+  status: string;
+  startAt: string;
+  endAt: string;
+}
+
 interface TimelineEvent {
   id: string;
   // Always AnyUnitStatusKey: this is a historical record, and a past
@@ -81,6 +96,7 @@ function UnitDetailDrawer({
 }) {
   const { user } = useAuth();
   const [timeline, setTimeline] = useState<TimelineEvent[] | 'loading' | 'error'>('loading');
+  const [upcomingBookings, setUpcomingBookings] = useState<UpcomingBooking[] | 'loading' | 'error'>('loading');
   const [note, setNote] = useState('');
   const [changingTo, setChangingTo] = useState<UnitStatusKey | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +120,18 @@ function UnitDetailDrawer({
       .then((res) => setTimeline(res.events))
       .catch(() => setTimeline('error'));
   }, [unit.id, unit.version]);
+
+  // Independent of unit.version — a booking's own lifecycle (created,
+  // reassigned to a different unit, cancelled) doesn't bump the Unit
+  // row's version at all, so refetching only on unit.id (opening a
+  // different unit) is correct here, unlike Timeline above.
+  useEffect(() => {
+    setUpcomingBookings('loading');
+    api
+      .get<{ bookings: UpcomingBooking[] }>(`/units/${unit.id}/bookings`)
+      .then((res) => setUpcomingBookings(res.bookings))
+      .catch(() => setUpcomingBookings('error'));
+  }, [unit.id]);
 
   // Both functions defensively return [] for a retired/unknown `from`
   // status rather than throwing (see unitStatus.ts) — the cast here is
@@ -189,6 +217,34 @@ function UnitDetailDrawer({
       >
         {UNIT_STATUS_LABELS[unit.status]}
       </span>
+
+      {/* Deliberately separate from the status badge above and the
+          Timeline below — a reservation, not a status. The live status
+          color stays governed only by check-in/check-out, never by
+          whether a booking exists. */}
+      <div className="flex flex-col gap-1 rounded border border-gray-200 p-3">
+        <p className="text-sm font-medium">Bookings</p>
+        {upcomingBookings === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {upcomingBookings === 'error' && <p role="alert" className="text-sm text-red-600">Could not load bookings.</p>}
+        {Array.isArray(upcomingBookings) && upcomingBookings.length === 0 && (
+          <p className="text-sm text-gray-500">No current or upcoming bookings for this unit.</p>
+        )}
+        {Array.isArray(upcomingBookings) && upcomingBookings.length > 0 && (
+          <ul className="flex flex-col gap-1">
+            {upcomingBookings.map((booking) => (
+              <li key={booking.id} className="text-sm">
+                Booked: {booking.guestName},{' '}
+                {new Date(booking.startAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })} –{' '}
+                {new Date(booking.endAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}, ref{' '}
+                {booking.referenceNo}
+                <span className="ml-1 text-xs text-gray-500">
+                  ({BOOKING_TYPE_LABELS[booking.type]})
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {allowedNext.length > 0 && (
         <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">

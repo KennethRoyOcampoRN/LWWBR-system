@@ -2300,3 +2300,61 @@ real Supabase database** — same sandbox limitation as every prior
 milestone. Ready for the client's own live test: pull, run both
 servers, try to create overlapping bookings against real data to
 confirm the availability logic holds outside the mocked test suite.
+
+### Nav item verified correct; real gap found instead: bookings were invisible on the Units drawer (2026-08-23)
+
+Client reported the "Bookings" nav item missing entirely for a CASHIER
+login. Checked both things asked: `getEffectivePermissions(['CASHIER'])`
+does return `booking:create: 'ALL'` (ran it directly, not just read the
+source), and `AppShell.tsx`'s `NAV_ITEMS` does gate `/bookings` on
+`booking:create`, correctly. Permissions are computed live from code on
+every request (never a cached DB `RolePermission` read), so there's no
+seed-staleness angle either. Conclusion: not a code bug — most likely
+the client's running app predated this branch's latest commits.
+
+Re-testing after pulling turned up the *real* gap: the overlap-conflict
+check itself worked correctly against real data, but a unit with a real
+booking against it (C02) showed nothing about it in its own drawer —
+status still `VACANT_DIRTY`, Timeline still "No status changes recorded
+yet." Bookings existed in complete isolation from the Units view, with
+no way for a cashier or housekeeper looking at a room to know it had a
+reservation at all.
+
+Added `GET /units/:id/bookings` (`apps/api/src/modules/bookings/`,
+mounted on the bookings router since it queries `Booking`/`BookingUnit`,
+which that module owns — Express doesn't care which router file
+declares a path). Deliberately gated on `unit:read`, not `booking:read`
+— this is fundamentally "does this unit have a reservation," the same
+kind of unit-level fact `/units/:id/timeline` already answers, not a
+booking-resource read. A Room Attendant (`HOUSEKEEPING_STAFF`) holds
+`unit:read` but never `booking:read`, and needed this exactly as much as
+a Cashier does — real gap, not a hypothetical. Reuses
+`BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY` from the shared package
+(the same set the overlap check itself ignores) rather than inventing a
+second definition of "not relevant," plus an `endAt >= now` filter so a
+merely-old `PENDING`/`NO_SHOW` booking doesn't linger in the list —
+together making this genuinely "current or future."
+
+`UnitDetailDrawer` gained a third, deliberately separate section —
+"Bookings" — sitting between the status badge and "Change status,"
+never touching either: the live status color stays governed only by
+check-in/check-out (not built yet), and Timeline stays scoped to actual
+status transitions only. Format matches the client's own ask exactly:
+"Booked: [guest name], [date range], ref [LWW-XXX]."
+
+2 new backend tests (a `HOUSEKEEPING_STAFF` caller — no `booking:read`
+— successfully reads it; the query's own `where` clause is asserted
+directly to exclude `CANCELLED`/`CHECKED_OUT` and filter on `endAt`, not
+just that a particular mock returned empty) plus auth/permission checks.
+1 new frontend assertion, added directly to the existing
+`HOUSEKEEPING_STAFF` unit-drawer test in `App.smoke.test.tsx` rather than
+a separate test,
+proving the exact role from the report can see it, and that the status
+badge is untouched. Re-verified in a real headless browser reproducing
+the exact reported case (a `POC_HOUSEKEEPING` login opening C02): status
+badge stays "Dirty," Timeline stays empty, and "Booked: ... ref
+LWW-260823-0003" now renders in its own section.
+
+Full repo lint/typecheck/build clean; `apps/api` 210/213 (+4, same 3
+pre-existing network-blocked round-trip tests); `apps/web` 30/30
+(existing test extended, not a new file).

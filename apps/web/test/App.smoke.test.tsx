@@ -298,6 +298,24 @@ describe('App', () => {
       if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
       if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
       if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+      // Real gap found live-testing, 2026-08-23: bookings were invisible
+      // on the Units drawer for exactly this role (HOUSEKEEPING_STAFF —
+      // holds unit:read but not booking:read) — this asserts the fix.
+      if (url.endsWith('/units/unit_1/bookings')) {
+        return jsonResponse(200, {
+          bookings: [
+            {
+              id: 'booking_1',
+              referenceNo: 'LWW-260823-0003',
+              guestName: 'Jane Dela Cruz',
+              type: 'OVERNIGHT',
+              status: 'CONFIRMED',
+              startAt: '2026-08-25T06:00:00.000Z',
+              endAt: '2026-08-26T04:00:00.000Z',
+            },
+          ],
+        });
+      }
       if (url.endsWith('/units/unit_1/status')) {
         return jsonResponse(200, { id: 'unit_1', status: 'CLEANED', version: 2 });
       }
@@ -314,6 +332,16 @@ describe('App', () => {
     await user.click(screen.getByText('101'));
 
     await waitFor(() => expect(screen.getByRole('heading', { name: /101 — Room 101/i })).toBeInTheDocument());
+
+    // A HOUSEKEEPING_STAFF user (no booking:read) still sees the
+    // reservation — the endpoint is gated on unit:read, not booking:read.
+    // Status badge stays CLEANING regardless — bookings never drive it.
+    expect(await screen.findByText(/Booked: Jane Dela Cruz/)).toBeInTheDocument();
+    expect(screen.getByText(/ref LWW-260823-0003/)).toBeInTheDocument();
+    // Status badge is unaffected by the booking — still CLEANING (shown
+    // twice: the grid tile behind the drawer, and the drawer's own badge).
+    expect(screen.getAllByText('Cleaning').length).toBe(2);
+
     const markCleanedButton = await screen.findByRole('button', { name: /mark cleaned/i });
     await user.click(markCleanedButton);
 

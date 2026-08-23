@@ -351,3 +351,59 @@ describe('POST /api/v1/bookings — creation with real availability checking (sp
     expect(res.status).toBe(201);
   });
 });
+
+describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the unit drawer (real gap found live-testing)', () => {
+  it('returns current/future bookings for the unit, for a HOUSEKEEPING_STAFF caller who holds unit:read but not booking:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF', { department: 'HOUSEKEEPING' }));
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([
+      {
+        unitId: 'unit_1',
+        booking: {
+          id: 'booking_1',
+          referenceNo: 'LWW-260823-0003',
+          guestName: 'Jane Dela Cruz',
+          type: 'OVERNIGHT',
+          status: 'CONFIRMED',
+          startAt: new Date('2026-08-25T06:00:00.000Z'),
+          endAt: new Date('2026-08-26T04:00:00.000Z'),
+        },
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/unit_1/bookings').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.bookings).toEqual([
+      expect.objectContaining({ referenceNo: 'LWW-260823-0003', guestName: 'Jane Dela Cruz', status: 'CONFIRMED' }),
+    ]);
+  });
+
+  it('excludes CANCELLED and CHECKED_OUT bookings and past-ended bookings — asserts the actual query, not just a mock', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units/unit_1/bookings').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const whereArg = mockPrisma.bookingUnit.findMany.mock.calls[0]?.[0]?.where;
+    expect(whereArg.unitId).toBe('unit_1');
+    expect(whereArg.booking.status.notIn).toEqual(expect.arrayContaining(['CANCELLED', 'CHECKED_OUT']));
+    expect(whereArg.booking.endAt.gte).toBeInstanceOf(Date);
+  });
+
+  it('requires authentication', async () => {
+    const res = await request(createApp()).get('/api/v1/units/unit_1/bookings');
+    expect(res.status).toBe(401);
+  });
+
+  it('is forbidden for a caller without unit:read', async () => {
+    // No seeded role lacks unit:read entirely in this codebase's current
+    // matrix, so this asserts against a role with no permissions at all
+    // to prove the gate is real rather than trivially always passing.
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER', { roles: [] }));
+
+    const res = await request(createApp()).get('/api/v1/units/unit_1/bookings').set('Cookie', authCookie());
+
+    expect(res.status).toBe(403);
+  });
+});
