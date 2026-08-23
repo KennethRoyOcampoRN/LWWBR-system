@@ -474,12 +474,23 @@ function WorkOrderDetailDrawer({
   }
 
   // allowedWorkOrderTransitions only checks resource-permission (§7:
-  // packages/shared's single source of truth). VERIFIED/REOPENED get one
-  // further client-side filter — canVerifyWorkOrder's department-match
-  // rule — purely so a cross-department POC never sees a button that
-  // would 403; the server enforces the same rule regardless.
+  // packages/shared's single source of truth). Two further client-side
+  // filters on top of that raw list:
+  // - ASSIGNED is excluded entirely — OPEN -> ASSIGNED is real in the
+  //   shared transition table (so the *permission* check stays correct),
+  //   but assigning a ticket needs an assignedToId the generic
+  //   note-only status-change panel below has no field for. That real
+  //   assignment flow — picking a person, calling POST
+  //   /work-orders/:id/assign — is the dedicated `canAssign` section
+  //   further down; without this filter its "Mark Assigned" fallback
+  //   button would open the wrong (assignee-less) panel and silently do
+  //   nothing useful. See canAssign below for the actual assign UI.
+  // - VERIFIED/REOPENED get canVerifyWorkOrder's department-match rule
+  //   applied, purely so a cross-department POC never sees a button
+  //   that would 403 — the server enforces the same rule regardless.
   const candidateTransitions = allowedWorkOrderTransitions(workOrder.status, user?.permissions ?? {});
   const allowedTransitions = candidateTransitions.filter((to) => {
+    if (to === 'ASSIGNED') return false;
     if (to !== 'VERIFIED' && to !== 'REOPENED') return true;
     return canVerifyWorkOrder(user?.roles ?? [], user?.department ?? '', workOrder.department);
   });

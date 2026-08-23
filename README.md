@@ -1653,3 +1653,37 @@ unit module, but nothing pushes to the specific assignee yet);
 department dashboards; "My tasks." Ready for the client's own live
 browser test of the full assign -> start -> done -> verify/reopen
 lifecycle against the real Supabase database.
+
+### Fix: "Mark Assigned" bypassed the real assign picker (2026-08-23) — real gap found live-testing, fixed same day
+
+Live-testing the slice above found a real bug: clicking Assign on an
+OPEN ticket opened a panel with only a Note field and Confirm/Cancel —
+no way to actually pick who the ticket goes to, even though the
+dedicated assign UI (with a real picker backed by
+`GET /work-orders/assignable-users`) was built and working.
+
+Root cause: `OPEN -> ASSIGNED` is a real entry in the shared
+transition table (correctly, since the *permission* check —
+`workorder:assign` — needs to live there), so it was also showing up
+in `WorkOrderDetailDrawer`'s generic `allowedWorkOrderTransitions()`
+list alongside Start/Done/Verify/etc. With no label registered for
+`ASSIGNED` in `TRANSITION_BUTTON_LABELS`, it fell back to
+`Mark ${WORK_ORDER_STATUS_LABELS['ASSIGNED']}` — a second "Mark
+Assigned" button that opened the generic note-only status-change panel
+instead of the real assign picker further down the drawer. Two
+competing UI paths for the same action, and the broken one rendered
+first (and, since it has no assignee field, silently couldn't ever
+succeed even if confirmed).
+
+Fix: `allowedTransitions` now explicitly excludes `ASSIGNED` from the
+generic transition-button list, since assignment always goes through
+the dedicated `canAssign` section instead. 1 new regression test in
+`WorkOrdersPage.test.tsx` asserting an OPEN ticket shows exactly one
+assign entry point (no bare "Mark Assigned" button, no "Change status"
+section at all when ASSIGNED is the only candidate transition) and
+that the real picker flow actually calls
+`POST /work-orders/:id/assign` with the selected `assignedToId`.
+Re-verified in a real headless browser: opening an OPEN ticket now
+shows only the "Assign ticket" button.
+
+`apps/web` 23/23 (+1). Lint/typecheck clean.

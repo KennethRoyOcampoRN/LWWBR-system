@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -306,5 +306,63 @@ describe('WorkOrderDetailDrawer', () => {
     // filter is the department check, not just the permission gate.
     expect(screen.queryByRole('button', { name: 'Verify' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Reopen/ })).not.toBeInTheDocument();
+  });
+
+  it('regression: an OPEN ticket shows exactly one assign entry point — "Assign ticket" with a real assignee picker — never a bare "Mark Assigned" status button', async () => {
+    const user = userEvent.setup();
+    const assignerUser = {
+      ...currentUser,
+      permissions: { ...currentUser.permissions, 'workorder:assign': 'ALL' },
+    };
+    const listRow = fakeListRow({ status: 'OPEN', assignedTo: null });
+    const detail = fakeDetail({ status: 'OPEN', assignedTo: null });
+    let assignCallBody: unknown = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: assignerUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      if (url.endsWith('/work-orders/wo_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { workOrder: detail });
+      }
+      if (url.includes('/work-orders/assignable-users') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { users: [{ id: 'user_9', fullName: 'Tech One', employeeCode: 'LWW-020' }] });
+      }
+      if (url.endsWith('/work-orders/wo_1/assign') && init?.method === 'POST') {
+        assignCallBody = JSON.parse(init.body as string);
+        return jsonResponse(200, {
+          workOrder: { ...detail, status: 'ASSIGNED', assignedTo: { id: 'user_9', fullName: 'Tech One' } },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByText('WO-260823-0001')).toBeInTheDocument());
+    await user.click(screen.getByText('Leaking faucet in R01'));
+
+    await screen.findByText('Faucet in the master bath keeps dripping.');
+
+    // The bug: OPEN -> ASSIGNED is a real transition-table entry (so the
+    // permission check stays correct), but without filtering it out of
+    // the generic "Change status" list it surfaced as a second, broken
+    // "Mark Assigned" button whose panel has no assignee field at all.
+    expect(screen.queryByRole('button', { name: 'Mark Assigned' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Change status')).not.toBeInTheDocument();
+
+    // The one real entry point: the dedicated Assign section.
+    await user.click(screen.getByRole('button', { name: 'Assign ticket' }));
+    await waitFor(() => expect(screen.getAllByRole('combobox').length).toBeGreaterThan(3)); // 3 in the New-ticket form + this picker
+    const picker = screen.getAllByRole('combobox').at(-1) as HTMLSelectElement;
+    await waitFor(() => expect(within(picker).getAllByRole('option').length).toBeGreaterThan(1));
+    await user.selectOptions(picker, 'user_9');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(assignCallBody).toEqual({ assignedToId: 'user_9', version: 3 }));
   });
 });
