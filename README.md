@@ -1719,3 +1719,39 @@ HOUSEKEEPING employee with their department shown.
 
 Full repo lint/typecheck/build clean; `apps/api` 162/165 (same 3
 pre-existing network-blocked tests); `apps/web` 23/23.
+
+### Client-confirmed: M3's core work-order slice is done (2026-08-23)
+
+Client ran a fresh live end-to-end test against the real hosted
+Supabase database on WO-260823-0002 and confirmed the full picture
+works: the assignee picker shows all employees with department context
+(including SYSTEM_ADMIN, double-checked), assignment persists
+correctly (status Open -> Assigned, "Assigned to" updates), and the
+complete status lifecycle through Start -> Done (the mandatory
+completion-photo gate fired correctly, resolved by attaching a photo)
+-> Verify all worked as expected.
+
+With this, M3's core work-order slice — creation with the mandatory
+issue-photo gate, the ticket detail view with photo viewing,
+assignment (property-wide, not department-locked), and the full
+status lifecycle (Assign -> Start -> Done -> Verify/Reopen ->
+Cancelled) — is genuinely done, live-verified against the real
+database, not just passing tests.
+
+Four real bugs were found and fixed this way, only surfaced by testing
+in the actual running app rather than by reading the code: the
+department-filtered assignee picker (staff need to be assignable
+across departments, same principle as the earlier CLEANED->READY
+permission fix), a second, broken "Mark Assigned" button competing
+with the real assign picker, the unit detail drawer's timeline not
+refreshing on a realtime-driven status change, and a stale `INSPECTED`
+unit status left over from a direct database write outside the app
+(M2). None of these were caught by the unit/component/integration test
+suites alone — each needed a human actually clicking through the
+running app against real data to surface.
+
+**Queued for later, no action until given the go-ahead**: department
+dashboards, a "My tasks" view, per-assignee realtime notifications (the
+existing broadcasts cover the property-wide activity feed but nothing
+targets the specific assignee yet), and EXIF capture-time verification
+on uploaded photos.
