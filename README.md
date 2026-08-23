@@ -1894,12 +1894,31 @@ workspaces; `packages/shared` 48/48 (untouched); `apps/api` 164/167
 `apps/web` 25/25 (+2 net — 3 new tests, 1 test removed and folded into
 its replacement).
 
-**Not yet live-tested against the real Supabase database** — same
-sandbox limitation as every prior milestone. **Not yet built this
-slice**: per-assignee realtime notifications and EXIF capture-time
-verification remain queued, per the go-ahead given for this slice
-specifically (department dashboards + "My tasks" only). Ready for a
-live browser test across a `POC_HOUSEKEEPING`/`POC_MAINTENANCE` account
-(department queue), a `HOUSEKEEPING_STAFF`/`MAINTENANCE_STAFF` account
-(My Tasks), and a `SYSTEM_ADMIN`/`RESORT_MANAGER` account (confirming
-the full list is genuinely unchanged) against the real database.
+Not live-tested against the real Supabase database at the time this
+was written — see the confirmation entry below, which supersedes this
+paragraph. **Not yet built this slice**: per-assignee realtime
+notifications and EXIF capture-time verification remain queued, per
+the go-ahead given for this slice specifically (department dashboards
++ "My tasks" only).
+
+### Client-confirmed: all three dashboard shapes live-verified (2026-08-23)
+
+Client ran the live browser test this entry above was waiting on,
+against the real hosted database, across all three roles: a
+`POC_HOUSEKEEPING`/`POC_MAINTENANCE`-style account (department queue,
+grouped by status), a floor-staff account (My Tasks, assigned-to-them-
+only), and a `SYSTEM_ADMIN` account (full list plus the additive
+"Assigned to you" section added afterward — see the entry above that
+one). Confirmed working end to end: SYSTEM_ADMIN shows both "Assigned
+to you" and the full "Tickets" list together, neither crowding out the
+other; all three dashboard shapes verified against real data.
+
+With this, spec §8.3's per-role dashboards are done and live-verified,
+not just passing tests — closing the last open item from the
+"Department dashboards" entry above.
+
+**Holding here per client instruction.** Queued, no action until given
+the go-ahead: per-assignee realtime notifications (today's broadcasts
+cover the property-wide activity feed only), EXIF capture-time
+verification on uploaded photos, and anything else not explicitly
+requested.
