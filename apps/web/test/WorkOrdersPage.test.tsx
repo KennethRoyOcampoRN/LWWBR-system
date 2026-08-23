@@ -176,3 +176,135 @@ describe('WorkOrdersPage', () => {
     expect(screen.queryByText('New ticket')).not.toBeInTheDocument();
   });
 });
+
+describe('WorkOrderDetailDrawer', () => {
+  beforeEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
+  function fakeListRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'wo_1',
+      referenceNo: 'WO-260823-0001',
+      type: 'MAINTENANCE',
+      title: 'Leaking faucet in R01',
+      priority: 'HIGH',
+      status: 'ASSIGNED',
+      department: 'MAINTENANCE',
+      unit: { id: 'unit_1', code: 'R01', name: 'Room 1' },
+      assignedTo: { fullName: 'Tech One' },
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+
+  function fakeDetail(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      ...fakeListRow(),
+      description: 'Faucet in the master bath keeps dripping.',
+      version: 3,
+      dueAt: null,
+      attemptNo: 1,
+      createdBy: { id: 'user_2', fullName: 'Front Desk (Demo)' },
+      assignedTo: { id: 'user_1', fullName: 'Tech One' },
+      photos: [
+        {
+          id: 'photo_1',
+          kind: 'ISSUE',
+          caption: null,
+          capturedAt: new Date().toISOString(),
+          attemptNo: 1,
+          url: 'https://signed.example/issue.jpg',
+        },
+      ],
+      notes: [],
+      ...overrides,
+    };
+  }
+
+  it('opens a ticket to show full description, photos, priority/department/assignee, and walks ASSIGNED -> IN_PROGRESS', async () => {
+    const user = userEvent.setup();
+    const listRow = fakeListRow();
+    const detail = fakeDetail();
+    let statusCalls = 0;
+    const assignedTechUser = {
+      ...currentUser,
+      permissions: { ...currentUser.permissions, 'workorder:update_status': 'ALL' },
+    };
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: assignedTechUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      if (url.endsWith('/work-orders/wo_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { workOrder: detail });
+      }
+      if (url.endsWith('/work-orders/wo_1/status') && init?.method === 'POST') {
+        statusCalls += 1;
+        const body = JSON.parse(init.body as string);
+        expect(body.toStatus).toBe('IN_PROGRESS');
+        return jsonResponse(200, { workOrder: { ...detail, status: 'IN_PROGRESS', version: 4 } });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByText('WO-260823-0001')).toBeInTheDocument());
+
+    await user.click(screen.getByText('Leaking faucet in R01'));
+
+    expect(await screen.findByText('Faucet in the master bath keeps dripping.')).toBeInTheDocument();
+    expect(screen.getByAltText('Issue')).toHaveAttribute('src', 'https://signed.example/issue.jpg');
+    expect(screen.getAllByText('Maintenance').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Tech One').length).toBeGreaterThan(0);
+
+    const startButton = screen.getByRole('button', { name: 'Start' });
+    await user.click(startButton);
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(statusCalls).toBe(1));
+  });
+
+  it('hides Verify/Reopen for a department POC verifying a different department\'s DONE ticket, per spec §7.2 — even though workorder:verify itself is held', async () => {
+    const user = userEvent.setup();
+    const crossDeptUser = {
+      ...currentUser,
+      permissions: { ...currentUser.permissions, 'workorder:verify': 'ALL' },
+    };
+    const listRow = fakeListRow({ status: 'DONE', department: 'HOUSEKEEPING' });
+    const detail = fakeDetail({ status: 'DONE', department: 'HOUSEKEEPING', type: 'DEEP_CLEAN' });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: crossDeptUser }); // MAINTENANCE dept, ticket is HOUSEKEEPING
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      if (url.endsWith('/work-orders/wo_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { workOrder: detail });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByText('WO-260823-0001')).toBeInTheDocument());
+    await user.click(screen.getByText('Leaking faucet in R01'));
+
+    await screen.findByText('Faucet in the master bath keeps dripping.');
+    // crossDeptUser holds workorder:verify itself (the resource
+    // permission), but canVerifyWorkOrder's department-match rule still
+    // hides the buttons since MAINTENANCE !== HOUSEKEEPING and none of
+    // this user's roles are property-wide-exempt — proves the client-side
+    // filter is the department check, not just the permission gate.
+    expect(screen.queryByRole('button', { name: 'Verify' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reopen/ })).not.toBeInTheDocument();
+  });
+});

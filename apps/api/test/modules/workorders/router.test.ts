@@ -2,11 +2,13 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrisma = {
-  user: { findFirst: vi.fn() },
+  user: { findFirst: vi.fn(), findMany: vi.fn() },
   fileObject: { findMany: vi.fn() },
   setting: { findUnique: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
-  workOrder: { create: vi.fn(), findMany: vi.fn(), findFirst: vi.fn() },
+  workOrder: { create: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
+  workOrderPhoto: { createMany: vi.fn() },
+  workOrderNote: { create: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -84,6 +86,10 @@ beforeEach(() => {
   mockRealtimeEmit.mockResolvedValue(undefined);
   mockPrisma.setting.findUnique.mockResolvedValue(null); // fall back to shared defaults
   mockPrisma.referenceSequence.upsert.mockResolvedValue({ scope: 'WO-260823', seq: 1 });
+  mockPrisma.workOrder.updateMany.mockResolvedValue({ count: 1 });
+  mockPrisma.workOrderPhoto.createMany.mockResolvedValue({ count: 0 });
+  mockPrisma.workOrderNote.create.mockResolvedValue({});
+  mockGetSignedUrl.mockResolvedValue('https://signed.example/abc.jpg');
 });
 
 describe('POST /api/v1/work-orders — spec §7.2.1 mandatory photo evidence', () => {
@@ -303,5 +309,265 @@ describe('GET /api/v1/work-orders/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.workOrder.photos[0].url).toBe('https://signed.example/abc.jpg');
+  });
+});
+
+describe('GET /api/v1/work-orders/assignable-users', () => {
+  it('returns active users in the requested department for a workorder:assign holder', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.user.findMany.mockResolvedValue([{ id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020' }]);
+
+    const res = await request(createApp())
+      .get('/api/v1/work-orders/assignable-users?department=MAINTENANCE')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.users).toEqual([{ id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020' }]);
+    expect(mockPrisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ department: 'MAINTENANCE', isActive: true }) }),
+    );
+  });
+
+  it('is forbidden for a caller without workorder:assign', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF', { department: 'RESTAURANT' }));
+
+    const res = await request(createApp())
+      .get('/api/v1/work-orders/assignable-users?department=RESTAURANT')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('POST /api/v1/work-orders/:id/assign', () => {
+  it('assigns an OPEN ticket to an active user', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_2', fullName: 'Tech One', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'wo_1', version: 0 },
+        data: expect.objectContaining({ status: 'ASSIGNED', assignedToId: 'user_2', assignedById: 'user_1' }),
+      }),
+    );
+  });
+
+  it('rejects assigning a ticket that is not OPEN (422 INVALID_TRANSITION)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_TRANSITION');
+  });
+
+  it('rejects a caller without workorder:assign (403)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF', { department: 'RESTAURANT' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 409 VERSION_CONFLICT on a stale version', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_2', fullName: 'Tech One', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('VERSION_CONFLICT');
+  });
+});
+
+describe('POST /api/v1/work-orders/:id/status', () => {
+  it('moves ASSIGNED -> IN_PROGRESS for the assigned tech (workorder:update_status)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('MAINTENANCE_STAFF', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'ASSIGNED', department: 'MAINTENANCE', assignedToId: 'user_1' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'IN_PROGRESS', version: 0 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'IN_PROGRESS' }) }),
+    );
+  });
+
+  it('rejects marking a MAINTENANCE ticket DONE with no COMPLETION photo (422 PHOTO_REQUIRED)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('MAINTENANCE_STAFF', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_1' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'DONE', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('PHOTO_REQUIRED');
+    expect(res.body.error.details).toEqual({ kind: 'COMPLETION' });
+    expect(mockPrisma.workOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('marks a MAINTENANCE ticket DONE when a COMPLETION photo is attached', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('MAINTENANCE_STAFF', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_1' }),
+    );
+    mockPrisma.fileObject.findMany.mockResolvedValue([{ id: 'file_2' }]);
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'DONE', version: 0, photos: [{ fileId: 'file_2', kind: 'COMPLETION' }] });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrderPhoto.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ workOrderId: 'wo_1', fileId: 'file_2', kind: 'COMPLETION' })],
+      }),
+    );
+  });
+
+  it('requires a note when reopening (schema-level validation)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'REOPENED', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(mockPrisma.workOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cross-department POC verifying DONE -> VERIFIED (403)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'VERIFIED', version: 0 });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('allows the same-department POC to verify DONE -> VERIFIED, setting verifiedById/verifiedAt', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'VERIFIED', version: 0 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ verifiedById: 'user_1' }) }),
+    );
+  });
+
+  it('allows a property-wide role (SYSTEM_ADMIN) to verify any department', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN', { department: 'MANAGEMENT' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'DONE', department: 'HOUSEKEEPING' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'VERIFIED', version: 0 });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('reopening increments attemptNo and writes the note as a WorkOrderNote', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE', attemptNo: 1 }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'REOPENED', version: 0, note: 'Faucet still leaking, redo the seal.' });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ attemptNo: 2 }) }),
+    );
+    expect(mockPrisma.workOrderNote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ workOrderId: 'wo_1', authorId: 'user_1', body: 'Faucet still leaking, redo the seal.' }),
+      }),
+    );
+  });
+
+  it('allows cancelling an OPEN ticket (workorder:close)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'CANCELLED', version: 0 });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid transition (e.g. OPEN -> DONE, 422)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'DONE', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_TRANSITION');
+  });
+
+  it('returns 409 VERSION_CONFLICT on a stale version', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('MAINTENANCE_STAFF', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'ASSIGNED', department: 'MAINTENANCE', assignedToId: 'user_1' }),
+    );
+    mockPrisma.workOrder.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'IN_PROGRESS', version: 0 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('VERSION_CONFLICT');
   });
 });

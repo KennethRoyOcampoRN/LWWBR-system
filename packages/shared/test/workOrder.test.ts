@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   allowedWorkOrderTransitions,
   canTransitionWorkOrder,
+  canVerifyWorkOrder,
   DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS,
   getWorkOrderTransition,
   WORK_ORDER_TRANSITIONS,
@@ -106,5 +107,27 @@ describe('DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS (spec §7.2.1)', () => {
       expect(DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS[type].onCreate).toEqual([]);
       expect(DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS[type].onDone).toEqual([]);
     }
+  });
+});
+
+describe('canVerifyWorkOrder (spec §7.2: "only the department POC or above may verify")', () => {
+  it('allows a department POC to verify their own department\'s ticket', () => {
+    expect(canVerifyWorkOrder(['POC_MAINTENANCE'], 'MAINTENANCE', 'MAINTENANCE')).toBe(true);
+  });
+
+  it('rejects a department POC verifying a different department\'s ticket', () => {
+    expect(canVerifyWorkOrder(['POC_MAINTENANCE'], 'MAINTENANCE', 'HOUSEKEEPING')).toBe(false);
+    expect(canVerifyWorkOrder(['POC_HOUSEKEEPING'], 'HOUSEKEEPING', 'MAINTENANCE')).toBe(false);
+    expect(canVerifyWorkOrder(['RESTAURANT_MANAGER'], 'RESTAURANT', 'MAINTENANCE')).toBe(false);
+  });
+
+  it('allows SYSTEM_ADMIN, RESORT_MANAGER, and OPS_SAFETY_SUPERVISOR to verify any department — "or above"', () => {
+    expect(canVerifyWorkOrder(['SYSTEM_ADMIN'], 'MANAGEMENT', 'MAINTENANCE')).toBe(true);
+    expect(canVerifyWorkOrder(['RESORT_MANAGER'], 'MANAGEMENT', 'HOUSEKEEPING')).toBe(true);
+    expect(canVerifyWorkOrder(['OPS_SAFETY_SUPERVISOR'], 'MANAGEMENT', 'RESTAURANT')).toBe(true);
+  });
+
+  it('is exempt if any one of several held roles is a management role', () => {
+    expect(canVerifyWorkOrder(['POC_HOUSEKEEPING', 'SYSTEM_ADMIN'], 'HOUSEKEEPING', 'MAINTENANCE')).toBe(true);
   });
 });

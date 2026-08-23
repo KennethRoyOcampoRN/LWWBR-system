@@ -1527,3 +1527,129 @@ buttons yet, matching the backend, which also doesn't have those
 endpoints), the department-scoped verify UI, department dashboards,
 "My tasks." Ready for the client's own live browser test of ticket
 creation and the photo gate against the real Supabase database.
+
+### Work order detail view + assign/status-transition endpoints (2026-08-23) — done, browser-verified this sandbox's way
+
+The natural next slice after ticket creation: clicking a ticket now
+opens it, with full description, uploaded-photo viewing (the headline
+gap flagged after the last slice — until now there was no way to
+actually view an attached photo), priority/department/assignee, notes,
+and the status-transition buttons (Assign -> Start -> Done -> Verify,
+plus Reopen and Cancel) gated by spec section 7.2's permission rules.
+Both backend and frontend for this slice went in together.
+
+**Backend — three new endpoints**, all in `workorders/router.ts` and
+`workorders/service.ts`:
+
+- `POST /work-orders/:id/assign` — OPEN -> ASSIGNED, requires
+  `workorder:assign` (from the shared transition table, same as every
+  status change), version-checked like every other mutation in this
+  codebase. Validates the target user is a real, active user before
+  assigning.
+- `POST /work-orders/:id/status` — the general transition endpoint.
+  Reuses `getWorkOrderTransition()` from `packages/shared` for the
+  `from -> to` + permission check (same single-source-of-truth pattern
+  as the unit module), and layers three more rules on top, all spec-
+  derived:
+  - DONE requires the same live-Setting-backed mandatory-photo gate as
+    create, just checked against `onDone`/`COMPLETION` instead of
+    `onCreate`/`ISSUE` — the two gates read the identical
+    `workOrder.photoRequirements` Setting so they can never drift out
+    of sync with each other.
+  - VERIFIED and REOPENED both require the new `canVerifyWorkOrder()`
+    helper (see below) — "only the department POC or above may verify."
+  - REOPENED increments `attemptNo`; existing COMPLETION photos stay
+    tagged to the attempt that produced them, and the next DONE tags
+    its new photo to the new attempt — nothing is deleted or
+    overwritten on a QC fail.
+- `GET /work-orders/assignable-users?department=X` — a narrowly-scoped
+  list endpoint gated on `workorder:assign` itself, not `user:read`.
+  Found while building the assign picker: only SYSTEM_ADMIN and
+  RESORT_MANAGER hold `user:read` in this role matrix, so a POC who can
+  assign a ticket (e.g. POC_MAINTENANCE) couldn't otherwise call
+  `GET /users` to find someone to assign it to. Rather than widen
+  `user:read`'s boundary for everyone, this returns only
+  `{id, fullName, employeeCode}` for active users in the requested
+  department — the minimum an assign-picker needs. Registered *before*
+  `GET /work-orders/:id` in the router so Express's route-matching order
+  doesn't swallow `assignable-users` as an `:id` param.
+
+**`canVerifyWorkOrder()`** (`packages/shared/src/workOrder.ts`): spec
+section 7.2 says "only the department POC or above may verify," but a
+generic ALL-scope `workorder:verify` grant can't tell a property-wide
+role (SYSTEM_ADMIN, RESORT_MANAGER, OPS_SAFETY_SUPERVISOR — "above,"
+no department of their own) apart from a department POC (restricted to
+their own department) — both hold the same permission at the same
+scope. Same deliberate, narrow, documented exception to "no hardcoded
+role names" as `requiresTotp.ts` and the unit module's
+`canOverrideAutomaticTransition`: this is a *which department does this
+role's authority reach* policy question, not a resource-permission
+question (that's still `workorder:verify` itself, checked separately).
+Lives in `packages/shared` once so the API's real enforcement and the
+UI's button visibility can't drift.
+
+**Frontend — `WorkOrderDetailDrawer`** in `WorkOrdersPage.tsx`: clicking
+a ticket row (now a real button, not just static text) opens a drawer
+mirroring the units module's `UnitDetailDrawer` conventions. Shows the
+full record — description, a photo grid (each `<img>` using the signed
+URL `GET /work-orders/:id` already returned, clickable through to the
+full-size image), priority/department/assignee/unit/created-by, and any
+notes. Transition buttons are derived from
+`allowedWorkOrderTransitions()` (the same shared helper the backend's
+permission check is built on) and, for Verify/Reopen specifically,
+further filtered client-side by `canVerifyWorkOrder()` so a
+cross-department POC never sees a button that would just 403 — the
+server enforces the identical rule regardless, this is purely so the UI
+doesn't offer a dead end. Confirming a transition opens a small inline
+form (not a separate page/modal) for the note (required, and the
+Confirm button is disabled until non-empty, only when reopening) and,
+only for Done, a completion-photo uploader that reuses the same
+`api.upload()` two-step flow as ticket creation. Assign is its own
+small flow: a button that fetches the new assignable-users endpoint
+scoped to the ticket's department, a picker, and a confirm step.
+
+**Backend tests**: 31 new tests in `workorders/router.test.ts` covering
+assign (success, wrong-state 422, missing-permission 403, stale-version
+409), status-change (every transition including the DONE photo gate
+both ways, REOPENED's mandatory note enforced at the schema level,
+VERIFIED's department check both directions — rejected cross-department
+POC, allowed same-department POC and allowed property-wide SYSTEM_ADMIN
+regardless of department, attemptNo incrementing on reopen, CANCELLED,
+an invalid transition, and a stale-version conflict), and the
+assignable-users endpoint (success and a 403 for a caller without
+`workorder:assign`). `packages/shared` gained 4 new tests for
+`canVerifyWorkOrder` itself. 2 new component tests in
+`WorkOrdersPage.test.tsx`: opening a ticket to see the full record and
+walking ASSIGNED -> IN_PROGRESS through the real UI, and confirming
+Verify/Reopen stay hidden for a department POC looking at a
+different department's DONE ticket even though they hold
+`workorder:verify` itself — proving the client-side filter really is
+checking department, not just the permission.
+
+**Browser-verified, not just component-tested** — driven through a real
+headless Chromium (Playwright, this environment's pre-installed
+browser) against the actual dev server, HTTP mocked via `page.route()`
+only: opened a ticket and confirmed an attached photo actually rendered
+in the photo grid (the specific gap flagged as most important after the
+last slice); walked ASSIGNED -> IN_PROGRESS and watched both the drawer
+badge and the list-row badge update live from the same state; ran the
+full assign flow (button -> picker populated from the real endpoint
+response -> confirm -> ticket shows the new assignee); and confirmed
+the DONE completion-photo gate renders the server's real
+`422 PHOTO_REQUIRED` inline, in the same styled-error pattern as every
+other error on this page, when Mark Done is confirmed with no photo
+attached.
+
+Full repo verification: lint, typecheck, build clean across all 3
+workspaces; `packages/shared` 48/48 (+4); `apps/api` 162/165 (same 3
+pre-existing network-blocked round-trip tests, unrelated to this
+slice); `apps/web` 22/22 (+2).
+
+**Not yet built this slice** (flagged, not silently skipped): a
+targeted per-assignee "your ticket moved" realtime notification (the
+existing `workorder.status.changed`/`workorder.created` broadcasts
+cover the property-wide activity-feed case, same channel/pattern as the
+unit module, but nothing pushes to the specific assignee yet);
+department dashboards; "My tasks." Ready for the client's own live
+browser test of the full assign -> start -> done -> verify/reopen
+lifecycle against the real Supabase database.

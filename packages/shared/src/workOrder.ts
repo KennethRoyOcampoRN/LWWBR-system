@@ -1,4 +1,6 @@
+import type { DepartmentKey } from './departments.js';
 import type { PermissionKey } from './permissions.js';
+import type { RoleKey } from './roles.js';
 
 // Spec §7.2's work order lifecycle:
 //   OPEN -> ASSIGNED -> IN_PROGRESS -> DONE -> VERIFIED
@@ -55,12 +57,10 @@ export interface WorkOrderTransition {
 //   "DONE -> VERIFIED requires workorder:verify... DONE -> REOPENED when
 //   QC fails." Verifying and rejecting are the same QC check's two
 //   outcomes, done by the same person. Spec also says "only the
-//   department POC or above may verify" — that's a department-match
-//   rule the generic ALL-scoped `workorder:verify` grant doesn't encode
-//   on its own (POC_HOUSEKEEPING and POC_MAINTENANCE both hold it at
-//   `ALL` scope, not `DEPARTMENT`), so it needs an explicit
-//   actor.department === workOrder.department check in the service
-//   layer once the verify endpoint is built — not yet built this slice.
+//   department POC or above may verify" — see canVerifyWorkOrder()
+//   below for that department-match rule; it's not encoded as a
+//   transition permission since it isn't a *resource* permission
+//   question.
 export const WORK_ORDER_TRANSITIONS: Record<WorkOrderStatusKey, WorkOrderTransition[]> = {
   OPEN: [
     { to: 'ASSIGNED', permission: 'workorder:assign' },
@@ -99,6 +99,39 @@ export function allowedWorkOrderTransitions(
   permissions: Partial<Record<PermissionKey, unknown>>,
 ): WorkOrderStatusKey[] {
   return (WORK_ORDER_TRANSITIONS[from] ?? []).filter((t) => permissions[t.permission]).map((t) => t.to);
+}
+
+// Spec §7.2: "Only the department POC or above may verify." `workorder:
+// verify` is granted at `ALL` scope to both groups spec means by that
+// line — SYSTEM_ADMIN/RESORT_MANAGER/OPS_SAFETY_SUPERVISOR ("above":
+// property-wide oversight, no department of their own to be restricted
+// to) and POC_HOUSEKEEPING/POC_MAINTENANCE/RESTAURANT_MANAGER ("the
+// department POC": each tied to exactly one) — so the generic ALL-scope
+// permission grant can't distinguish them on its own the way a
+// DEPARTMENT-scoped grant would. This is a deliberate, narrow,
+// documented exception to spec §5.1's "no hardcoded role names," same
+// reasoning as requiresTotp.ts and unitStatus.ts's
+// canOverrideAutomaticTransition: a policy decision about *which
+// department* a role's authority reaches, not a resource-permission
+// check (that's still `workorder:verify` itself, enforced separately).
+// Needed by both the API (real enforcement) and the UI (deciding
+// whether to even show the Verify/Reopen buttons), so it lives here
+// once rather than being duplicated or drifting between the two.
+const WORKORDER_VERIFY_DEPARTMENT_EXEMPT_ROLES: ReadonlySet<RoleKey> = new Set([
+  'SYSTEM_ADMIN',
+  'RESORT_MANAGER',
+  'OPS_SAFETY_SUPERVISOR',
+]);
+
+export function canVerifyWorkOrder(
+  roles: readonly RoleKey[],
+  actorDepartment: DepartmentKey | string,
+  workOrderDepartment: DepartmentKey | string,
+): boolean {
+  if (roles.some((role) => WORKORDER_VERIFY_DEPARTMENT_EXEMPT_ROLES.has(role))) {
+    return true;
+  }
+  return actorDepartment === workOrderDepartment;
 }
 
 export const WORK_ORDER_TYPE_KEYS = [

@@ -1,4 +1,6 @@
 import {
+  allowedWorkOrderTransitions,
+  canVerifyWorkOrder,
   DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS,
   DEPARTMENT_KEYS,
   WORK_ORDER_PRIORITY_KEYS,
@@ -41,6 +43,49 @@ interface UnitOption {
 interface UploadedPhoto {
   fileId: string;
   filename: string;
+}
+
+interface WorkOrderPhotoView {
+  id: string;
+  kind: 'ISSUE' | 'PROGRESS' | 'COMPLETION';
+  caption: string | null;
+  capturedAt: string;
+  attemptNo: number;
+  url: string;
+}
+
+interface WorkOrderNoteView {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: { fullName: string };
+}
+
+interface WorkOrderDetail extends WorkOrderRow {
+  description: string | null;
+  version: number;
+  dueAt: string | null;
+  attemptNo: number;
+  createdBy: { id: string; fullName: string };
+  assignedTo: { id: string; fullName: string } | null;
+  photos: WorkOrderPhotoView[];
+  notes: WorkOrderNoteView[];
+}
+
+interface AssignableUser {
+  id: string;
+  fullName: string;
+  employeeCode: string;
+}
+
+const PHOTO_KIND_LABELS: Record<WorkOrderPhotoView['kind'], string> = {
+  ISSUE: 'Issue',
+  PROGRESS: 'Progress',
+  COMPLETION: 'Completion',
+};
+
+function requiresCompletionPhoto(type: WorkOrderTypeKey): boolean {
+  return DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS[type].onDone.includes('COMPLETION');
 }
 
 const initialFormState = {
@@ -286,10 +331,418 @@ function NewWorkOrderForm({
   );
 }
 
+function WorkOrderDetailDrawer({
+  id,
+  onClose,
+  onChanged,
+}: {
+  id: string;
+  onClose: () => void;
+  onChanged: (workOrder: WorkOrderRow) => void;
+}) {
+  const { user } = useAuth();
+  const [workOrder, setWorkOrder] = useState<WorkOrderDetail | 'loading' | 'error'>('loading');
+
+  const [pendingTransition, setPendingTransition] = useState<WorkOrderStatusKey | null>(null);
+  const [transitionNote, setTransitionNote] = useState('');
+  const [transitionPhotos, setTransitionPhotos] = useState<UploadedPhoto[]>([]);
+  const [transitionUploading, setTransitionUploading] = useState(false);
+  const [transitionSubmitting, setTransitionSubmitting] = useState(false);
+  const [transitionError, setTransitionError] = useState<{ message: string; kind?: string } | null>(null);
+
+  const [assigning, setAssigning] = useState(false);
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[] | 'loading' | 'error'>('loading');
+  const [selectedAssignee, setSelectedAssignee] = useState('');
+  const [assignSubmitting, setAssignSubmitting] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWorkOrder('loading');
+    api
+      .get<{ workOrder: WorkOrderDetail }>(`/work-orders/${id}`)
+      .then((res) => setWorkOrder(res.workOrder))
+      .catch(() => setWorkOrder('error'));
+  }, [id]);
+
+  function resetTransitionForm() {
+    setPendingTransition(null);
+    setTransitionNote('');
+    setTransitionPhotos([]);
+    setTransitionError(null);
+  }
+
+  async function handleTransitionFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setTransitionUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const result = await api.upload<{ file: { id: string; filename: string } }>('/files', file);
+        setTransitionPhotos((prev) => [...prev, { fileId: result.file.id, filename: result.file.filename }]);
+      }
+    } catch (err) {
+      setTransitionError({ message: err instanceof ApiRequestError ? err.message : 'Could not upload photo.' });
+    } finally {
+      setTransitionUploading(false);
+      e.target.value = '';
+    }
+  }
+
+  async function confirmTransition() {
+    if (!pendingTransition || workOrder === 'loading' || workOrder === 'error') return;
+    setTransitionSubmitting(true);
+    setTransitionError(null);
+    try {
+      const trimmedNote = transitionNote.trim();
+      const result = await api.post<{ workOrder: WorkOrderDetail }>(`/work-orders/${id}/status`, {
+        toStatus: pendingTransition,
+        version: workOrder.version,
+        note: trimmedNote || undefined,
+        photos:
+          pendingTransition === 'DONE' ? transitionPhotos.map((p) => ({ fileId: p.fileId, kind: 'COMPLETION' as const })) : [],
+      });
+      setWorkOrder(result.workOrder);
+      onChanged(result.workOrder);
+      resetTransitionForm();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
+        setTransitionError({ message: 'Someone else changed this ticket — close and reopen it, then try again.' });
+      } else if (err instanceof ApiRequestError && err.code === 'PHOTO_REQUIRED') {
+        const details = err.details as { kind?: string } | undefined;
+        const kind = details?.kind ?? 'required';
+        const article = /^[AEIOU]/.test(kind) ? 'An' : 'A';
+        setTransitionError({ message: `${article} ${kind} photo is required to mark this ticket done.`, kind: details?.kind });
+      } else {
+        setTransitionError({ message: err instanceof ApiRequestError ? err.message : 'Could not update this ticket.' });
+      }
+    } finally {
+      setTransitionSubmitting(false);
+    }
+  }
+
+  function openAssignPicker() {
+    if (workOrder === 'loading' || workOrder === 'error') return;
+    setAssigning(true);
+    setAssignableUsers('loading');
+    setAssignError(null);
+    api
+      .get<{ users: AssignableUser[] }>(`/work-orders/assignable-users?department=${workOrder.department}`)
+      .then((res) => setAssignableUsers(res.users))
+      .catch(() => setAssignableUsers('error'));
+  }
+
+  async function confirmAssign() {
+    if (workOrder === 'loading' || workOrder === 'error' || !selectedAssignee) return;
+    setAssignSubmitting(true);
+    setAssignError(null);
+    try {
+      const result = await api.post<{ workOrder: WorkOrderDetail }>(`/work-orders/${id}/assign`, {
+        assignedToId: selectedAssignee,
+        version: workOrder.version,
+      });
+      setWorkOrder(result.workOrder);
+      onChanged(result.workOrder);
+      setAssigning(false);
+      setSelectedAssignee('');
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'VERSION_CONFLICT') {
+        setAssignError('Someone else changed this ticket — close and reopen it, then try again.');
+      } else {
+        setAssignError(err instanceof ApiRequestError ? err.message : 'Could not assign this ticket.');
+      }
+    } finally {
+      setAssignSubmitting(false);
+    }
+  }
+
+  if (workOrder === 'loading') {
+    return (
+      <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
+        <p className="text-sm text-gray-500">Loading…</p>
+      </div>
+    );
+  }
+  if (workOrder === 'error') {
+    return (
+      <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
+        <p role="alert">Could not load this ticket.</p>
+        <button onClick={onClose} className="w-fit text-sm text-gray-500 hover:underline">
+          Close
+        </button>
+      </div>
+    );
+  }
+
+  // allowedWorkOrderTransitions only checks resource-permission (§7:
+  // packages/shared's single source of truth). VERIFIED/REOPENED get one
+  // further client-side filter — canVerifyWorkOrder's department-match
+  // rule — purely so a cross-department POC never sees a button that
+  // would 403; the server enforces the same rule regardless.
+  const candidateTransitions = allowedWorkOrderTransitions(workOrder.status, user?.permissions ?? {});
+  const allowedTransitions = candidateTransitions.filter((to) => {
+    if (to !== 'VERIFIED' && to !== 'REOPENED') return true;
+    return canVerifyWorkOrder(user?.roles ?? [], user?.department ?? '', workOrder.department);
+  });
+  const canAssign = workOrder.status === 'OPEN' && Boolean(user?.permissions['workorder:assign']);
+  const needsCompletionPhoto = pendingTransition === 'DONE' && requiresCompletionPhoto(workOrder.type);
+
+  const TRANSITION_BUTTON_LABELS: Partial<Record<WorkOrderStatusKey, string>> = {
+    IN_PROGRESS: 'Start',
+    DONE: 'Mark done',
+    VERIFIED: 'Verify',
+    REOPENED: 'Reopen (QC fail)',
+    CANCELLED: 'Cancel ticket',
+  };
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">{workOrder.title}</h2>
+          <p className="text-xs font-mono text-gray-500">{workOrder.referenceNo}</p>
+        </div>
+        <button onClick={onClose} className="text-sm text-gray-500 hover:underline">
+          Close
+        </button>
+      </div>
+
+      <span
+        className={`inline-block w-fit rounded-full border px-3 py-1 text-sm font-medium ${WORK_ORDER_STATUS_CLASSES[workOrder.status]}`}
+      >
+        {WORK_ORDER_STATUS_LABELS[workOrder.status]}
+        {workOrder.attemptNo > 1 ? ` · attempt ${workOrder.attemptNo}` : ''}
+      </span>
+
+      <div className="grid grid-cols-2 gap-2 text-sm">
+        <div>
+          <p className="text-xs text-gray-500">Type</p>
+          <p>{WORK_ORDER_TYPE_LABELS[workOrder.type]}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-500">Priority</p>
+          <p>{WORK_ORDER_PRIORITY_LABELS[workOrder.priority]}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-500">Department</p>
+          <p>{DEPARTMENT_LABELS[workOrder.department]}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-500">Assigned to</p>
+          <p>{workOrder.assignedTo?.fullName ?? 'Unassigned'}</p>
+        </div>
+        {workOrder.unit && (
+          <div>
+            <p className="text-xs text-gray-500">Unit</p>
+            <p>
+              {workOrder.unit.code} — {workOrder.unit.name}
+            </p>
+          </div>
+        )}
+        <div>
+          <p className="text-xs text-gray-500">Created by</p>
+          <p>{workOrder.createdBy.fullName}</p>
+        </div>
+      </div>
+
+      {workOrder.description && (
+        <div>
+          <p className="text-xs text-gray-500">Description</p>
+          <p className="whitespace-pre-wrap text-sm">{workOrder.description}</p>
+        </div>
+      )}
+
+      <div>
+        <p className="mb-1 text-xs text-gray-500">Photos</p>
+        {workOrder.photos.length === 0 && <p className="text-sm text-gray-500">No photos attached.</p>}
+        {workOrder.photos.length > 0 && (
+          <div className="grid grid-cols-2 gap-2">
+            {workOrder.photos.map((photo) => (
+              <a key={photo.id} href={photo.url} target="_blank" rel="noreferrer" className="flex flex-col gap-1">
+                <img src={photo.url} alt={photo.caption ?? PHOTO_KIND_LABELS[photo.kind]} className="h-24 w-full rounded border border-gray-200 object-cover" />
+                <span className="text-xs text-gray-500">
+                  {PHOTO_KIND_LABELS[photo.kind]}
+                  {photo.attemptNo > 1 ? ` · attempt ${photo.attemptNo}` : ''}
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {workOrder.notes.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs text-gray-500">Notes</p>
+          <ul className="flex flex-col gap-2">
+            {workOrder.notes.map((n) => (
+              <li key={n.id} className="rounded border border-gray-200 p-2 text-sm">
+                <p className="whitespace-pre-wrap">{n.body}</p>
+                <p className="mt-1 text-xs text-gray-500">{n.author.fullName}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {canAssign && (
+        <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
+          <p className="text-sm font-medium">Assign</p>
+          {!assigning && (
+            <button
+              onClick={openAssignPicker}
+              className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
+            >
+              Assign ticket
+            </button>
+          )}
+          {assigning && (
+            <>
+              {assignableUsers === 'loading' && <p className="text-xs text-gray-500">Loading staff…</p>}
+              {assignableUsers === 'error' && <p role="alert" className="text-xs text-red-600">Could not load staff.</p>}
+              {Array.isArray(assignableUsers) && (
+                <select
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                  value={selectedAssignee}
+                  onChange={(e) => setSelectedAssignee(e.target.value)}
+                >
+                  <option value="">Select staff…</option>
+                  {assignableUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.fullName} ({u.employeeCode})
+                    </option>
+                  ))}
+                </select>
+              )}
+              {assignError && (
+                <p role="alert" className="text-xs text-red-600">
+                  {assignError}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void confirmAssign()}
+                  disabled={!selectedAssignee || assignSubmitting}
+                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {assignSubmitting ? 'Assigning…' : 'Confirm'}
+                </button>
+                <button
+                  onClick={() => {
+                    setAssigning(false);
+                    setSelectedAssignee('');
+                    setAssignError(null);
+                  }}
+                  className="rounded border border-gray-300 px-3 py-1.5 text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {allowedTransitions.length > 0 && (
+        <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
+          <p className="text-sm font-medium">Change status</p>
+          <div className="flex flex-wrap gap-2">
+            {allowedTransitions.map((to) => (
+              <button
+                key={to}
+                onClick={() => {
+                  setPendingTransition(to);
+                  setTransitionError(null);
+                }}
+                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
+              >
+                {TRANSITION_BUTTON_LABELS[to] ?? `Mark ${WORK_ORDER_STATUS_LABELS[to]}`}
+              </button>
+            ))}
+          </div>
+
+          {pendingTransition && (
+            <div className="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3">
+              <p className="text-sm font-medium">
+                {TRANSITION_BUTTON_LABELS[pendingTransition] ?? `Mark ${WORK_ORDER_STATUS_LABELS[pendingTransition]}`}
+              </p>
+
+              <label className="flex flex-col gap-1 text-sm">
+                {pendingTransition === 'REOPENED' ? 'Note (required — why QC failed)' : 'Note (optional)'}
+                <textarea
+                  className="rounded border border-gray-300 px-2 py-1"
+                  rows={2}
+                  value={transitionNote}
+                  onChange={(e) => setTransitionNote(e.target.value)}
+                />
+              </label>
+
+              {pendingTransition === 'DONE' && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-medium">
+                    Completion photos
+                    {needsCompletionPhoto && <span className="ml-1 text-red-600">Required for {WORK_ORDER_TYPE_LABELS[workOrder.type]}</span>}
+                  </p>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/heic"
+                    multiple
+                    disabled={transitionUploading}
+                    onChange={(e) => void handleTransitionFileChange(e)}
+                  />
+                  {transitionUploading && <p className="text-xs text-gray-500">Uploading…</p>}
+                  {transitionPhotos.length > 0 && (
+                    <ul className="flex flex-col gap-1">
+                      {transitionPhotos.map((photo) => (
+                        <li key={photo.fileId} className="flex items-center justify-between text-xs text-gray-700">
+                          <span>{photo.filename}</span>
+                          <button
+                            type="button"
+                            onClick={() => setTransitionPhotos((prev) => prev.filter((p) => p.fileId !== photo.fileId))}
+                            className="text-red-600 hover:underline"
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {transitionError && (
+                <p role="alert" className="text-sm text-red-600">
+                  {transitionError.message}
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void confirmTransition()}
+                  disabled={
+                    transitionSubmitting ||
+                    transitionUploading ||
+                    (pendingTransition === 'REOPENED' && transitionNote.trim().length === 0)
+                  }
+                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {transitionSubmitting ? 'Saving…' : 'Confirm'}
+                </button>
+                <button onClick={resetTransitionForm} className="rounded border border-gray-300 px-3 py-1.5 text-sm">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkOrdersPage() {
   const { user } = useAuth();
   const [workOrders, setWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
   const [units, setUnits] = useState<UnitOption[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -310,6 +763,12 @@ export function WorkOrdersPage() {
     setWorkOrders((prev) => (Array.isArray(prev) ? [workOrder, ...prev] : [workOrder]));
   }
 
+  function handleDetailChanged(workOrder: WorkOrderRow) {
+    setWorkOrders((prev) =>
+      Array.isArray(prev) ? prev.map((wo) => (wo.id === workOrder.id ? { ...wo, ...workOrder } : wo)) : prev,
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-lg font-semibold">Work Orders</h1>
@@ -326,25 +785,35 @@ export function WorkOrdersPage() {
         {Array.isArray(workOrders) && workOrders.length > 0 && (
           <ul className="flex flex-col gap-2">
             {workOrders.map((wo) => (
-              <li key={wo.id} className="flex flex-wrap items-center gap-2 rounded border border-gray-200 p-3">
-                <span
-                  className={`rounded-full border px-2 py-0.5 text-xs font-medium ${WORK_ORDER_STATUS_CLASSES[wo.status]}`}
+              <li key={wo.id}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(wo.id)}
+                  className="flex w-full flex-wrap items-center gap-2 rounded border border-gray-200 p-3 text-left hover:border-blue-400"
                 >
-                  {WORK_ORDER_STATUS_LABELS[wo.status]}
-                </span>
-                <span className="text-xs font-mono text-gray-500">{wo.referenceNo}</span>
-                <span className="text-sm font-medium">{wo.title}</span>
-                <span className="text-xs text-gray-500">
-                  {WORK_ORDER_TYPE_LABELS[wo.type]} · {DEPARTMENT_LABELS[wo.department]} ·{' '}
-                  {WORK_ORDER_PRIORITY_LABELS[wo.priority]}
-                </span>
-                {wo.unit && <span className="text-xs text-gray-500">Unit {wo.unit.code}</span>}
-                {wo.assignedTo && <span className="text-xs text-gray-500">Assigned: {wo.assignedTo.fullName}</span>}
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-xs font-medium ${WORK_ORDER_STATUS_CLASSES[wo.status]}`}
+                  >
+                    {WORK_ORDER_STATUS_LABELS[wo.status]}
+                  </span>
+                  <span className="text-xs font-mono text-gray-500">{wo.referenceNo}</span>
+                  <span className="text-sm font-medium">{wo.title}</span>
+                  <span className="text-xs text-gray-500">
+                    {WORK_ORDER_TYPE_LABELS[wo.type]} · {DEPARTMENT_LABELS[wo.department]} ·{' '}
+                    {WORK_ORDER_PRIORITY_LABELS[wo.priority]}
+                  </span>
+                  {wo.unit && <span className="text-xs text-gray-500">Unit {wo.unit.code}</span>}
+                  {wo.assignedTo && <span className="text-xs text-gray-500">Assigned: {wo.assignedTo.fullName}</span>}
+                </button>
               </li>
             ))}
           </ul>
         )}
       </section>
+
+      {selectedId && (
+        <WorkOrderDetailDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={handleDetailChanged} />
+      )}
     </div>
   );
 }
