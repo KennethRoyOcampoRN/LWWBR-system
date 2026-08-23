@@ -76,6 +76,7 @@ interface AssignableUser {
   id: string;
   fullName: string;
   employeeCode: string;
+  department: DepartmentKey;
 }
 
 const PHOTO_KIND_LABELS: Record<WorkOrderPhotoView['kind'], string> = {
@@ -420,13 +421,17 @@ function WorkOrderDetailDrawer({
     }
   }
 
+  // Deliberately property-wide, not scoped to the ticket's own
+  // department — staff routinely get assigned to work outside their own
+  // department (client decision, 2026-08-23), so this lists every active
+  // employee, not just the ticket's department.
   function openAssignPicker() {
     if (workOrder === 'loading' || workOrder === 'error') return;
     setAssigning(true);
     setAssignableUsers('loading');
     setAssignError(null);
     api
-      .get<{ users: AssignableUser[] }>(`/work-orders/assignable-users?department=${workOrder.department}`)
+      .get<{ users: AssignableUser[] }>('/work-orders/assignable-users')
       .then((res) => setAssignableUsers(res.users))
       .catch(() => setAssignableUsers('error'));
   }
@@ -618,7 +623,7 @@ function WorkOrderDetailDrawer({
                   <option value="">Select staff…</option>
                   {assignableUsers.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.fullName} ({u.employeeCode})
+                      {u.fullName} ({u.employeeCode}) — {DEPARTMENT_LABELS[u.department]}
                     </option>
                   ))}
                 </select>

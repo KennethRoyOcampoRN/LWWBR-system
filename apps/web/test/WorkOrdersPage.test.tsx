@@ -308,7 +308,7 @@ describe('WorkOrderDetailDrawer', () => {
     expect(screen.queryByRole('button', { name: /Reopen/ })).not.toBeInTheDocument();
   });
 
-  it('regression: an OPEN ticket shows exactly one assign entry point — "Assign ticket" with a real assignee picker — never a bare "Mark Assigned" status button', async () => {
+  it('regression: an OPEN ticket shows exactly one assign entry point — "Assign ticket" with a real, property-wide assignee picker — never a bare "Mark Assigned" status button', async () => {
     const user = userEvent.setup();
     const assignerUser = {
       ...currentUser,
@@ -327,7 +327,14 @@ describe('WorkOrderDetailDrawer', () => {
         return jsonResponse(200, { workOrder: detail });
       }
       if (url.includes('/work-orders/assignable-users') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { users: [{ id: 'user_9', fullName: 'Tech One', employeeCode: 'LWW-020' }] });
+        // Cross-department on purpose — proves the picker isn't scoped to
+        // the ticket's own MAINTENANCE department.
+        return jsonResponse(200, {
+          users: [
+            { id: 'user_9', fullName: 'Tech One', employeeCode: 'LWW-020', department: 'MAINTENANCE' },
+            { id: 'user_10', fullName: 'Housekeeper One', employeeCode: 'LWW-021', department: 'HOUSEKEEPING' },
+          ],
+        });
       }
       if (url.endsWith('/work-orders/wo_1/assign') && init?.method === 'POST') {
         assignCallBody = JSON.parse(init.body as string);
@@ -359,7 +366,17 @@ describe('WorkOrderDetailDrawer', () => {
     await user.click(screen.getByRole('button', { name: 'Assign ticket' }));
     await waitFor(() => expect(screen.getAllByRole('combobox').length).toBeGreaterThan(3)); // 3 in the New-ticket form + this picker
     const picker = screen.getAllByRole('combobox').at(-1) as HTMLSelectElement;
+    // Property-wide, not department-scoped (client decision, 2026-08-23):
+    // the ticket is MAINTENANCE, but a HOUSEKEEPING user still shows up.
     await waitFor(() => expect(within(picker).getAllByRole('option').length).toBeGreaterThan(1));
+    within(picker).getByText(/Housekeeper One.*Housekeeping/);
+
+    // The request itself carries no department filter at all.
+    const assignableUsersCall = fetchMock.mock.calls.find(([reqInput]) =>
+      (typeof reqInput === 'string' ? reqInput : reqInput.toString()).includes('/work-orders/assignable-users'),
+    );
+    expect(assignableUsersCall?.[0]?.toString()).not.toContain('department');
+
     await user.selectOptions(picker, 'user_9');
     await user.click(screen.getByRole('button', { name: 'Confirm' }));
 

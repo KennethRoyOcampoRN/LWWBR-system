@@ -312,28 +312,31 @@ describe('GET /api/v1/work-orders/:id', () => {
   });
 });
 
-describe('GET /api/v1/work-orders/assignable-users', () => {
-  it('returns active users in the requested department for a workorder:assign holder', async () => {
+describe('GET /api/v1/work-orders/assignable-users — property-wide, not department-scoped (client decision 2026-08-23: staff cover flexibly across departments)', () => {
+  it('returns every active user for a workorder:assign holder, regardless of department', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
-    mockPrisma.user.findMany.mockResolvedValue([{ id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020' }]);
+    mockPrisma.user.findMany.mockResolvedValue([
+      { id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020', department: 'MAINTENANCE' },
+      { id: 'user_3', fullName: 'Housekeeper One', employeeCode: 'LWW-021', department: 'HOUSEKEEPING' },
+    ]);
 
-    const res = await request(createApp())
-      .get('/api/v1/work-orders/assignable-users?department=MAINTENANCE')
-      .set('Cookie', authCookie());
+    const res = await request(createApp()).get('/api/v1/work-orders/assignable-users').set('Cookie', authCookie());
 
     expect(res.status).toBe(200);
-    expect(res.body.users).toEqual([{ id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020' }]);
-    expect(mockPrisma.user.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ department: 'MAINTENANCE', isActive: true }) }),
-    );
+    expect(res.body.users).toEqual([
+      { id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020', department: 'MAINTENANCE' },
+      { id: 'user_3', fullName: 'Housekeeper One', employeeCode: 'LWW-021', department: 'HOUSEKEEPING' },
+    ]);
+    // No department filter in the query at all — see listAssignableUsers's
+    // own doc comment for why this is deliberate, not an oversight.
+    const whereArg = mockPrisma.user.findMany.mock.calls[0]?.[0]?.where;
+    expect(whereArg).toEqual({ isActive: true, deletedAt: null });
   });
 
   it('is forbidden for a caller without workorder:assign', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF', { department: 'RESTAURANT' }));
 
-    const res = await request(createApp())
-      .get('/api/v1/work-orders/assignable-users?department=RESTAURANT')
-      .set('Cookie', authCookie());
+    const res = await request(createApp()).get('/api/v1/work-orders/assignable-users').set('Cookie', authCookie());
 
     expect(res.status).toBe(403);
   });

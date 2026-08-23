@@ -50,21 +50,17 @@ workOrdersRouter.get(
 
 // Gated on workorder:assign itself (not user:read — see
 // listAssignableUsers's own doc comment for why a POC needs this without
-// the general user directory). department is a required query param
-// since an assign-picker is always scoped to one ticket's department.
-// Registered before GET /work-orders/:id so "assignable-users" is never
-// swallowed as an :id param — Express matches routes in registration
-// order.
+// the general user directory). Deliberately property-wide, not
+// department-scoped — see listAssignableUsers's doc comment: staff
+// routinely get assigned outside their own department, so there's no
+// department query param to require here anymore. Registered before
+// GET /work-orders/:id so "assignable-users" is never swallowed as an
+// :id param — Express matches routes in registration order.
 workOrdersRouter.get(
   '/work-orders/assignable-users',
   requirePermission('workorder:assign'),
-  asyncHandler(async (req, res) => {
-    const department = req.query.department as string;
-    if (!department) {
-      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'department is required' } });
-      return;
-    }
-    const users = await listAssignableUsers(department);
+  asyncHandler(async (_req, res) => {
+    const users = await listAssignableUsers();
     res.status(200).json({ users });
   }),
 );

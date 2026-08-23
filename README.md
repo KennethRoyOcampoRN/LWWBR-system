@@ -1687,3 +1687,35 @@ Re-verified in a real headless browser: opening an OPEN ticket now
 shows only the "Assign ticket" button.
 
 `apps/web` 23/23 (+1). Lint/typecheck clean.
+
+### Assignee picker made property-wide, not department-scoped (2026-08-23) — client decision
+
+`GET /work-orders/assignable-users` filtered strictly on
+`department: <the ticket's department>` — confirmed by reading
+`listAssignableUsers()` directly. Client feedback: this actively got in
+the way, since maintenance staff (and others) routinely get assigned
+to work outside their own department, not just their own — the same
+"staff cover flexibly, case-by-case" principle behind the earlier
+CLEANED->READY permission fix.
+
+Removed the department filter (and the now-meaningless `department`
+query param) entirely — `listAssignableUsers()` now returns every
+active, non-deleted user account, still selecting only
+`{id, fullName, employeeCode, department}` (department is now returned
+per-user as context rather than as a filter, since the picker option
+text shows it — `"Tech One (LWW-011) — Maintenance"` — now that
+cross-department assignment is the expected case, not an edge case).
+`workorder:assign` still gates who can *call* the endpoint at all — the
+change is only to whose names it returns.
+
+Updated the existing backend test to assert the Prisma query carries no
+`department` filter and returns users from multiple departments;
+updated the frontend regression test from the previous fix to mock a
+cross-department roster and assert a HOUSEKEEPING user appears in the
+picker for a MAINTENANCE ticket, and that the request itself carries no
+`department` query param. Re-verified in a real headless browser: the
+picker for a MAINTENANCE ticket lists both a MAINTENANCE and a
+HOUSEKEEPING employee with their department shown.
+
+Full repo lint/typecheck/build clean; `apps/api` 162/165 (same 3
+pre-existing network-blocked tests); `apps/web` 23/23.

@@ -196,10 +196,19 @@ export async function getWorkOrder(id: string, actor: WorkOrderActor) {
 // boundary, this is a narrowly-scoped list gated on workorder:assign
 // itself, returning only the fields an assign-picker needs — not the
 // general user directory.
-export async function listAssignableUsers(department: string) {
+//
+// Deliberately property-wide, not department-scoped (client decision,
+// 2026-08-23, same principle as the CLEANED->READY override fix): staff
+// routinely get assigned to work outside their own department — a
+// maintenance tech covering a housekeeping-flagged fixture, for example
+// — and a department-locked picker would actively get in the way of
+// how the team really operates, not just be an inconvenience. `department`
+// is still returned per user so the picker can show it as context even
+// though it's no longer used to filter.
+export async function listAssignableUsers() {
   const users = await prisma.user.findMany({
-    where: { department: department as DepartmentKey, isActive: true, deletedAt: null },
-    select: { id: true, fullName: true, employeeCode: true },
+    where: { isActive: true, deletedAt: null },
+    select: { id: true, fullName: true, employeeCode: true, department: true },
     orderBy: { fullName: 'asc' },
   });
   return users;
