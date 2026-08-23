@@ -27,12 +27,16 @@ describe('work order transition table (spec §7.2)', () => {
     expect(canTransitionWorkOrder('VERIFIED', 'DONE')).toBe(false);
   });
 
-  it('allows CANCELLED from ASSIGNED and IN_PROGRESS, matching the spec diagram literally (not from OPEN)', () => {
+  it('allows CANCELLED from OPEN, ASSIGNED, and IN_PROGRESS — a ticket is cancellable any time before DONE', () => {
+    // OPEN -> CANCELLED added 2026-08-23 (client decision): spec's own
+    // diagram omitted it, flagged as a possible oversight rather than
+    // silently assumed, and confirmed by the client to be exactly that —
+    // a mis-filed or duplicate ticket shouldn't need to be assigned
+    // before it can be cancelled.
+    expect(canTransitionWorkOrder('OPEN', 'CANCELLED')).toBe(true);
     expect(canTransitionWorkOrder('ASSIGNED', 'CANCELLED')).toBe(true);
     expect(canTransitionWorkOrder('IN_PROGRESS', 'CANCELLED')).toBe(true);
-    // Spec's own ASCII diagram draws no CANCELLED arrow from OPEN —
-    // flagged as an open question in workOrder.ts, not silently assumed.
-    expect(canTransitionWorkOrder('OPEN', 'CANCELLED')).toBe(false);
+    expect(getWorkOrderTransition('OPEN', 'CANCELLED')?.permission).toBe('workorder:close');
   });
 
   it('allows DONE -> REOPENED (QC fail) and REOPENED -> IN_PROGRESS, both gated correctly', () => {
@@ -49,7 +53,8 @@ describe('work order transition table (spec §7.2)', () => {
     expect(getWorkOrderTransition('OPEN', 'ASSIGNED')?.permission).toBe('workorder:assign');
   });
 
-  it('requires workorder:close specifically for cancellation', () => {
+  it('requires workorder:close specifically for cancellation, from any cancellable state', () => {
+    expect(getWorkOrderTransition('OPEN', 'CANCELLED')?.permission).toBe('workorder:close');
     expect(getWorkOrderTransition('ASSIGNED', 'CANCELLED')?.permission).toBe('workorder:close');
     expect(getWorkOrderTransition('IN_PROGRESS', 'CANCELLED')?.permission).toBe('workorder:close');
   });

@@ -1171,16 +1171,18 @@ mid-flight is; `workorder:verify` for **both** `DONE` outcomes
 `workorder:verify`... `DONE → REOPENED` when QC fails," and verifying vs.
 rejecting are the same QC check's two outcomes, done by the same person.
 
-**Flagged, not silently decided**: spec's own ASCII diagram for §7.2
-draws a `CANCELLED` arrow from `ASSIGNED` and `IN_PROGRESS` only, not
-from `OPEN` — so an unassigned ticket currently has no cancel path in
-this table. Implemented to match the diagram literally rather than
-assume it's an omission (a mis-filed or duplicate `OPEN` ticket would
-currently need to be assigned first before it can be cancelled). Worth
-confirming with the client whether that's intentional.
+**Resolved, 2026-08-23**: spec's own ASCII diagram for §7.2 drew a
+`CANCELLED` arrow from `ASSIGNED` and `IN_PROGRESS` only, not from
+`OPEN`, so an unassigned ticket initially had no cancel path in this
+table. Flagged rather than silently assumed one way or the other — the
+client confirmed it was a spec oversight, not an intentional
+restriction. `OPEN → CANCELLED` is now in the table, same
+`workorder:close` gate as the other two cancellation paths: a mis-filed
+or duplicate ticket is cancellable before anyone's even assigned to it.
 
 **Not yet resolved, needs the client's confirmation before the verify
-endpoint is built**: spec says "`DONE → VERIFIED` requires
+endpoint is built** (confirmed by the client to defer to that slice,
+2026-08-23): spec says "`DONE → VERIFIED` requires
 `workorder:verify`. Only the department POC or above may verify" — but
 the seeded matrix grants `workorder:verify` at `ALL` scope to
 `POC_HOUSEKEEPING`/`POC_MAINTENANCE` (not `DEPARTMENT` scope), so the
@@ -1197,11 +1199,12 @@ Spec §7.2.1's photo-requirements table (which `WorkOrderType` needs an
 `workOrder.photoRequirements` `Setting` row (see below), per spec's "so
 the client can loosen or tighten it later without a deploy."
 
-16 new `packages/shared` tests (transition coverage including the
-diagram-literal `CANCELLED` gap above, both `DONE` outcomes needing
-`workorder:verify`, a defensive check that an unrecognized `from` status
-degrades to "no transitions" rather than throwing — same defensive
-pattern as `unitStatus.ts` after the `INSPECTED` retirement — and the
+16 new `packages/shared` tests (transition coverage including
+`CANCELLED` from all three cancellable states — `OPEN` added per the
+resolution above — both `DONE` outcomes needing `workorder:verify`, a
+defensive check that an unrecognized `from` status degrades to "no
+transitions" rather than throwing — same defensive pattern as
+`unitStatus.ts` after the `INSPECTED` retirement — and the
 photo-requirements table itself).
 
 ### File upload infrastructure — done, first real usage

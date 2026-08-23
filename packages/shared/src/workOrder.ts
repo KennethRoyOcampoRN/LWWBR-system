@@ -2,11 +2,18 @@ import type { PermissionKey } from './permissions.js';
 
 // Spec §7.2's work order lifecycle:
 //   OPEN -> ASSIGNED -> IN_PROGRESS -> DONE -> VERIFIED
-//              |             |           |
-//          CANCELLED     CANCELLED    REOPENED -> IN_PROGRESS
+//     |         |             |           |
+//  CANCELLED CANCELLED    CANCELLED    REOPENED -> IN_PROGRESS
 // Mirrors the Prisma `WorkOrderStatus` enum. Spec §7: "Implement each as
 // an explicit transition table in packages/shared... never duplicate
 // this logic" — same pattern as packages/shared/src/unitStatus.ts.
+//
+// OPEN -> CANCELLED added 2026-08-23 (client decision): spec's own ASCII
+// diagram only drew the CANCELLED arrow from ASSIGNED and IN_PROGRESS,
+// leaving an unassigned ticket with no cancel path — flagged rather than
+// silently assumed, and confirmed by the client to be a spec oversight,
+// not an intentional restriction. A mis-filed or duplicate ticket should
+// be cancellable before anyone's even assigned to it.
 export const WORK_ORDER_STATUS_KEYS = [
   'OPEN',
   'ASSIGNED',
@@ -39,11 +46,11 @@ export interface WorkOrderTransition {
 //   service layer (like the unit module's photo-adjacent rules aren't
 //   encoded as a transition permission either) — a photo requirement
 //   isn't a *who* question, it's a *what's attached* question.
-// - ASSIGNED -> CANCELLED, IN_PROGRESS -> CANCELLED: `workorder:close`
-//   — the one operational permission spec lists alongside assign/verify/
-//   update_status that isn't used elsewhere in this table, and
-//   "closing" a ticket without completing it is exactly what cancelling
-//   mid-flight is.
+// - OPEN -> CANCELLED, ASSIGNED -> CANCELLED, IN_PROGRESS -> CANCELLED:
+//   `workorder:close` — the one operational permission spec lists
+//   alongside assign/verify/update_status that isn't used elsewhere in
+//   this table, and "closing" a ticket without completing it is exactly
+//   what cancelling is, at any point before it's done.
 // - DONE -> VERIFIED, DONE -> REOPENED: both `workorder:verify` — spec:
 //   "DONE -> VERIFIED requires workorder:verify... DONE -> REOPENED when
 //   QC fails." Verifying and rejecting are the same QC check's two
@@ -54,14 +61,11 @@ export interface WorkOrderTransition {
 //   `ALL` scope, not `DEPARTMENT`), so it needs an explicit
 //   actor.department === workOrder.department check in the service
 //   layer once the verify endpoint is built — not yet built this slice.
-//
-// Not yet resolved, flagged rather than silently decided: spec's own
-// ASCII diagram only draws a CANCELLED arrow from ASSIGNED and
-// IN_PROGRESS, not from OPEN — so an unassigned ticket currently has no
-// cancel path in this table, matching the diagram literally rather than
-// assuming it's an omission.
 export const WORK_ORDER_TRANSITIONS: Record<WorkOrderStatusKey, WorkOrderTransition[]> = {
-  OPEN: [{ to: 'ASSIGNED', permission: 'workorder:assign' }],
+  OPEN: [
+    { to: 'ASSIGNED', permission: 'workorder:assign' },
+    { to: 'CANCELLED', permission: 'workorder:close' },
+  ],
   ASSIGNED: [
     { to: 'IN_PROGRESS', permission: 'workorder:update_status' },
     { to: 'CANCELLED', permission: 'workorder:close' },

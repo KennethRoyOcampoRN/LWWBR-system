@@ -309,9 +309,10 @@ Rules:
 ### 7.2 Work order
 ```
 OPEN → ASSIGNED → IN_PROGRESS → DONE → VERIFIED
-         ↓            ↓           ↓
-      CANCELLED    CANCELLED    REOPENED → IN_PROGRESS
+  ↓        ↓            ↓           ↓
+CANCELLED CANCELLED  CANCELLED  REOPENED → IN_PROGRESS
 ```
+**Revised 2026-08-23 (client decision): `OPEN → CANCELLED` added.** The original diagram only drew a `CANCELLED` arrow from `ASSIGNED` and `IN_PROGRESS`, leaving an unassigned ticket with no way to cancel it. Confirmed as a spec oversight, not an intentional restriction — a mis-filed or duplicate ticket should be cancellable before anyone's even assigned to it. Same `workorder:close` gate as the other two cancellation paths.
 - `DONE → VERIFIED` requires `workorder:verify`. Only the department POC or above may verify.
 - `DONE → REOPENED` when QC fails; require a note.
 - Urgent work orders push a realtime notification to everyone in the target department immediately.
