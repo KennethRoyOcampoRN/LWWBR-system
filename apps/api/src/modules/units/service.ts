@@ -323,16 +323,19 @@ export async function changeUnitStatus(
     throw new ApiError(403, 'FORBIDDEN', `Missing permission: ${transition.permission}`);
   }
 
-  // Manual transitions go through normally. The three "automatic" ones
-  // (INSPECTED->READY, READY->OCCUPIED, OCCUPIED->VACANT_DIRTY) have no
-  // real trigger yet — the inspection module (M3) and booking module
-  // (M4) that are meant to call them don't exist — so without an escape
-  // hatch a unit can get stuck with no way forward. SYSTEM_ADMIN only
-  // (client decision, 2026-08-22, deliberately excluding RESORT_MANAGER:
-  // this is a stopgap testing tool, not a normal operational path) may
-  // override, and every use is audited distinctly (see below) so it's
-  // visible later how often the override actually gets used — that
-  // visibility is what tells us when M3/M4 have closed the gap for real.
+  // Manual transitions go through normally. The two remaining "automatic"
+  // ones (READY->OCCUPIED, OCCUPIED->VACANT_DIRTY — a third,
+  // INSPECTED->READY, existed until INSPECTED was retired the same day,
+  // 2026-08-22, as an operational correction: the person who cleans a
+  // room QC-inspects and marks it ready in one motion, no separate
+  // hand-off) have no real trigger yet — the booking module (M4) that's
+  // meant to call them doesn't exist — so without an escape hatch a unit
+  // can get stuck with no way forward. SYSTEM_ADMIN only (client
+  // decision, 2026-08-22, deliberately excluding RESORT_MANAGER: this is
+  // a stopgap testing tool, not a normal operational path) may override,
+  // and every use is audited distinctly (see below) so it's visible
+  // later how often the override actually gets used — that visibility is
+  // what tells us when M4 has closed the gap for real.
   const isOverride = transition.trigger === 'automatic';
   if (isOverride && !canOverrideAutomaticTransition(actor.roles)) {
     throw new ApiError(

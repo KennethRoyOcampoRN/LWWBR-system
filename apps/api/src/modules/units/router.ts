@@ -118,11 +118,11 @@ unitsRouter.get(
 );
 
 // No single permission gate here — which permission is required depends
-// on the requested transition (unit:update_status, workorder:verify, or
-// unit:block, per the shared transition table), so this only needs
-// requireAuth (identity only) plus a fresh load of the caller's actual
-// permissions, exactly like requirePermission does internally — never
-// trusting anything cached in the access token.
+// on the requested transition (unit:update_status, unit:block, or
+// unit:manage for an automatic-only override, per the shared transition
+// table), so this only needs requireAuth (identity only) plus a fresh
+// load of the caller's actual permissions, exactly like requirePermission
+// does internally — never trusting anything cached in the access token.
 unitsRouter.post(
   '/units/:id/status',
   requireAuth,

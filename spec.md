@@ -293,13 +293,15 @@ Setting         id, key, value Json, updatedById
 Implement each as an explicit transition table in `packages/shared` — a map of `{ from → allowed to[] }` plus the permission required. The API validates against the table; the UI derives available action buttons from the same table. **Never duplicate this logic.**
 ### 7.1 Unit status
 ```
-VACANT_DIRTY → CLEANING → CLEANED → INSPECTED → READY → OCCUPIED → VACANT_DIRTY
+VACANT_DIRTY → CLEANING → CLEANED → READY → OCCUPIED → VACANT_DIRTY
 ```
 Plus, from almost any state: `OUT_OF_ORDER` (broken, needs maintenance) and `BLOCKED` (closed deliberately — owner use, renovation, off-season). Return path from both is `VACANT_DIRTY`.
+
+**Revised 2026-08-22 (client decision, operational correction): the original cycle had a separate `INSPECTED` status between `CLEANED` and `READY`** (`CLEANED → INSPECTED` requiring `workorder:verify` as a distinct POC Housekeeping QC step, then an automatic `INSPECTED → READY` on inspection pass). At Lucky Waku-Waku the person who cleans a room is the same person who QC-inspects it and marks it ready — there is no separate hand-off — so `INSPECTED` never reflected reality and is retired. `CLEANED → READY` is now a single manual step. Historical `UnitStatusEvent` rows that recorded a real `INSPECTED` transition before this date remain in the database and keep displaying correctly — nothing about the past record changes, only what's reachable going forward.
+
 Rules:
 - `CLEANING → CLEANED` requires `unit:update_status` (room attendant taps it).
-- `CLEANED → INSPECTED` requires `workorder:verify` — this is the POC Housekeeping QC step described in the brief.
-- `INSPECTED → READY` is automatic on inspection pass.
+- `CLEANED → READY` requires `unit:update_status` — the same housekeeping permission, no separate QC step (revised 2026-08-22; see above).
 - `READY → OCCUPIED` happens automatically on booking check-in.
 - `OCCUPIED → VACANT_DIRTY` happens automatically on check-out **and** auto-creates a `HOUSEKEEPING` work order for that unit.
 - Setting `OUT_OF_ORDER` **requires** creating (or linking) a `MAINTENANCE` work order — enforce this; an out-of-order room with no ticket is how things get forgotten.

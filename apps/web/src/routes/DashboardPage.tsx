@@ -1,4 +1,4 @@
-import type { UnitStatusKey } from '@lwwbr/shared';
+import type { AnyUnitStatusKey } from '@lwwbr/shared';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api } from '../lib/api.js';
@@ -23,8 +23,13 @@ interface RawActivityEvent {
   id: string;
   unitCode: string;
   unitName: string;
-  fromStatus: UnitStatusKey;
-  toStatus: UnitStatusKey;
+  // AnyUnitStatusKey, not the forward-only UnitStatusKey: this feed
+  // reads every historical UnitStatusEvent row, and a genuinely old one
+  // can reference the retired INSPECTED status (retired 2026-08-22) —
+  // that's a true historical fact, not something this feed should hide
+  // or crash on.
+  fromStatus: AnyUnitStatusKey;
+  toStatus: AnyUnitStatusKey;
   note: string | null;
   actorName: string;
   createdAt: string;
@@ -44,7 +49,7 @@ interface FeedItem {
   at: string;
 }
 
-function statusLabel(status: UnitStatusKey): string {
+function statusLabel(status: AnyUnitStatusKey): string {
   return UNIT_STATUS_LABELS[status] ?? status;
 }
 

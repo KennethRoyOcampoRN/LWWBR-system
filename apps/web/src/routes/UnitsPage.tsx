@@ -2,6 +2,7 @@ import {
   allowedManualTransitions,
   allowedOverrideTransitions,
   UNIT_STATUS_KEYS,
+  type AnyUnitStatusKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,7 +27,11 @@ interface UnitRow {
   type: string;
   capacity: number;
   floor: string | null;
-  status: UnitStatusKey;
+  // AnyUnitStatusKey, not the forward-only UnitStatusKey: a live unit
+  // can still legitimately be sitting at a retired status (INSPECTED,
+  // retired 2026-08-22) until someone force-corrects it after this
+  // deploy — the type says so honestly rather than lying about it.
+  status: AnyUnitStatusKey;
   version: number;
   notes: string | null;
   isActive: boolean;
@@ -45,11 +50,22 @@ interface UnitTypeRow {
 
 interface TimelineEvent {
   id: string;
-  fromStatus: UnitStatusKey;
-  toStatus: UnitStatusKey;
+  // Always AnyUnitStatusKey: this is a historical record, and a past
+  // event can genuinely reference the retired INSPECTED status forever.
+  fromStatus: AnyUnitStatusKey;
+  toStatus: AnyUnitStatusKey;
   note: string | null;
   createdAt: string;
   actor: { id: string; fullName: string; employeeCode: string };
+}
+
+// A retired status (INSPECTED) can't be pre-selected in the force-
+// correction dropdown since it's no longer a valid target. Default to
+// the unit's real status if it's still forward-valid, or to READY — the
+// natural replacement for a unit stuck at the retired INSPECTED — if it
+// isn't.
+function defaultForceToStatus(status: AnyUnitStatusKey): UnitStatusKey {
+  return (UNIT_STATUS_KEYS as readonly string[]).includes(status) ? (status as UnitStatusKey) : 'READY';
 }
 
 function UnitDetailDrawer({
@@ -68,7 +84,7 @@ function UnitDetailDrawer({
   const [note, setNote] = useState('');
   const [changingTo, setChangingTo] = useState<UnitStatusKey | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [forceToStatus, setForceToStatus] = useState<UnitStatusKey>(unit.status);
+  const [forceToStatus, setForceToStatus] = useState<UnitStatusKey>(() => defaultForceToStatus(unit.status));
   const [forceNote, setForceNote] = useState('');
   const [forcing, setForcing] = useState(false);
   const [forceError, setForceError] = useState<string | null>(null);
@@ -81,8 +97,11 @@ function UnitDetailDrawer({
       .catch(() => setTimeline('error'));
   }, [unit.id]);
 
-  const allowedNext = allowedManualTransitions(unit.status, user?.permissions ?? {});
-  const overrideNext = allowedOverrideTransitions(unit.status, user?.roles ?? []);
+  // Both functions defensively return [] for a retired/unknown `from`
+  // status rather than throwing (see unitStatus.ts) — the cast here is
+  // safe even for a live unit still stuck at the retired INSPECTED.
+  const allowedNext = allowedManualTransitions(unit.status as UnitStatusKey, user?.permissions ?? {});
+  const overrideNext = allowedOverrideTransitions(unit.status as UnitStatusKey, user?.roles ?? []);
 
   async function changeStatus(toStatus: UnitStatusKey) {
     setError(null);
@@ -191,9 +210,9 @@ function UnitDetailDrawer({
         <div className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-3">
           <p className="text-sm font-medium text-amber-900">Admin override</p>
           <p className="text-xs text-amber-800">
-            These transitions normally happen automatically (inspection pass / booking check-in /
-            check-out) — no inspection or booking module exists yet, so this is a manual stopgap.
-            Every use is audited distinctly. Prefer waiting for the real flow once M3/M4 land.
+            These transitions normally happen automatically (booking check-in / check-out) — no
+            booking module exists yet, so this is a manual stopgap. Every use is audited distinctly.
+            Prefer waiting for the real flow once M4 lands.
           </p>
           <div className="flex flex-wrap gap-2">
             {overrideNext.map((status) => (

@@ -1,9 +1,17 @@
-import type { UnitStatusKey } from '@lwwbr/shared';
+import type { AnyUnitStatusKey } from '@lwwbr/shared';
 
 // Spec §8.2: "a card per unit, colour + label coded by status." One
 // mapping, used everywhere a status badge renders, so a new screen can't
 // invent its own inconsistent color for the same status.
-export const UNIT_STATUS_LABELS: Record<UnitStatusKey, string> = {
+//
+// Typed against AnyUnitStatusKey (not the forward-only UnitStatusKey),
+// and still carries an INSPECTED entry even though it was retired
+// 2026-08-22 (client decision — see packages/shared/src/unitStatus.ts):
+// a historical UnitStatusEvent can legitimately reference it forever,
+// and a live Unit row can still hold it until someone force-corrects it
+// after this deploy. Missing an entry here would render `undefined` (or
+// crash a lookup) for that one row instead of degrading gracefully.
+export const UNIT_STATUS_LABELS: Record<AnyUnitStatusKey, string> = {
   VACANT_DIRTY: 'Dirty',
   CLEANING: 'Cleaning',
   CLEANED: 'Cleaned',
@@ -14,7 +22,7 @@ export const UNIT_STATUS_LABELS: Record<UnitStatusKey, string> = {
   BLOCKED: 'Blocked',
 };
 
-export const UNIT_STATUS_CLASSES: Record<UnitStatusKey, string> = {
+export const UNIT_STATUS_CLASSES: Record<AnyUnitStatusKey, string> = {
   VACANT_DIRTY: 'bg-amber-100 text-amber-900 border-amber-300',
   CLEANING: 'bg-blue-100 text-blue-900 border-blue-300',
   CLEANED: 'bg-teal-100 text-teal-900 border-teal-300',

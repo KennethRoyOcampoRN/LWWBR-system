@@ -312,11 +312,14 @@ describe('App', () => {
     });
   });
 
-  it('shows the admin override for SYSTEM_ADMIN on an INSPECTED unit and uses it to reach READY', async () => {
-    // Reproduces the exact reported bug: a unit stuck at INSPECTED with
-    // only OUT_OF_ORDER/BLOCKED manual buttons showing, no way to the
-    // automatic-only READY transition even for SYSTEM_ADMIN. The override
-    // button was built server-side but never wired into this drawer.
+  it('shows the admin override for SYSTEM_ADMIN on a READY unit and uses it to reach OCCUPIED', async () => {
+    // Reproduces the original reported bug (originally found at INSPECTED,
+    // since retired 2026-08-22 — see unitStatus.ts): a unit stuck at an
+    // automatic-only status with only OUT_OF_ORDER/BLOCKED manual buttons
+    // showing, no way to advance even for SYSTEM_ADMIN, until the override
+    // button got wired into this drawer. READY -> OCCUPIED is now one of
+    // only two remaining automatic-only transitions, so it's the scenario
+    // that still exercises this.
     const user = userEvent.setup();
     const adminUser = {
       ...currentUser,
@@ -331,7 +334,7 @@ describe('App', () => {
       type: 'ROOM',
       capacity: 2,
       floor: null,
-      status: 'INSPECTED',
+      status: 'READY',
       version: 5,
       notes: null,
       isActive: true,
@@ -343,7 +346,7 @@ describe('App', () => {
       if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
       if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
       if (url.endsWith('/units/unit_1/status')) {
-        return jsonResponse(200, { id: 'unit_1', status: 'READY', version: 6 });
+        return jsonResponse(200, { id: 'unit_1', status: 'OCCUPIED', version: 6 });
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -357,7 +360,7 @@ describe('App', () => {
     await user.click(screen.getByText('R01'));
 
     await waitFor(() => expect(screen.getByRole('heading', { name: /R01 — Room 1/i })).toBeInTheDocument());
-    const overrideButton = await screen.findByRole('button', { name: /override.*ready/i });
+    const overrideButton = await screen.findByRole('button', { name: /override.*occupied/i });
     await user.click(overrideButton);
 
     await waitFor(() => {

@@ -221,6 +221,17 @@ enum UnitStatus {
   VACANT_DIRTY
   CLEANING
   CLEANED
+  // Retired 2026-08-22 (client decision, operational correction): the
+  // person who cleans a room QC-inspects it and marks it ready in one
+  // motion, so a separate INSPECTED handoff never reflected reality.
+  // Kept here — not removed — because Postgres has no clean "drop enum
+  // value" operation once any row references it, and more importantly
+  // `UnitStatusEvent` rows that recorded a real INSPECTED transition in
+  // the past must keep displaying correctly. `packages/shared`'s
+  // UNIT_STATUS_KEYS (the forward-looking list the API/UI validate
+  // against) no longer includes it — this value can only appear in
+  // historical UnitStatusEvent rows or briefly on Unit.status until
+  // force-corrected. See packages/shared/src/unitStatus.ts.
   INSPECTED
   READY
   OCCUPIED

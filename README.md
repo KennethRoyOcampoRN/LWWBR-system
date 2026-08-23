@@ -1015,3 +1015,125 @@ KPI strip, attention queue, and activity feed all update in the other
 within a few seconds without a manual refresh (same mechanism as task
 14's grid live-update, so should hold, but not yet watched directly on
 this page specifically).
+
+### INSPECTED status retired — 5-state unit cycle (2026-08-22/23, client decision)
+
+**Real operational correction, not a bug**: at Lucky Waku-Waku the person
+who cleans a room is the same person who QC-inspects it and marks it
+ready — there is no separate hand-off to a distinct inspector. The
+original 6-state cycle's standalone `INSPECTED` status between `CLEANED`
+and `READY` never reflected reality, and is retired. The client found
+this live while testing the Command Center's KPI strip (above) — units
+sitting at `INSPECTED` (at least one, `R11`) weren't showing up
+anywhere in any KPI bucket, which is what prompted digging into whether
+the status made sense at all.
+
+**New 5-state cycle**: `VACANT_DIRTY → CLEANING → CLEANED → READY →
+OCCUPIED → VACANT_DIRTY`, plus `OUT_OF_ORDER`/`BLOCKED` as before.
+`CLEANED → READY` is now a normal manual transition gated by
+`unit:update_status` — the same housekeeping permission as the two
+steps before it — with no QC gate and no automatic-only status in
+between. This removes one of the three transitions that used to need
+the SYSTEM_ADMIN override system: only `READY → OCCUPIED` and
+`OCCUPIED → VACANT_DIRTY` (both tied to M4's booking check-in/check-out)
+still need it. `spec.md` §7.1 rewritten in place with an inline note
+explaining the change, following this doc's established pattern for
+client-decision corrections to the original brief.
+
+**Migration story — thought through carefully, per instruction, since
+this touches a live enum column with real data on it**:
+
+- **The Prisma `UnitStatus` enum keeps `INSPECTED`** — it is *not*
+  dropped. Two independent reasons: (1) Postgres has no clean "remove
+  one enum value" operation once any row references it — the only way
+  to truly remove it would be recreating the whole type, which requires
+  no live data to reference the old value first; (2) more importantly, a
+  `UnitStatusEvent` row that recorded a real `INSPECTED` transition at
+  9:44pm last night is a true historical fact. Deleting or reinterpreting
+  it would falsify the audit trail — exactly the kind of "don't silently
+  break the audit trail for past events" the instruction called out.
+  `packages/shared`'s forward-looking `UNIT_STATUS_KEYS` no longer
+  includes it (so no transition, dropdown, or validation path can ever
+  produce it again), but a new `RETIRED_UNIT_STATUS_KEYS` list
+  (currently just `['INSPECTED']`) and an `AnyUnitStatusKey` union type
+  exist specifically so display code — the timeline, and defensively the
+  grid tile — can keep rendering a historical or not-yet-corrected
+  `INSPECTED` row correctly instead of crashing or showing `undefined`.
+- **This means the schema change itself is low-risk**: no data
+  migration, no destructive `ALTER TYPE`, nothing for `npx prisma db
+  push` to even touch (the enum value was already there; only its
+  Prisma-schema comment changed, documenting why it stays). The only
+  thing that changes behaviorally is what `packages/shared`'s transition
+  table and validation accept going forward.
+- **The lookup functions (`getTransition`, `allowedManualTransitions`,
+  `allowedOverrideTransitions`) are now defensive against a retired/
+  unrecognized `from` status** (`UNIT_STATUS_TRANSITIONS[from] ?? []`,
+  rather than a bare index that would be `undefined` and throw on
+  `.find()`/`.filter()`). A live unit still sitting at `INSPECTED` after
+  this deploy — like `R11` — degrades to "no manual/override transitions
+  available" (its "Change status" and "Admin override" panels show
+  nothing) rather than crashing the drawer.
+- **The fix for `R11` and any other live `INSPECTED` unit is the
+  already-built, already-live-verified forced-status-correction
+  feature** — no bespoke migration script was written for this.
+  `unit:force_status` (SYSTEM_ADMIN today) can jump straight to `READY`
+  in a few seconds through the drawer's existing panel, which doesn't
+  depend on `getTransition()` at all. Given the very small number of
+  affected units (one confirmed), building dedicated migration tooling
+  for a one-off, already-solved-by-an-existing-tool correction would
+  have been over-engineering; recommended as the next live step.
+
+**Frontend defensive typing to match**: `UnitRow.status` and
+`TimelineEvent.fromStatus`/`toStatus` (in both `UnitsPage.tsx` and
+`DashboardPage.tsx`'s activity feed) are now typed `AnyUnitStatusKey`,
+not the forward-only `UnitStatusKey` — honest about the fact that a
+retired status can still arrive from the wire, for exactly the two
+reasons above. `UNIT_STATUS_LABELS`/`UNIT_STATUS_CLASSES` keep an
+`INSPECTED` entry so that honesty doesn't turn into a rendering crash.
+The force-correction dropdown can't offer `INSPECTED` as a target (it
+maps over the forward-only `UNIT_STATUS_KEYS`, now 7 long instead of 8)
+and defaults its initial selection to `READY` when opened on a unit
+currently stuck at a retired status, rather than trying to pre-select an
+option that no longer exists.
+
+**Test suites rewritten for the 5-state model, not blindly patched to
+match new behavior** — per instruction, each changed assertion reflects
+a real reasoned-through expectation: `packages/shared`'s
+`unitStatus.test.ts` now has 19 tests (up from 13), including new
+explicit coverage that `CLEANED → READY` is manual/`unit:update_status`
+now, that only two transitions are automatic (down from three), that
+`INSPECTED` cannot be resolved into by anything in the table, and that a
+retired/unrecognized `from` status degrades to empty results rather than
+throwing. The API's `router.test.ts`: the old "QC step" test (POC
+Housekeeping doing `CLEANED → INSPECTED` via `workorder:verify`) became
+a test that `CLEANED → READY` now works directly via
+`unit:update_status`; the old "room attendant blocked from the QC step"
+test was **flipped**, not deleted — it now proves a room attendant
+holding only `unit:update_status` *can* do `CLEANED → READY`, which is
+the actual behavior change; the override tests moved from
+`INSPECTED → READY` to `READY → OCCUPIED`; new tests confirm `INSPECTED`
+is rejected as a target status on both `POST /units/:id/status` and
+`POST /units/:id/force-status` (`422 VALIDATION_ERROR`), and that
+`CLEANED → READY` no longer produces an override audit entry for a
+plain housekeeping caller. The frontend's override-panel component test
+moved from an `INSPECTED` unit to a `READY` one, same override-then-
+advance shape, targeting `OCCUPIED` instead. Full repo verification:
+lint, typecheck, and build clean across all 3 workspaces;
+`packages/shared` 28/28; `apps/api` 127/130 (same 3 pre-existing
+network-blocked round-trip tests, unrelated); `apps/web` 15/15.
+
+**Open item, explicitly flagged rather than decided (per instruction) —
+the Dashboard KPI strip**: today's KPI strip only has four cards
+(Occupied / Ready / Dirty / Out-of-order) and its counting `switch` in
+`getUnitsDashboard()` has no case for `CLEANING`, `CLEANED`, or
+`BLOCKED` — units in those statuses aren't represented in *any* KPI
+bucket. This isn't new: it was already true before `INSPECTED` existed
+in the client's live data, and retiring `INSPECTED` doesn't add a new
+gap or break anything — it just removes one specific status value that
+used to also fall into that same uncounted bucket. But now that this
+was found live via exactly this gap, it's worth deciding deliberately:
+should the KPI strip grow a fifth card — a combined "Cleaning/Cleaned"
+(in-progress housekeeping) count, mirroring how `dirty`/`ready`/
+`occupied`/`outOfOrder` already work — or is that explicitly a follow-up
+for later? Not decided here; needs the client's call before building
+either way.

@@ -122,7 +122,12 @@ describe('GET /api/v1/units and /unit-types', () => {
 });
 
 describe('POST /api/v1/units/:id/status', () => {
-  it('allows a POC Housekeeping caller to move CLEANED -> INSPECTED (workorder:verify)', async () => {
+  it('allows a caller with unit:update_status to move CLEANED -> READY directly — no QC handoff (client decision, 2026-08-22, INSPECTED retired)', async () => {
+    // Formerly a two-hop hand-off (CLEANED -> INSPECTED via workorder:verify,
+    // then an automatic-only INSPECTED -> READY): the client corrected this
+    // to a single manual step gated by the same housekeeping permission as
+    // the rest of the cycle, since the person who cleans the room is the
+    // same person who marks it ready.
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
     mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 3 }));
     mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
@@ -130,19 +135,19 @@ describe('POST /api/v1/units/:id/status', () => {
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/status')
       .set('Cookie', authCookie())
-      .send({ toStatus: 'INSPECTED', version: 3 });
+      .send({ toStatus: 'READY', version: 3 });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'unit_1', status: 'INSPECTED', version: 4 });
+    expect(res.body).toEqual({ id: 'unit_1', status: 'READY', version: 4 });
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith({
       where: { id: 'unit_1', version: 3 },
-      data: { status: 'INSPECTED', version: { increment: 1 } },
+      data: { status: 'READY', version: { increment: 1 } },
     });
     expect(mockPrisma.unitStatusEvent.create).toHaveBeenCalledWith({
       data: {
         unitId: 'unit_1',
         fromStatus: 'CLEANED',
-        toStatus: 'INSPECTED',
+        toStatus: 'READY',
         actorId: 'user_1',
         note: undefined,
         source: 'MANUAL',
@@ -157,7 +162,7 @@ describe('POST /api/v1/units/:id/status', () => {
         entityId: 'unit_1',
         actorId: 'user_1',
         fromStatus: 'CLEANED',
-        toStatus: 'INSPECTED',
+        toStatus: 'READY',
         version: 4,
         note: null,
       }),
@@ -173,22 +178,35 @@ describe('POST /api/v1/units/:id/status', () => {
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/status')
       .set('Cookie', authCookie())
-      .send({ toStatus: 'INSPECTED', version: 3 });
+      .send({ toStatus: 'READY', version: 3 });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'unit_1', status: 'INSPECTED', version: 4 });
+    expect(res.body).toEqual({ id: 'unit_1', status: 'READY', version: 4 });
   });
 
-  it('rejects a room attendant (unit:update_status only) trying to do the QC step', async () => {
+  it('a room attendant holding only unit:update_status can now do CLEANED -> READY too — the QC gate is gone (previously 403 before INSPECTED was retired)', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 3 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 3 });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects INSPECTED as a target status — it is no longer a valid enum value to transition into', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
 
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/status')
       .set('Cookie', authCookie())
       .send({ toStatus: 'INSPECTED', version: 3 });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 
@@ -218,36 +236,40 @@ describe('POST /api/v1/units/:id/status', () => {
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
   });
 
-  it('rejects the automatic-only INSPECTED -> READY transition for a non-SYSTEM_ADMIN caller, even one holding unit:manage', async () => {
+  it('rejects the automatic-only READY -> OCCUPIED transition for a non-SYSTEM_ADMIN caller, even one holding unit:manage', async () => {
     // RESORT_MANAGER also holds unit:manage (same as SYSTEM_ADMIN) but is
     // deliberately excluded from the override — client decision,
     // 2026-08-22: this is a stopgap testing tool, not a normal
     // operational path RESORT_MANAGER should reach for day to day.
+    // READY -> OCCUPIED is one of only two automatic-only transitions
+    // remaining now that INSPECTED (and its automatic-only INSPECTED ->
+    // READY hop) has been retired — CLEANED -> READY is a normal manual
+    // step now, so no override applies to it any more.
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'INSPECTED', version: 5 }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'READY', version: 5 }));
 
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/status')
       .set('Cookie', authCookie())
-      .send({ toStatus: 'READY', version: 5 });
+      .send({ toStatus: 'OCCUPIED', version: 5 });
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 
-  it('allows SYSTEM_ADMIN to override an automatic-only transition, and audits it distinctly from a plain update', async () => {
+  it('allows SYSTEM_ADMIN to override the automatic-only READY -> OCCUPIED transition, and audits it distinctly from a plain update', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
-    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'INSPECTED', version: 5 }));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'READY', version: 5 }));
     mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(createApp())
       .post('/api/v1/units/unit_1/status')
       .set('Cookie', authCookie())
-      .send({ toStatus: 'READY', version: 5, note: 'unsticking manually, no inspection module yet' });
+      .send({ toStatus: 'OCCUPIED', version: 5, note: 'unsticking manually, no booking module yet' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'unit_1', status: 'READY', version: 6 });
+    expect(res.body).toEqual({ id: 'unit_1', status: 'OCCUPIED', version: 6 });
     expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -258,6 +280,22 @@ describe('POST /api/v1/units/:id/status', () => {
         }),
       }),
     );
+  });
+
+  it('CLEANED -> READY needs no override any more — a plain unit:update_status caller succeeds where only SYSTEM_ADMIN could before', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ status: 'CLEANED', version: 5 }));
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'READY', version: 5 });
+
+    expect(res.status).toBe(200);
+    // Not an override — no distinct audit tag, just the generic UPDATE
+    // row the audit extension writes for every mutated Unit.
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('returns 409 on a stale version (concurrent edit)', async () => {
@@ -410,6 +448,19 @@ describe('POST /api/v1/units/:id/force-status', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('VERSION_CONFLICT');
+  });
+
+  it('rejects INSPECTED in the force-correction dropdown too — the 8-status dropdown is now 5 (client decision, 2026-08-22)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+
+    const res = await request(createApp())
+      .post('/api/v1/units/unit_1/force-status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'INSPECTED', version: 3, note: 'trying to force a retired status' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 
   it('returns 404 for an unknown unit', async () => {
