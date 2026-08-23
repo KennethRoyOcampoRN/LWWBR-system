@@ -1922,3 +1922,102 @@ the go-ahead: per-assignee realtime notifications (today's broadcasts
 cover the property-wide activity feed only), EXIF capture-time
 verification on uploaded photos, and anything else not explicitly
 requested.
+
+### Notifications: department-wide urgent alerts + per-assignee — built, not yet live-tested (2026-08-23)
+
+Given the go-ahead to build this next. Spec §9.1's `Notification` model
+existed in the schema since M0 but had no reader or writer anywhere —
+this is its first real usage. A new `apps/api/src/modules/notifications`
+module is the single writer of `Notification` rows and the single caller
+of the `user:{id}`/`dept:{department}` realtime channels (spec §9.1's
+channel-naming rule), so every domain module that wants to notify someone
+goes through `notifyUser()`/`notifyDepartment()` rather than each writing
+its own Notification-row-plus-emit pair — same "never duplicate this
+logic" principle spec §7 states for transition tables.
+
+- **`notifyDepartment()`** — spec §7.2: "Urgent work orders push a
+  realtime notification to everyone in the target department
+  immediately." `createWorkOrder()` calls this when `priority === 'URGENT'`:
+  one `Notification` row per active user in the target department
+  (excluding the creator — they don't need telling about their own
+  action), plus a single best-effort broadcast on `dept:{department}`
+  carrying the same payload. This is distinct from the existing
+  `property`-channel `workorder.created` broadcast (task M3 first
+  slice) — that one feeds the property-wide activity feed everyone
+  watching the Command Center sees; this one is the targeted alert only
+  the relevant department's Notification rows and channel receive.
+- **`notifyUser()`** — the per-assignee gap flagged as queued since M3's
+  first slice ("today's broadcasts cover the property-wide activity
+  feed but nothing targets the specific assignee"). Wired into two
+  places in `apps/api/src/modules/workorders/service.ts`:
+  - `assignWorkOrder()`: the newly-assigned tech gets notified directly
+    (skipped on self-assignment).
+  - `changeWorkOrderStatus()`, `REOPENED` outcome only: the ticket's
+    current assignee gets told their completed work failed QC and needs
+    another attempt — arguably the single most actionable notification
+    in this system, since it's the one case where a "done" ticket
+    silently becomes not-done again from the assignee's point of view.
+    Skipped if the ticket carries no assignee, or if the verifier
+    somehow is the assignee themselves (defensive — self-verification is
+    already blocked elsewhere).
+
+  `VERIFIED` was deliberately **not** wired to a per-assignee
+  notification this slice — a completed, QC-passed ticket needs no
+  further action from anyone, so a notification for it would be a
+  no-op ping rather than something actionable. Revisit only if the
+  client specifically wants a "your work was approved" confirmation.
+
+Every write goes through the same best-effort pattern every other
+broadcast in this codebase uses: wrapped in try/catch, logged not
+thrown, never fails the underlying work-order operation itself — a
+Realtime or Notification-table hiccup must not block someone from
+creating or assigning a ticket.
+
+**Backend surface** (spec §9's documented `GET /notifications  POST
+/notifications/:id/read`, unbuilt until now): `GET /notifications`
+(optional `?unread=true`), `POST /notifications/:id/read`. No dedicated
+permission key — both are scoped to the caller's own notifications via
+`requireAuth` only, same self-service pattern M1's session-revocation
+endpoints established (`WHERE id = ? AND userId = ?` in the same query,
+not a separate ownership check after a plain lookup — guessing another
+user's notification id 404s rather than leaking whether it exists).
+
+**Frontend**: `NotificationBell` (`apps/web/src/routes/NotificationBell.tsx`),
+mounted in `AppShell`'s nav rail so it's visible from every authenticated
+screen, not a routed page of its own — same reasoning as the Sign-out
+button's placement. Fetches `/notifications` on mount, subscribes to
+both the signed-in user's `user:{id}` and `dept:{department}` channels
+(`subscribeToNotifications()`, new in `apps/web/src/lib/realtime.ts`,
+same disabled/connecting/connected/reconnecting status contract as the
+existing `subscribeToUnitStatusChanges()`), and falls back to a 60s poll
+independent of realtime connection state — same resiliency principle
+(spec §3: "a dropped socket must never leave a stale board with no
+recovery path") task 14 established for the units grid. A red badge
+shows the unread count; clicking a notification marks it read
+optimistically (immediate UI update, best-effort `POST
+/notifications/:id/read` in the background).
+
+11 new backend router tests: 6 for the notifications module itself
+(auth-required on both routes, scoping, `?unread=true`, the 404-via-
+scoped-query pattern), 5 added to `workorders/router.test.ts` (urgent
+creation notifies the department and excludes the creator, a NORMAL-
+priority ticket notifies no one, the department notification failing
+doesn't fail ticket creation, assignment notifies the assignee and
+skips on self-assignment, reopening notifies the assignee). Existing
+`App.smoke.test.tsx` mock for `lib/realtime.js` extended with a
+no-op `subscribeToNotifications` so `NotificationBell` (now rendered on
+every authenticated screen via `AppShell`) doesn't crash pre-existing
+tests that don't otherwise care about notifications. Full repo
+lint/typecheck/build clean; `apps/api` 176/179 (+13, same 3
+pre-existing network-blocked round-trip tests as every prior milestone);
+`apps/web` 25/25 (unchanged count — extended, not added, since the new
+coverage is on the API side).
+
+**Not yet live-tested against the real Supabase database** — same
+sandbox limitation as every prior milestone. To confirm: create an
+urgent ticket as one department member and watch a Notification row (and
+bell badge, in a live app) appear for every other active member of that
+department except the creator; assign a ticket to someone and confirm
+they get notified directly; reopen a `DONE` ticket and confirm its
+assignee gets notified. **EXIF capture-time verification remains
+queued**, not touched this slice.

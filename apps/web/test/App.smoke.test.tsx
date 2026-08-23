@@ -33,6 +33,18 @@ vi.mock('../src/lib/realtime.js', () => ({
       capturedRealtimeHandlers = null;
     };
   },
+  // NotificationBell (rendered in AppShell on every authenticated screen)
+  // subscribes on mount too — not under test here, so this just needs to
+  // be a well-behaved no-op rather than a missing export.
+  subscribeToNotifications: (
+    _userId: string,
+    _department: string,
+    _onEvent: unknown,
+    onStatusChange: (status: 'connecting' | 'connected' | 'reconnecting' | 'disabled') => void,
+  ) => {
+    onStatusChange('connected');
+    return () => {};
+  },
 }));
 
 function jsonResponse(status: number, body: unknown) {

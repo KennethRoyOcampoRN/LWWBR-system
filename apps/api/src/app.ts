@@ -9,6 +9,7 @@ import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { authRouter } from './modules/auth/router.js';
 import { filesRouter } from './modules/files/router.js';
+import { notificationsRouter } from './modules/notifications/router.js';
 import { rolesRouter } from './modules/roles/router.js';
 import { unitsRouter } from './modules/units/router.js';
 import { usersRouter } from './modules/users/router.js';
@@ -59,6 +60,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', unitsRouter);
   app.use('/api/v1', filesRouter);
   app.use('/api/v1', workOrdersRouter);
+  app.use('/api/v1', notificationsRouter);
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);

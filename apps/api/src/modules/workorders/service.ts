@@ -16,6 +16,7 @@ import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
 import { generateReferenceNo } from '../../lib/referenceNo.js';
+import { notifyDepartment, notifyUser } from '../notifications/service.js';
 import type { AssignWorkOrderInput, ChangeWorkOrderStatusInput, CreateWorkOrderInput, ListWorkOrdersQuery } from './schema.js';
 
 const PHOTO_REQUIREMENTS_SETTING_KEY = 'workOrder.photoRequirements';
@@ -92,13 +93,9 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: WorkOr
   });
 
   try {
-    // Spec §9.1: unmapped-yet event name, but same channel/pattern as
-    // task 14's unit.status.changed — best-effort, never fails the
-    // create itself. Urgent tickets additionally need a targeted
-    // dept:{department} notification per spec §7.2 ("push a realtime
-    // notification to everyone in the target department immediately")
-    // — not yet built; this broadcast alone covers the property-wide
-    // activity-feed use case task 15 (Command Center) will want.
+    // Same channel/pattern as task 14's unit.status.changed — best-effort,
+    // never fails the create itself. Covers the property-wide
+    // activity-feed use case (Command Center).
     await getRealtimeAdapter().emit('property', 'workorder.created', {
       entityId: workOrder.id,
       actorId: actor.id,
@@ -110,6 +107,31 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: WorkOr
     });
   } catch (error) {
     console.error('Realtime broadcast for workorder.created failed:', error);
+  }
+
+  // Spec §7.2: "Urgent work orders push a realtime notification to
+  // everyone in the target department immediately." Distinct from the
+  // property-wide activity-feed broadcast above — this writes a
+  // Notification row per department member and emits on their shared
+  // dept:{department} channel, not the property one. Excludes the
+  // creator: they don't need to be told about the ticket they just filed.
+  if (workOrder.priority === 'URGENT') {
+    try {
+      await notifyDepartment(
+        workOrder.department as DepartmentKey,
+        actor.id,
+        {
+          type: 'WORKORDER_CREATED',
+          title: `Urgent: ${workOrder.referenceNo}`,
+          body: workOrder.title,
+          entityType: 'WorkOrder',
+          entityId: workOrder.id,
+        },
+        actor.id,
+      );
+    } catch (error) {
+      console.error('Department notification for urgent workorder.created failed:', error);
+    }
   }
 
   return workOrder;
@@ -274,6 +296,25 @@ export async function assignWorkOrder(
     console.error('Realtime broadcast for workorder.status.changed (assign) failed:', error);
   }
 
+  // Per-assignee notification (queued gap noted in M3's first slice):
+  // the property-wide broadcast above tells everyone watching the
+  // activity feed a ticket got assigned, but doesn't target the specific
+  // assignee. Skipped on self-assignment — no need to tell someone about
+  // their own action.
+  if (input.assignedToId !== actor.id) {
+    try {
+      await notifyUser(input.assignedToId, actor.id, {
+        type: 'WORKORDER_ASSIGNED',
+        title: `${workOrder.referenceNo} assigned to you`,
+        body: workOrder.title,
+        entityType: 'WorkOrder',
+        entityId: id,
+      });
+    } catch (error) {
+      console.error('Per-assignee notification for workorder.assigned failed:', error);
+    }
+  }
+
   return getWorkOrder(id, actor);
 }
 
@@ -399,11 +440,8 @@ export async function changeWorkOrderStatus(
   }
 
   try {
-    // Deferred gap, flagged rather than silently omitted: this broadcast
-    // covers the activity-feed use case (same channel/pattern as
-    // workorder.created and the unit module's status broadcast), but
-    // there's no targeted per-assignee "your ticket moved" notification
-    // yet — out of scope for this slice.
+    // Same channel/pattern as workorder.created and the unit module's
+    // status broadcast — covers the property-wide activity-feed use case.
     await getRealtimeAdapter().emit('property', 'workorder.status.changed', {
       entityId: id,
       actorId: actor.id,
@@ -414,6 +452,27 @@ export async function changeWorkOrderStatus(
     });
   } catch (error) {
     console.error('Realtime broadcast for workorder.status.changed failed:', error);
+  }
+
+  // Per-assignee notification: a QC rejection (REOPENED) sends the
+  // ticket back to whoever is assigned — they specifically need to know
+  // their completed work was bounced, not just see it scroll past in the
+  // property-wide activity feed. Skipped if the verifier is themself the
+  // assignee (self-verification is already blocked elsewhere in this
+  // system, but this stays a defensive no-self-notify check regardless)
+  // or if the ticket carries no assignee at all.
+  if (input.toStatus === 'REOPENED' && workOrder.assignedToId && workOrder.assignedToId !== actor.id) {
+    try {
+      await notifyUser(workOrder.assignedToId, actor.id, {
+        type: 'WORKORDER_STATUS_CHANGED',
+        title: `${workOrder.referenceNo} reopened — needs another attempt`,
+        body: input.note ?? workOrder.title,
+        entityType: 'WorkOrder',
+        entityId: id,
+      });
+    } catch (error) {
+      console.error('Per-assignee notification for workorder.reopened failed:', error);
+    }
   }
 
   return getWorkOrder(id, actor);

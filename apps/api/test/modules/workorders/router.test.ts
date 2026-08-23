@@ -9,6 +9,7 @@ const mockPrisma = {
   workOrder: { create: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
   workOrderPhoto: { createMany: vi.fn() },
   workOrderNote: { create: vi.fn() },
+  notification: { create: vi.fn(), createMany: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -89,6 +90,9 @@ beforeEach(() => {
   mockPrisma.workOrder.updateMany.mockResolvedValue({ count: 1 });
   mockPrisma.workOrderPhoto.createMany.mockResolvedValue({ count: 0 });
   mockPrisma.workOrderNote.create.mockResolvedValue({});
+  mockPrisma.notification.create.mockResolvedValue({ id: 'notif_1', createdAt: new Date(), type: 'WORKORDER_ASSIGNED' });
+  mockPrisma.notification.createMany.mockResolvedValue({ count: 0 });
+  mockPrisma.user.findMany.mockResolvedValue([]);
   mockGetSignedUrl.mockResolvedValue('https://signed.example/abc.jpg');
 });
 
@@ -220,6 +224,80 @@ describe('POST /api/v1/work-orders — spec §7.2.1 mandatory photo evidence', (
       .post('/api/v1/work-orders')
       .set('Cookie', authCookie())
       .send({ type: 'GENERAL', title: 'Something', department: 'MANAGEMENT' });
+
+    expect(res.status).toBe(201);
+  });
+});
+
+describe('POST /api/v1/work-orders — spec §7.2 urgent department notification', () => {
+  it('notifies every active user in the target department when priority is URGENT, excluding the creator', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.fileObject.findMany.mockResolvedValue([{ id: 'file_1' }]);
+    mockPrisma.workOrder.create.mockResolvedValue(
+      fakeWorkOrder({ priority: 'URGENT', photos: [{ id: 'photo_1', fileId: 'file_1', kind: 'ISSUE' }] }),
+    );
+    mockPrisma.user.findMany.mockResolvedValue([{ id: 'user_2' }, { id: 'user_3' }]);
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders')
+      .set('Cookie', authCookie())
+      .send({
+        type: 'MAINTENANCE',
+        title: 'Leaking faucet in R01',
+        department: 'MAINTENANCE',
+        priority: 'URGENT',
+        photos: [{ fileId: 'file_1', kind: 'ISSUE' }],
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ department: 'MAINTENANCE', id: { not: 'user_1' } }),
+      }),
+    );
+    expect(mockPrisma.notification.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ userId: 'user_2', type: 'WORKORDER_CREATED' }),
+        expect.objectContaining({ userId: 'user_3', type: 'WORKORDER_CREATED' }),
+      ],
+    });
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'dept:MAINTENANCE',
+      'notification.new',
+      expect.objectContaining({ actorId: 'user_1' }),
+    );
+  });
+
+  it('does not notify the department for a NORMAL-priority ticket', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.workOrder.create.mockResolvedValue(fakeWorkOrder({ type: 'HOUSEKEEPING', department: 'HOUSEKEEPING' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'HOUSEKEEPING', title: 'Turn down service', department: 'HOUSEKEEPING' });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    expect(mockRealtimeEmit).not.toHaveBeenCalledWith('dept:HOUSEKEEPING', 'notification.new', expect.anything());
+  });
+
+  it('does not fail creation when the department notification itself fails', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.fileObject.findMany.mockResolvedValue([{ id: 'file_1' }]);
+    mockPrisma.workOrder.create.mockResolvedValue(fakeWorkOrder({ priority: 'URGENT' }));
+    mockPrisma.user.findMany.mockRejectedValue(new Error('database unreachable'));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders')
+      .set('Cookie', authCookie())
+      .send({
+        type: 'MAINTENANCE',
+        title: 'Leaking faucet in R01',
+        department: 'MAINTENANCE',
+        priority: 'URGENT',
+        photos: [{ fileId: 'file_1', kind: 'ISSUE' }],
+      });
 
     expect(res.status).toBe(201);
   });
@@ -431,6 +509,45 @@ describe('POST /api/v1/work-orders/:id/assign', () => {
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('VERSION_CONFLICT');
   });
+
+  it('notifies the assignee directly (per-assignee notification, user:{id} channel)', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_2', fullName: 'Tech One', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ userId: 'user_2', type: 'WORKORDER_ASSIGNED' }),
+      }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'user:user_2',
+      'notification.new',
+      expect.objectContaining({ actorId: 'user_1' }),
+    );
+  });
+
+  it('skips the per-assignee notification on self-assignment', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_1', fullName: 'POC Maintenance (Demo)', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'OPEN', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_1', version: 0 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/v1/work-orders/:id/status', () => {
@@ -558,6 +675,30 @@ describe('POST /api/v1/work-orders/:id/status', () => {
       expect.objectContaining({
         data: expect.objectContaining({ workOrderId: 'wo_1', authorId: 'user_1', body: 'Faucet still leaking, redo the seal.' }),
       }),
+    );
+  });
+
+  it('notifies the assignee directly when their ticket is reopened after failing QC', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE', attemptNo: 1, assignedToId: 'user_2' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'REOPENED', version: 0, note: 'Faucet still leaking, redo the seal.' });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ userId: 'user_2', type: 'WORKORDER_STATUS_CHANGED' }),
+      }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'user:user_2',
+      'notification.new',
+      expect.objectContaining({ actorId: 'user_1' }),
     );
   });
 

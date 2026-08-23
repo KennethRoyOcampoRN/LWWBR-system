@@ -60,6 +60,23 @@ function getSupabaseClient() {
   return cachedClient;
 }
 
+// Spec §9.1: `notification.new` — emitted on either a `user:{id}` channel
+// (a notification targeted at one person, e.g. a work order assigned to
+// them) or a `dept:{department}` channel (e.g. an urgent work order,
+// §7.2 — everyone in the target department). This is the browser-side
+// payload shape apps/api's notifications module emits on both.
+export interface NotificationPayload {
+  entityId: string;
+  actorId: string;
+  at: string;
+  summary: string;
+  type: string;
+  title: string;
+  body: string;
+  relatedEntityType: string | null;
+  relatedEntityId: string | null;
+}
+
 /**
  * Subscribes to the `property` channel's `unit.status.changed` broadcast.
  * Returns an unsubscribe function safe to call from a React effect
@@ -88,6 +105,66 @@ export function subscribeToUnitStatusChanges(
     if (channel) {
       void client.removeChannel(channel);
       channel = null;
+    }
+  };
+}
+
+/**
+ * Subscribes to both channels a signed-in user's notifications can arrive
+ * on: their own `user:{id}` channel (assigned-to-you, reopened-on-you)
+ * and their `dept:{department}` channel (urgent tickets filed for their
+ * department, §7.2). Same disabled/connecting/connected/reconnecting
+ * status contract as subscribeToUnitStatusChanges — the notification bell
+ * degrades to poll-only rather than crashing when realtime is off.
+ */
+export function subscribeToNotifications(
+  userId: string,
+  department: string,
+  onEvent: (payload: NotificationPayload) => void,
+  onStatusChange: (status: RealtimeConnectionStatus) => void,
+): () => void {
+  const client = getSupabaseClient();
+  if (!client) {
+    onStatusChange('disabled');
+    return () => {};
+  }
+
+  let userChannel: RealtimeChannel | null = client.channel(`user:${userId}`);
+  let deptChannel: RealtimeChannel | null = client.channel(`dept:${department}`);
+  onStatusChange('connecting');
+
+  const handleBroadcast = ({ payload }: { payload: unknown }) => onEvent(payload as NotificationPayload);
+  userChannel.on('broadcast', { event: 'notification.new' }, handleBroadcast);
+  deptChannel.on('broadcast', { event: 'notification.new' }, handleBroadcast);
+
+  // Both channels report their own subscribe status independently;
+  // 'connected' only once both have confirmed, 'reconnecting' the moment
+  // either drops.
+  const statuses = { user: 'connecting', dept: 'connecting' };
+  const reportCombinedStatus = () => {
+    if (statuses.user === 'SUBSCRIBED' && statuses.dept === 'SUBSCRIBED') {
+      onStatusChange('connected');
+    } else {
+      onStatusChange('reconnecting');
+    }
+  };
+  userChannel.subscribe((status) => {
+    statuses.user = status;
+    reportCombinedStatus();
+  });
+  deptChannel.subscribe((status) => {
+    statuses.dept = status;
+    reportCombinedStatus();
+  });
+
+  return () => {
+    if (userChannel) {
+      void client.removeChannel(userChannel);
+      userChannel = null;
+    }
+    if (deptChannel) {
+      void client.removeChannel(deptChannel);
+      deptChannel = null;
     }
   };
 }

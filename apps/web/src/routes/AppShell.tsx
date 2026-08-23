@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.js';
+import { NotificationBell } from './NotificationBell.js';
 
 // Spec §8.1: "Left/bottom nav is generated from the user's effective
 // permissions." Each entry names the permission key that unlocks it —
@@ -32,8 +33,11 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <nav className="flex shrink-0 flex-row gap-1 border-b border-gray-200 bg-white p-2 md:w-56 md:flex-col md:border-b-0 md:border-r md:p-4">
-        <p className="hidden px-2 pb-2 text-sm font-semibold text-gray-500 md:block">Lucky Waku-Waku</p>
+      <nav className="flex shrink-0 flex-row items-center gap-1 border-b border-gray-200 bg-white p-2 md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:p-4">
+        <div className="hidden items-center justify-between md:flex">
+          <p className="px-2 pb-2 text-sm font-semibold text-gray-500">Lucky Waku-Waku</p>
+          <NotificationBell />
+        </div>
         {visibleItems.map((item) => (
           <NavLink
             key={item.to}
@@ -46,6 +50,9 @@ export function AppShell() {
             {item.label}
           </NavLink>
         ))}
+        <div className="ml-auto md:hidden">
+          <NotificationBell />
+        </div>
         <div className="mt-auto hidden flex-col gap-1 pt-4 text-sm md:flex">
           <p className="px-2 text-gray-700">{user?.fullName}</p>
           <button onClick={() => void logout()} className="rounded px-2 py-1 text-left text-gray-500 hover:bg-gray-100">
