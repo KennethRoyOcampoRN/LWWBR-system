@@ -265,6 +265,34 @@ describe('GET /api/v1/work-orders — read scoping', () => {
     expect(whereArg.OR).toBeUndefined();
     expect(whereArg.department).toBeUndefined();
   });
+
+  it('?mine=true narrows an ALL-scoped caller down to tickets assigned to them — powers the "My tasks" view', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN', { department: 'MANAGEMENT' }));
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/work-orders?mine=true').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ assignedToId: 'user_1' }) }),
+    );
+  });
+
+  it('?assignedTo= lets a department dashboard filter its already-scoped queue to one person', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/work-orders?assignedTo=user_9')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.workOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ department: 'HOUSEKEEPING', assignedToId: 'user_9' }),
+      }),
+    );
+  });
 });
 
 describe('GET /api/v1/work-orders/:id', () => {

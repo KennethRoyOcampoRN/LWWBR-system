@@ -30,11 +30,22 @@ export const createWorkOrderSchema = z.object({
 
 export type CreateWorkOrderInput = z.infer<typeof createWorkOrderSchema>;
 
+// Spec §9's documented API surface: `GET /work-orders?type=&status=&assignedTo=&unitId=&mine=`.
+// `mine` powers the "My tasks" dashboard (spec §8.3) — tickets assigned to
+// the caller specifically, as opposed to the broader own-created-or-assigned
+// set visibilityWhereClause already falls back to for a caller with no
+// elevated read. `assignedTo` lets a department dashboard filter its
+// already-department-scoped queue down to one person's tickets.
 export const listWorkOrdersQuerySchema = z.object({
   status: z.enum(WORK_ORDER_STATUS_KEYS).optional(),
   department: z.enum(DEPARTMENT_KEYS).optional(),
   type: z.enum(WORK_ORDER_TYPE_KEYS).optional(),
   unitId: z.string().min(1).optional(),
+  assignedTo: z.string().min(1).optional(),
+  mine: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 export type ListWorkOrdersQuery = z.infer<typeof listWorkOrdersQuerySchema>;

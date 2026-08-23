@@ -93,7 +93,10 @@ describe('WorkOrdersPage', () => {
     await user.click(screen.getByRole('button', { name: 'Create ticket' }));
     await waitFor(() => expect(createAttempts).toBe(1));
     expect(await screen.findByText(/An ISSUE photo is required/i)).toBeInTheDocument();
-    expect(screen.getByText('No tickets yet.')).toBeInTheDocument();
+    // currentUser is a DEPARTMENT-scoped POC_MAINTENANCE, so this page
+    // renders the department-queue dashboard (grouped by status), not the
+    // flat "Tickets" list — every group is empty until the create succeeds.
+    expect(screen.getAllByText('Nothing here right now.').length).toBeGreaterThan(0);
 
     // Attach a photo, then submit again — now it should succeed.
     const file = new File([new Uint8Array([1, 2, 3])], 'issue.jpg', { type: 'image/jpeg' });
@@ -106,7 +109,8 @@ describe('WorkOrdersPage', () => {
     expect(await screen.findByText('Created WO-260823-0001.')).toBeInTheDocument();
     expect(screen.getByText('WO-260823-0001')).toBeInTheDocument();
     expect(screen.getByText('Leaking faucet in R01')).toBeInTheDocument();
-    expect(screen.queryByText('No tickets yet.')).not.toBeInTheDocument();
+    // The new OPEN ticket landed in the "Unassigned" group.
+    expect(screen.getByText(/Unassigned/)).toBeInTheDocument();
 
     // Form reset after a successful create.
     expect(screen.getByLabelText('Title')).toHaveValue('');
@@ -156,14 +160,15 @@ describe('WorkOrdersPage', () => {
     expect(await screen.findByText('Created WO-260823-0002.')).toBeInTheDocument();
   });
 
-  it('hides the New ticket form for a caller without workorder:create, but still shows the ticket list', async () => {
+  it('a caller holding only the workorder:read floor (no read_all, no assign) gets the "My Tasks" dashboard, with no New ticket form since it also lacks workorder:create', async () => {
     const user = userEvent.setup();
     const readOnlyUser = { ...currentUser, permissions: { 'workorder:read': 'ALL' } };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
       if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
-      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [] });
+      // MY_TASKS mode fetches with ?mine=true (spec §8.3 "My tasks").
+      if (url.includes('/work-orders?mine=true')) return jsonResponse(200, { workOrders: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -172,8 +177,90 @@ describe('WorkOrdersPage', () => {
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
     await user.click(screen.getByRole('link', { name: 'Work Orders' }));
-    await waitFor(() => expect(screen.getByText('Tickets')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'My Tasks' })).toBeInTheDocument());
+    expect(screen.getByText('Nothing assigned to you right now.')).toBeInTheDocument();
     expect(screen.queryByText('New ticket')).not.toBeInTheDocument();
+  });
+
+  it('an ALL-scoped workorder:read_all holder (e.g. SYSTEM_ADMIN) gets the flat "Work Orders" / "Tickets" list, unchanged from before department dashboards existed', async () => {
+    const user = userEvent.setup();
+    const managerUser = { ...currentUser, permissions: { ...currentUser.permissions, 'workorder:read_all': 'ALL' } };
+    const listRow = {
+      id: 'wo_5',
+      referenceNo: 'WO-260823-0005',
+      type: 'GENERAL',
+      title: 'Broken chair in function hall',
+      priority: 'LOW',
+      status: 'OPEN',
+      department: 'MANAGEMENT',
+      unit: null,
+      assignedTo: null,
+      createdAt: new Date().toISOString(),
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Work Orders' })).toBeInTheDocument());
+    expect(screen.getByText('Tickets')).toBeInTheDocument();
+    expect(screen.getByText('WO-260823-0005')).toBeInTheDocument();
+    // No department grouping, no "My Tasks" framing for this role.
+    expect(screen.queryByText('Unassigned')).not.toBeInTheDocument();
+  });
+
+  it('"My Tasks" sorts active work ahead of completed work, for a caller with only the floor permission', async () => {
+    const user = userEvent.setup();
+    const floorUser = { ...currentUser, permissions: { 'workorder:read': 'ALL' } };
+    const doneTicket = {
+      id: 'wo_done',
+      referenceNo: 'WO-260823-0010',
+      type: 'MAINTENANCE',
+      title: 'Already fixed AC',
+      priority: 'NORMAL',
+      status: 'VERIFIED',
+      department: 'MAINTENANCE',
+      unit: null,
+      assignedTo: { fullName: 'Tech One' },
+      createdAt: new Date('2026-08-20').toISOString(),
+    };
+    const activeTicket = {
+      id: 'wo_active',
+      referenceNo: 'WO-260823-0011',
+      type: 'MAINTENANCE',
+      title: 'Fix the generator',
+      priority: 'HIGH',
+      status: 'IN_PROGRESS',
+      department: 'MAINTENANCE',
+      unit: null,
+      assignedTo: { fullName: 'Tech One' },
+      createdAt: new Date('2026-08-23').toISOString(),
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: floorUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.includes('/work-orders?mine=true')) return jsonResponse(200, { workOrders: [doneTicket, activeTicket] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await screen.findByText('WO-260823-0010');
+
+    const rowTitles = screen.getAllByText(/Fix the generator|Already fixed AC/).map((el) => el.textContent);
+    expect(rowTitles).toEqual(['Fix the generator', 'Already fixed AC']);
   });
 });
 

@@ -145,6 +145,8 @@ export async function listWorkOrders(query: ListWorkOrdersQuery, actor: WorkOrde
       ...(query.department ? { department: query.department } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.unitId ? { unitId: query.unitId } : {}),
+      ...(query.assignedTo ? { assignedToId: query.assignedTo } : {}),
+      ...(query.mine ? { assignedToId: actor.id } : {}),
     },
     orderBy: [{ createdAt: 'desc' }],
     include: { unit: { select: { id: true, code: true, name: true } }, assignedTo: { select: { fullName: true } } },

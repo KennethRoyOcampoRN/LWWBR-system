@@ -1755,3 +1755,92 @@ dashboards, a "My tasks" view, per-assignee realtime notifications (the
 existing broadcasts cover the property-wide activity feed but nothing
 targets the specific assignee yet), and EXIF capture-time verification
 on uploaded photos.
+
+### Department dashboards + "My tasks" (spec §8.3) — done, not yet live-tested (2026-08-23)
+
+The next queued item: spec §8.3's per-role dashboards for work orders.
+Per spec's own instruction ("build **one** dashboard component with
+configurable widget sets, not thirteen bespoke pages"), this isn't three
+new routes — `WorkOrdersPage` now renders one of three shapes depending
+on the caller's *existing* permission/scope data, the same fields the
+backend's own `visibilityWhereClause` (M3's first slice) already reads
+to filter query results:
+
+- **`FULL_LIST`** — an ALL-scoped `workorder:read_all` holder
+  (`SYSTEM_ADMIN`, `RESORT_MANAGER`, `OPS_SAFETY_SUPERVISOR`,
+  `ADMIN_HEAD`, `OWNER`). Exactly the flat "Tickets" list that already
+  existed — unchanged.
+- **`DEPARTMENT_QUEUE`** — a DEPARTMENT-scoped `workorder:read_all`
+  holder, or anyone holding `workorder:assign` without ALL-scope read
+  (`POC_HOUSEKEEPING`, `POC_MAINTENANCE`, `RESTAURANT_MANAGER`). Spec
+  §8.3's "room status board" / "incoming repair queue... assignment
+  panel" — the same `GET /work-orders` response (already department-
+  scoped server-side, nothing new to fetch) grouped client-side into
+  **Unassigned** (`OPEN`) / **Assigned / in progress** (`ASSIGNED`,
+  `IN_PROGRESS`, `REOPENED`) / **Awaiting verification** (`DONE`) /
+  **Verified / cancelled** (hidden when empty), each with a live count.
+  Clicking any ticket opens the same `WorkOrderDetailDrawer` as before —
+  assign/status-transition/verify all unchanged.
+- **`MY_TASKS`** — the floor: anyone left over (`HOUSEKEEPING_STAFF`,
+  `MAINTENANCE_STAFF`, `RESORT_STAFF`, `RESTAURANT_STAFF`,
+  `ADMIN_STAFF`, `CASHIER`). Spec §8.3's "My rooms today" / "My tickets
+  today" — a single "Assigned to you" list, fetched with the new
+  `?mine=true` query param (below) rather than the broader own-created-
+  or-assigned set a plain `GET /work-orders` falls back to for these
+  roles, so a room attendant sees only work actually assigned to them,
+  not also every ticket they've personally filed. Sorted active
+  (`OPEN`/`ASSIGNED`/`IN_PROGRESS`/`REOPENED`) work ahead of
+  finished work, oldest-first within each group — the ticket that's been
+  sitting longest surfaces first. The New-ticket form still exists for
+  these roles (everyone holds `workorder:create`) but is tucked inside a
+  collapsed `<details>`/`<summary>` ("Report an issue / new ticket")
+  rather than sitting above the task list, matching spec's "a single
+  list... nothing else" framing for these roles — filing a ticket is a
+  secondary action here, not the primary one.
+
+**`deriveDashboardMode()`** reads permission/scope data only — no
+hardcoded role names, so a role's dashboard shape can only change by
+changing what it's granted through the Roles admin UI, not by editing
+this file, consistent with every other role-shaped decision in this
+codebase (`canVerifyWorkOrder`, `requiresTotp`, etc.).
+
+**Backend**: `GET /work-orders` gained the two remaining spec §9 query
+params it was missing (`?type=&status=&assignedTo=&unitId=&mine=` was
+always the documented surface; only `assignedTo`/`mine` weren't wired
+in) — `mine=true` filters to `assignedToId: actor.id` (this is what
+`MY_TASKS` mode calls), `assignedTo=<userId>` filters to a specific
+person's tickets (lets a department dashboard narrow its already-scoped
+queue down to one tech, not built into the UI yet but available). Both
+apply on top of the existing `visibilityWhereClause`, not instead of
+it — a `mine=true` request from a floor-only caller is still
+additionally bounded by their own-created-or-assigned visibility rule,
+so this can't be used to see someone else's tickets by guessing an id.
+
+2 new backend router tests (`?mine=true` narrows an ALL-scoped caller to
+their own assignments; `?assignedTo=` composes correctly with an
+already-department-scoped caller). 3 new/updated frontend component
+tests: the two existing photo-gate tests (which log in as a
+DEPARTMENT-scoped `POC_MAINTENANCE`) updated their empty-state/grouping
+assertions to match the new grouped view instead of the old flat one;
+the read-only-user test renamed and rewritten for `MY_TASKS` mode
+(renamed from "hides the New ticket form" since that's no longer the
+interesting part — the interesting part is which dashboard shape a
+floor-only permission set now gets); 2 wholly new tests confirm
+`FULL_LIST` stays exactly as it was for an ALL-scoped role, and that
+`MY_TASKS` sorts active work ahead of completed work.
+
+Full repo verification: lint, typecheck, build clean across all 3
+workspaces; `packages/shared` 48/48 (untouched); `apps/api` 164/167
+(+2, same 3 pre-existing network-blocked round-trip tests, unrelated);
+`apps/web` 25/25 (+2 net — 3 new tests, 1 test removed and folded into
+its replacement).
+
+**Not yet live-tested against the real Supabase database** — same
+sandbox limitation as every prior milestone. **Not yet built this
+slice**: per-assignee realtime notifications and EXIF capture-time
+verification remain queued, per the go-ahead given for this slice
+specifically (department dashboards + "My tasks" only). Ready for a
+live browser test across a `POC_HOUSEKEEPING`/`POC_MAINTENANCE` account
+(department queue), a `HOUSEKEEPING_STAFF`/`MAINTENANCE_STAFF` account
+(My Tasks), and a `SYSTEM_ADMIN`/`RESORT_MANAGER` account (confirming
+the full list is genuinely unchanged) against the real database.

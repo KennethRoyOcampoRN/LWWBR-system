@@ -11,7 +11,7 @@ import {
   type WorkOrderTypeKey,
 } from '@lwwbr/shared';
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { useAuth } from '../context/AuthContext.js';
+import { useAuth, type CurrentUser } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import {
   DEPARTMENT_LABELS,
@@ -754,15 +754,112 @@ function WorkOrderDetailDrawer({
   );
 }
 
+type DashboardMode = 'MY_TASKS' | 'DEPARTMENT_QUEUE' | 'FULL_LIST';
+
+// Spec §8.3: "build one dashboard component with configurable widget
+// sets, not thirteen bespoke pages." Mode is derived from the exact same
+// permission/scope data the backend already uses to filter query results
+// (workorders/service.ts's visibilityWhereClause) — never a hardcoded
+// role check — so which dashboard shape a role gets can only change by
+// changing what it's granted, not by editing this file.
+// - FULL_LIST: an ALL-scoped workorder:read_all holder (SYSTEM_ADMIN,
+//   RESORT_MANAGER, OPS_SAFETY_SUPERVISOR, ADMIN_HEAD, OWNER) already
+//   sees every ticket from a plain GET /work-orders — the existing flat
+//   list is the right shape for a property-wide role.
+// - DEPARTMENT_QUEUE: a DEPARTMENT-scoped read_all holder, or anyone
+//   holding workorder:assign without ALL-scope read (POC_HOUSEKEEPING,
+//   POC_MAINTENANCE, RESTAURANT_MANAGER) — spec §8.3's "room status
+//   board... assignment panel" / "incoming repair queue... assignment
+//   panel" shape. The backend already scopes their plain GET to their
+//   own department; this mode just groups that same response by status.
+// - MY_TASKS: the floor — everyone else (Room Attendant, Maintenance
+//   Tech, Resort Staff, Restaurant Staff, Admin Staff, Cashier). Spec
+//   §8.3's "My rooms today" / "My tickets today" — tickets assigned to
+//   them specifically, fetched with ?mine=true.
+function deriveDashboardMode(user: CurrentUser | null): DashboardMode {
+  if (!user) return 'MY_TASKS';
+  const readAllScope = user.permissions['workorder:read_all'];
+  if (readAllScope === 'ALL') return 'FULL_LIST';
+  if (readAllScope === 'DEPARTMENT' || user.permissions['workorder:assign']) return 'DEPARTMENT_QUEUE';
+  return 'MY_TASKS';
+}
+
+const DEPARTMENT_QUEUE_GROUPS: { key: string; label: string; statuses: WorkOrderStatusKey[] }[] = [
+  { key: 'unassigned', label: 'Unassigned', statuses: ['OPEN'] },
+  { key: 'in_progress', label: 'Assigned / in progress', statuses: ['ASSIGNED', 'IN_PROGRESS', 'REOPENED'] },
+  { key: 'awaiting_verification', label: 'Awaiting verification', statuses: ['DONE'] },
+  { key: 'closed', label: 'Verified / cancelled', statuses: ['VERIFIED', 'CANCELLED'] },
+];
+
+function WorkOrderListRow({ wo, onSelect }: { wo: WorkOrderRow; onSelect: (id: string) => void }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onSelect(wo.id)}
+        className="flex w-full flex-wrap items-center gap-2 rounded border border-gray-200 p-3 text-left hover:border-blue-400"
+      >
+        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${WORK_ORDER_STATUS_CLASSES[wo.status]}`}>
+          {WORK_ORDER_STATUS_LABELS[wo.status]}
+        </span>
+        <span className="text-xs font-mono text-gray-500">{wo.referenceNo}</span>
+        <span className="text-sm font-medium">{wo.title}</span>
+        <span className="text-xs text-gray-500">
+          {WORK_ORDER_TYPE_LABELS[wo.type]} · {DEPARTMENT_LABELS[wo.department]} · {WORK_ORDER_PRIORITY_LABELS[wo.priority]}
+        </span>
+        {wo.unit && <span className="text-xs text-gray-500">Unit {wo.unit.code}</span>}
+        {wo.assignedTo && <span className="text-xs text-gray-500">Assigned: {wo.assignedTo.fullName}</span>}
+      </button>
+    </li>
+  );
+}
+
+function WorkOrderList({ workOrders, onSelect, emptyMessage }: { workOrders: WorkOrderRow[]; onSelect: (id: string) => void; emptyMessage: string }) {
+  if (workOrders.length === 0) {
+    return <p className="text-sm text-gray-500">{emptyMessage}</p>;
+  }
+  return (
+    <ul className="flex flex-col gap-2">
+      {workOrders.map((wo) => (
+        <WorkOrderListRow key={wo.id} wo={wo} onSelect={onSelect} />
+      ))}
+    </ul>
+  );
+}
+
+// Spec §8.3: "Room Attendant — a single list... Nothing else." A worker
+// on this dashboard cares about what's assigned to them right now, so
+// open/in-progress/reopened tickets sort first (oldest due first),
+// leaving DONE/VERIFIED/CANCELLED tickets at the bottom rather than
+// mixed in chronologically.
+const MY_TASKS_ACTIVE_STATUSES: WorkOrderStatusKey[] = ['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'REOPENED'];
+
+function sortForMyTasks(workOrders: WorkOrderRow[]): WorkOrderRow[] {
+  return [...workOrders].sort((a, b) => {
+    const aActive = MY_TASKS_ACTIVE_STATUSES.includes(a.status);
+    const bActive = MY_TASKS_ACTIVE_STATUSES.includes(b.status);
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+}
+
 export function WorkOrdersPage() {
   const { user } = useAuth();
+  const mode = deriveDashboardMode(user);
   const [workOrders, setWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
+    setWorkOrders('loading');
+    // MY_TASKS fetches with ?mine=true — assigned-to-me only, spec §8.3's
+    // "My rooms today" / "My tickets today". The other two modes fetch
+    // the plain list: the backend's own visibility rule (service.ts's
+    // visibilityWhereClause) already scopes it to "my department" for a
+    // DEPARTMENT_QUEUE caller and "everything" for a FULL_LIST caller —
+    // this page just groups/labels that same response differently.
     api
-      .get<{ workOrders: WorkOrderRow[] }>('/work-orders')
+      .get<{ workOrders: WorkOrderRow[] }>(mode === 'MY_TASKS' ? '/work-orders?mine=true' : '/work-orders')
       .then((res) => setWorkOrders(res.workOrders))
       .catch(() => setWorkOrders('error'));
     // Best-effort: not every role that can create a ticket also holds
@@ -773,7 +870,7 @@ export function WorkOrdersPage() {
       .get<{ units: UnitOption[] }>('/units')
       .then((res) => setUnits(res.units))
       .catch(() => setUnits([]));
-  }, []);
+  }, [mode]);
 
   function handleCreated(workOrder: WorkOrderRow) {
     setWorkOrders((prev) => (Array.isArray(prev) ? [workOrder, ...prev] : [workOrder]));
@@ -785,47 +882,61 @@ export function WorkOrdersPage() {
     );
   }
 
+  const heading = mode === 'MY_TASKS' ? 'My Tasks' : mode === 'DEPARTMENT_QUEUE' ? 'Department Work Orders' : 'Work Orders';
+
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-lg font-semibold">Work Orders</h1>
+      <h1 className="text-lg font-semibold">{heading}</h1>
 
-      {user?.permissions['workorder:create'] && <NewWorkOrderForm units={units} onCreated={handleCreated} />}
+      {mode === 'MY_TASKS' && (
+        <details className="rounded border border-gray-200 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-gray-700">Report an issue / new ticket</summary>
+          <div className="mt-3">
+            {user?.permissions['workorder:create'] && <NewWorkOrderForm units={units} onCreated={handleCreated} />}
+          </div>
+        </details>
+      )}
+      {mode !== 'MY_TASKS' && user?.permissions['workorder:create'] && (
+        <NewWorkOrderForm units={units} onCreated={handleCreated} />
+      )}
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Tickets</h2>
-        {workOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-        {workOrders === 'error' && <p role="alert">Could not load work orders.</p>}
-        {Array.isArray(workOrders) && workOrders.length === 0 && (
-          <p className="text-sm text-gray-500">No tickets yet.</p>
-        )}
-        {Array.isArray(workOrders) && workOrders.length > 0 && (
-          <ul className="flex flex-col gap-2">
-            {workOrders.map((wo) => (
-              <li key={wo.id}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(wo.id)}
-                  className="flex w-full flex-wrap items-center gap-2 rounded border border-gray-200 p-3 text-left hover:border-blue-400"
-                >
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-xs font-medium ${WORK_ORDER_STATUS_CLASSES[wo.status]}`}
-                  >
-                    {WORK_ORDER_STATUS_LABELS[wo.status]}
-                  </span>
-                  <span className="text-xs font-mono text-gray-500">{wo.referenceNo}</span>
-                  <span className="text-sm font-medium">{wo.title}</span>
-                  <span className="text-xs text-gray-500">
-                    {WORK_ORDER_TYPE_LABELS[wo.type]} · {DEPARTMENT_LABELS[wo.department]} ·{' '}
-                    {WORK_ORDER_PRIORITY_LABELS[wo.priority]}
-                  </span>
-                  {wo.unit && <span className="text-xs text-gray-500">Unit {wo.unit.code}</span>}
-                  {wo.assignedTo && <span className="text-xs text-gray-500">Assigned: {wo.assignedTo.fullName}</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {workOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {workOrders === 'error' && <p role="alert">Could not load work orders.</p>}
+
+      {Array.isArray(workOrders) && mode === 'MY_TASKS' && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
+          <WorkOrderList
+            workOrders={sortForMyTasks(workOrders)}
+            onSelect={setSelectedId}
+            emptyMessage="Nothing assigned to you right now."
+          />
+        </section>
+      )}
+
+      {Array.isArray(workOrders) && mode === 'DEPARTMENT_QUEUE' && (
+        <>
+          {DEPARTMENT_QUEUE_GROUPS.map((group) => {
+            const grouped = workOrders.filter((wo) => group.statuses.includes(wo.status));
+            if (group.key === 'closed' && grouped.length === 0) return null;
+            return (
+              <section key={group.key}>
+                <h2 className="mb-2 text-sm font-semibold text-gray-700">
+                  {group.label} <span className="font-normal text-gray-400">({grouped.length})</span>
+                </h2>
+                <WorkOrderList workOrders={grouped} onSelect={setSelectedId} emptyMessage="Nothing here right now." />
+              </section>
+            );
+          })}
+        </>
+      )}
+
+      {Array.isArray(workOrders) && mode === 'FULL_LIST' && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Tickets</h2>
+          <WorkOrderList workOrders={workOrders} onSelect={setSelectedId} emptyMessage="No tickets yet." />
+        </section>
+      )}
 
       {selectedId && (
         <WorkOrderDetailDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={handleDetailChanged} />
