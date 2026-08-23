@@ -469,9 +469,22 @@ describe('POST /api/v1/work-orders/:id/assign', () => {
     );
   });
 
-  it('rejects assigning a ticket that is not OPEN (422 INVALID_TRANSITION)', async () => {
+  it('rejects assigning a VERIFIED ticket — terminal, no outgoing edges, reassignment included (422 INVALID_TRANSITION)', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
-    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'VERIFIED', department: 'MAINTENANCE' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_TRANSITION');
+  });
+
+  it('rejects assigning a CANCELLED ticket (422 INVALID_TRANSITION)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(fakeWorkOrder({ status: 'CANCELLED', department: 'MAINTENANCE' }));
 
     const res = await request(createApp())
       .post('/api/v1/work-orders/wo_1/assign')
@@ -547,6 +560,161 @@ describe('POST /api/v1/work-orders/:id/assign', () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/v1/work-orders/:id/assign — reassignment (client decision 2026-08-23: works at any status before VERIFIED/CANCELLED, not just OPEN)', () => {
+  it.each(['ASSIGNED', 'IN_PROGRESS', 'DONE', 'REOPENED'])(
+    'reassigns a %s ticket to a different active user without changing its status',
+    async (status) => {
+      mockPrisma.user.findFirst
+        .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+        .mockResolvedValueOnce({ id: 'user_3', fullName: 'Tech Two', isActive: true, deletedAt: null });
+      mockPrisma.workOrder.findFirst.mockResolvedValue(
+        fakeWorkOrder({ status, department: 'MAINTENANCE', assignedToId: 'user_2', version: 2 }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/work-orders/wo_1/assign')
+        .set('Cookie', authCookie())
+        .send({ assignedToId: 'user_3', version: 2 });
+
+      expect(res.status).toBe(200);
+      const data = mockPrisma.workOrder.updateMany.mock.calls[0]?.[0]?.data;
+      expect(data).toEqual(
+        expect.objectContaining({ assignedToId: 'user_3', assignedById: 'user_1' }),
+      );
+      // Reassignment is an ownership change, not a lifecycle change — the
+      // status field must not be touched at all.
+      expect(data).not.toHaveProperty('status');
+    },
+  );
+
+  it('rejects reassigning to the person already assigned (422 VALIDATION_ERROR)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_2' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_2', version: 0 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(mockPrisma.workOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reassignment from a caller without workorder:assign (403), same as a fresh assignment', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF', { department: 'RESTAURANT' }));
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_2' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_3', version: 0 });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('notifies both the new assignee and the previous assignee on reassignment', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_3', fullName: 'Tech Two', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_2', version: 1 }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_3', version: 1 });
+
+    expect(res.status).toBe(200);
+    // New assignee: the same "assigned to you" notification a fresh
+    // assignment sends.
+    expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ userId: 'user_3', type: 'WORKORDER_ASSIGNED' }) }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'user:user_3',
+      'notification.new',
+      expect.objectContaining({ actorId: 'user_1' }),
+    );
+    // Previous assignee: told the ticket moved away from them, distinct
+    // notification, same channel pattern.
+    expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ userId: 'user_2', type: 'WORKORDER_ASSIGNED' }) }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'user:user_2',
+      'notification.new',
+      expect.objectContaining({ actorId: 'user_1' }),
+    );
+  });
+
+  it('skips notifying the previous assignee when they are the one doing the reassigning', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_3', fullName: 'Tech Two', isActive: true, deletedAt: null });
+    // The actor (user_1) is themself the current assignee, reassigning to
+    // someone else — they already know, no self-notify.
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_1', version: 1 }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_3', version: 1 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ userId: 'user_3' }) }),
+    );
+  });
+
+  it('emits a distinct workorder.reassigned realtime event, not workorder.status.changed, since status is unchanged', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_3', fullName: 'Tech Two', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'DONE', department: 'MAINTENANCE', assignedToId: 'user_2', version: 1 }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_3', version: 1 });
+
+    expect(res.status).toBe(200);
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'property',
+      'workorder.reassigned',
+      expect.objectContaining({ fromStatus: 'DONE', toStatus: 'DONE' }),
+    );
+  });
+
+  it('returns 409 VERSION_CONFLICT on a stale version for a reassignment too', async () => {
+    mockPrisma.user.findFirst
+      .mockResolvedValueOnce(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }))
+      .mockResolvedValueOnce({ id: 'user_3', fullName: 'Tech Two', isActive: true, deletedAt: null });
+    mockPrisma.workOrder.findFirst.mockResolvedValue(
+      fakeWorkOrder({ status: 'IN_PROGRESS', department: 'MAINTENANCE', assignedToId: 'user_2', version: 1 }),
+    );
+    mockPrisma.workOrder.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(createApp())
+      .post('/api/v1/work-orders/wo_1/assign')
+      .set('Cookie', authCookie())
+      .send({ assignedToId: 'user_3', version: 1 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('VERSION_CONFLICT');
   });
 });
 

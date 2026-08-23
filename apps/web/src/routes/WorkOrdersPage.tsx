@@ -499,7 +499,14 @@ function WorkOrderDetailDrawer({
     if (to !== 'VERIFIED' && to !== 'REOPENED') return true;
     return canVerifyWorkOrder(user?.roles ?? [], user?.department ?? '', workOrder.department);
   });
-  const canAssign = workOrder.status === 'OPEN' && Boolean(user?.permissions['workorder:assign']);
+  // Client decision, 2026-08-23: reassignment (moving an already-assigned
+  // ticket to someone else) works at any status before the ticket is
+  // closed out — mirrors the backend's own REASSIGNABLE_STATUSES list in
+  // service.ts, which is the actual source of truth; this is purely so
+  // the button doesn't show up for a state the server would reject.
+  const ASSIGNABLE_STATUSES: WorkOrderStatusKey[] = ['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'DONE', 'REOPENED'];
+  const canAssign = ASSIGNABLE_STATUSES.includes(workOrder.status) && Boolean(user?.permissions['workorder:assign']);
+  const isReassignment = workOrder.status !== 'OPEN';
   const needsCompletionPhoto = pendingTransition === 'DONE' && requiresCompletionPhoto(workOrder.type);
 
   const TRANSITION_BUTTON_LABELS: Partial<Record<WorkOrderStatusKey, string>> = {
@@ -601,13 +608,13 @@ function WorkOrderDetailDrawer({
 
       {canAssign && (
         <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
-          <p className="text-sm font-medium">Assign</p>
+          <p className="text-sm font-medium">{isReassignment ? 'Reassign' : 'Assign'}</p>
           {!assigning && (
             <button
               onClick={openAssignPicker}
               className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
             >
-              Assign ticket
+              {isReassignment ? 'Reassign ticket' : 'Assign ticket'}
             </button>
           )}
           {assigning && (
@@ -621,11 +628,17 @@ function WorkOrderDetailDrawer({
                   onChange={(e) => setSelectedAssignee(e.target.value)}
                 >
                   <option value="">Select staff…</option>
-                  {assignableUsers.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.fullName} ({u.employeeCode}) — {DEPARTMENT_LABELS[u.department]}
-                    </option>
-                  ))}
+                  {assignableUsers
+                    // The current assignee is excluded on a reassignment —
+                    // picking them again would just 422 from the server
+                    // ("already assigned to that person"), so there's no
+                    // point offering it.
+                    .filter((u) => !isReassignment || u.id !== workOrder.assignedTo?.id)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.fullName} ({u.employeeCode}) — {DEPARTMENT_LABELS[u.department]}
+                      </option>
+                    ))}
                 </select>
               )}
               {assignError && (

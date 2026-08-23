@@ -238,6 +238,22 @@ export async function listAssignableUsers() {
   return users;
 }
 
+// Client decision, 2026-08-23: "an original assignee becomes unavailable,
+// or someone else is better suited" — reassignment must work at any
+// status before the ticket is closed out, not just the initial OPEN ->
+// ASSIGNED handoff. VERIFIED/CANCELLED are excluded because both are
+// terminal per the shared transition table (WORK_ORDER_TRANSITIONS has
+// no outgoing edges from either) — reassigning a closed ticket makes no
+// sense. Everything else, including DONE (a handoff can happen even
+// late, while it's awaiting verification), is fair game.
+const REASSIGNABLE_STATUSES: readonly WorkOrderStatusKey[] = [
+  'OPEN',
+  'ASSIGNED',
+  'IN_PROGRESS',
+  'DONE',
+  'REOPENED',
+];
+
 export async function assignWorkOrder(
   id: string,
   input: AssignWorkOrderInput,
@@ -250,12 +266,26 @@ export async function assignWorkOrder(
   }
 
   const fromStatus = workOrder.status as WorkOrderStatusKey;
-  const transition = getWorkOrderTransition(fromStatus, 'ASSIGNED');
-  if (!transition) {
+  if (!REASSIGNABLE_STATUSES.includes(fromStatus)) {
     throw new ApiError(422, 'INVALID_TRANSITION', `Cannot assign a ticket from ${fromStatus}`);
   }
-  if (!actor.permissions[transition.permission]) {
-    throw new ApiError(403, 'FORBIDDEN', `Missing permission: ${transition.permission}`);
+  // Not looked up via getWorkOrderTransition() here — only the initial
+  // OPEN -> ASSIGNED handoff is a real status transition in the shared
+  // table (see workOrder.ts's own comment: the photo-evidence gate isn't
+  // encoded as a transition permission either, same "who vs what's
+  // attached" reasoning applies to "who vs does status change"). A
+  // reassignment on ASSIGNED/IN_PROGRESS/DONE/REOPENED doesn't move the
+  // status at all, so there's no `to` state to look a permission up
+  // against — workorder:assign is the one permission gating this whole
+  // endpoint, transition or not.
+  if (!actor.permissions['workorder:assign']) {
+    throw new ApiError(403, 'FORBIDDEN', 'Missing permission: workorder:assign');
+  }
+
+  const previousAssigneeId = workOrder.assignedToId;
+  const isReassignment = fromStatus !== 'OPEN';
+  if (isReassignment && previousAssigneeId === input.assignedToId) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'This ticket is already assigned to that person.');
   }
 
   const assignee = await prisma.user.findFirst({
@@ -267,7 +297,15 @@ export async function assignWorkOrder(
 
   const result = await prisma.workOrder.updateMany({
     where: { id, version: input.version },
-    data: { status: 'ASSIGNED', assignedToId: input.assignedToId, assignedById: actor.id, version: { increment: 1 } },
+    data: {
+      // Only the initial handoff moves status; a reassignment leaves
+      // whatever status the ticket was already in untouched — it's an
+      // ownership change, not a lifecycle change.
+      ...(isReassignment ? {} : { status: 'ASSIGNED' }),
+      assignedToId: input.assignedToId,
+      assignedById: actor.id,
+      version: { increment: 1 },
+    },
   });
   if (result.count === 0) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'This ticket was changed by someone else — refresh and try again.');
@@ -275,32 +313,38 @@ export async function assignWorkOrder(
 
   await logAudit({
     actorId: actor.id,
-    action: 'WORKORDER_ASSIGNED',
+    action: isReassignment ? 'WORKORDER_REASSIGNED' : 'WORKORDER_ASSIGNED',
     entity: 'WorkOrder',
     entityId: id,
+    before: isReassignment ? { assignedToId: previousAssigneeId } : undefined,
     after: { assignedToId: input.assignedToId },
     ip: meta.ip,
     userAgent: meta.userAgent,
   });
 
   try {
-    await getRealtimeAdapter().emit('property', 'workorder.status.changed', {
+    // A reassignment doesn't change status, so it doesn't belong on the
+    // workorder.status.changed event (fromStatus === toStatus would be
+    // misleading there) — a distinct event name for the activity feed,
+    // same channel/pattern otherwise.
+    await getRealtimeAdapter().emit('property', isReassignment ? 'workorder.reassigned' : 'workorder.status.changed', {
       entityId: id,
       actorId: actor.id,
       at: new Date().toISOString(),
-      summary: `${workOrder.referenceNo} assigned to ${assignee.fullName}`,
+      summary: isReassignment
+        ? `${workOrder.referenceNo} reassigned to ${assignee.fullName}`
+        : `${workOrder.referenceNo} assigned to ${assignee.fullName}`,
       fromStatus,
-      toStatus: 'ASSIGNED',
+      toStatus: fromStatus,
     });
   } catch (error) {
-    console.error('Realtime broadcast for workorder.status.changed (assign) failed:', error);
+    console.error('Realtime broadcast for workorder assignment failed:', error);
   }
 
-  // Per-assignee notification (queued gap noted in M3's first slice):
-  // the property-wide broadcast above tells everyone watching the
-  // activity feed a ticket got assigned, but doesn't target the specific
-  // assignee. Skipped on self-assignment — no need to tell someone about
-  // their own action.
+  // Per-assignee notification: the new assignee always gets the same
+  // "assigned to you" notification whether this is a fresh assignment or
+  // a reassignment — either way they now own the ticket. Skipped on
+  // self-assignment — no need to tell someone about their own action.
   if (input.assignedToId !== actor.id) {
     try {
       await notifyUser(input.assignedToId, actor.id, {
@@ -312,6 +356,27 @@ export async function assignWorkOrder(
       });
     } catch (error) {
       console.error('Per-assignee notification for workorder.assigned failed:', error);
+    }
+  }
+
+  // Client decision, 2026-08-23: "both the new and previous assignee get
+  // notified... so nobody's left unsure whether it's still their
+  // responsibility." Distinct from the new-assignee notification above —
+  // this tells the person who just lost the ticket, not the person who
+  // gained it. Skipped if there was no previous assignee (nothing to
+  // notify away from), or if the previous assignee is the one doing the
+  // reassigning (they already know — they just did it).
+  if (isReassignment && previousAssigneeId && previousAssigneeId !== actor.id) {
+    try {
+      await notifyUser(previousAssigneeId, actor.id, {
+        type: 'WORKORDER_ASSIGNED',
+        title: `${workOrder.referenceNo} reassigned to ${assignee.fullName}`,
+        body: `This is no longer assigned to you — ${workOrder.title}`,
+        entityType: 'WorkOrder',
+        entityId: id,
+      });
+    } catch (error) {
+      console.error('Per-previous-assignee notification for workorder.reassigned failed:', error);
     }
   }
 

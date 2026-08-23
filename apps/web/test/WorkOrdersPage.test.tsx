@@ -492,4 +492,67 @@ describe('WorkOrderDetailDrawer', () => {
 
     await waitFor(() => expect(assignCallBody).toEqual({ assignedToId: 'user_9', version: 3 }));
   });
+
+  it('reassigns an already-assigned ticket to a different person — "Reassign ticket", not "Assign ticket", and the current assignee is excluded from the picker', async () => {
+    const user = userEvent.setup();
+    const assignerUser = {
+      ...currentUser,
+      permissions: { ...currentUser.permissions, 'workorder:assign': 'ALL' },
+    };
+    // DONE, not just ASSIGNED/IN_PROGRESS — client decision: a handoff
+    // must be possible even late, while awaiting verification.
+    const listRow = fakeListRow({ status: 'DONE', assignedTo: { fullName: 'Tech One' } });
+    const detail = fakeDetail({ status: 'DONE', assignedTo: { id: 'user_2', fullName: 'Tech One' } });
+    let assignCallBody: unknown = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: assignerUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      if (url.endsWith('/work-orders/wo_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { workOrder: detail });
+      }
+      if (url.includes('/work-orders/assignable-users') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          users: [
+            { id: 'user_2', fullName: 'Tech One', employeeCode: 'LWW-020', department: 'MAINTENANCE' },
+            { id: 'user_3', fullName: 'Tech Two', employeeCode: 'LWW-021', department: 'MAINTENANCE' },
+          ],
+        });
+      }
+      if (url.endsWith('/work-orders/wo_1/assign') && init?.method === 'POST') {
+        assignCallBody = JSON.parse(init.body as string);
+        return jsonResponse(200, {
+          workOrder: { ...detail, assignedTo: { id: 'user_3', fullName: 'Tech Two' } },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Work Orders' })).toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: 'Work Orders' }));
+    await waitFor(() => expect(screen.getByText('WO-260823-0001')).toBeInTheDocument());
+    await user.click(screen.getByText('Leaking faucet in R01'));
+
+    await screen.findByText('Faucet in the master bath keeps dripping.');
+    expect(screen.queryByRole('button', { name: 'Assign ticket' })).not.toBeInTheDocument();
+    const reassignButton = screen.getByRole('button', { name: 'Reassign ticket' });
+    await user.click(reassignButton);
+
+    await waitFor(() => expect(screen.getAllByRole('combobox').length).toBeGreaterThan(3));
+    const picker = screen.getAllByRole('combobox').at(-1) as HTMLSelectElement;
+    await waitFor(() => expect(within(picker).getAllByRole('option').length).toBeGreaterThan(1));
+    // The current assignee (Tech One / user_2) must not be offered again.
+    expect(within(picker).queryByText(/Tech One/)).not.toBeInTheDocument();
+    within(picker).getByText(/Tech Two/);
+
+    await user.selectOptions(picker, 'user_3');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(assignCallBody).toEqual({ assignedToId: 'user_3', version: 3 }));
+  });
 });

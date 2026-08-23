@@ -2021,3 +2021,75 @@ department except the creator; assign a ticket to someone and confirm
 they get notified directly; reopen a `DONE` ticket and confirm its
 assignee gets notified. **EXIF capture-time verification remains
 queued**, not touched this slice.
+
+### Ticket reassignment (2026-08-23) — client feature request, additive to the existing assign flow
+
+Real scenario: "the original assignee becomes unavailable, or someone
+else is better suited, and the ticket needs to move to a different
+person without cancelling and recreating it." Client-confirmed
+requirements: works at any status before `VERIFIED`/`CANCELLED`
+(`ASSIGNED`, `IN_PROGRESS`, even `DONE` — a handoff can happen even
+late, while awaiting verification), and both the new and previous
+assignee get notified — the new assignee the same "assigned to you"
+notification a fresh assignment sends, the previous assignee told the
+ticket moved away from them so nobody's left unsure whether it's still
+their responsibility.
+
+**Backend**: `assignWorkOrder()` (`workorders/service.ts`) now branches
+on whether the ticket already has an assignee. The original OPEN ->
+ASSIGNED path is unchanged — still looked up via the shared transition
+table, since that's a real status move. Reassignment isn't: a new
+`REASSIGNABLE_STATUSES` list (`OPEN`, `ASSIGNED`, `IN_PROGRESS`, `DONE`,
+`REOPENED` — everything except the two terminal statuses, which have no
+outgoing edges in the transition table either way) gates which statuses
+allow it, and the permission check reads `workorder:assign` directly
+rather than through `getWorkOrderTransition()`, since a reassignment has
+no `to` status to look a permission up against — it's an ownership
+change, not a lifecycle change, so the `status` field is left untouched
+entirely on that path (never even included in the `updateMany` payload).
+Rejects reassigning to the person already holding the ticket (422
+`VALIDATION_ERROR`) before it ever reaches the database. A distinct
+`workorder.reassigned` realtime event (not `workorder.status.changed`,
+where `fromStatus === toStatus` would misleadingly imply nothing
+happened) covers the activity-feed case; a distinct `WORKORDER_REASSIGNED`
+audit action (vs. `WORKORDER_ASSIGNED`) with a `before`/`after` pair
+covers the audit trail.
+
+Both notifications reuse `notifyUser()` from the notifications module
+wired in just before this slice — no new plumbing needed. The new
+assignee's notification is identical to a fresh assignment's (skipped on
+self-assignment). The previous assignee's is a second, distinct call —
+skipped if there was no previous assignee (nothing to notify away from)
+or if the previous assignee is the one doing the reassigning (they
+already know; they just did it).
+
+**Frontend**: `WorkOrderDetailDrawer`'s existing `canAssign` section
+(picker + confirm, unchanged since the property-wide-picker fix earlier
+this session) now shows for any status in the same
+`REASSIGNABLE_STATUSES` list, headed "Reassign"/"Reassign ticket" instead
+of "Assign"/"Assign ticket" once the ticket already has an assignee. The
+picker excludes the current assignee from its options on a
+reassignment — picking them again would just bounce off the server's
+422, so there's no reason to offer it.
+
+12 new backend router tests: a parametrized reassignment test across
+`ASSIGNED`/`IN_PROGRESS`/`DONE`/`REOPENED` confirming `status` is never
+touched; rejecting reassignment to the same person; rejecting a caller
+without `workorder:assign`; both notifications firing on reassignment;
+the previous-assignee notification skipped when they're the actor;
+the distinct `workorder.reassigned` event; version-conflict handling;
+and `VERIFIED`/`CANCELLED` both correctly rejected (the existing "not
+OPEN" test was split into these two, since `DONE` is a valid
+reassignment target now). 1 new frontend component test: a `DONE`
+ticket shows "Reassign ticket" (never "Assign ticket"), the picker
+excludes the current assignee, and confirming posts the right body.
+Re-verified in a real headless browser: a `DONE` ticket's drawer shows
+"Reassign ticket," the picker offers only the other tech, and
+confirming updates "Assigned to" while the status badge stays "Done."
+
+Full repo lint/typecheck/build clean; `packages/shared` untouched;
+`apps/api` 187/190 (+11, same 3 pre-existing network-blocked round-trip
+tests); `apps/web` 26/26 (+1).
+
+**Holding here per client instruction**, same queue as before: EXIF
+capture-time verification and anything else not explicitly requested.
