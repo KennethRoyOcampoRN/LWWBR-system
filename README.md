@@ -2144,3 +2144,22 @@ pre-existing network-blocked tests); `apps/web` 27/27 (+1).
 
 **Holding here per client instruction**, same queue as before: EXIF
 capture-time verification and anything else not explicitly requested.
+
+### Client-confirmed: the notifications/reassignment/personal-view chain is closed (2026-08-23)
+
+Client confirmed the department-queue fix above against real data:
+WO-260823-0003 now shows correctly under "Assigned to you" in the POC
+Housekeeping account's Department Work Orders view, with the department
+buckets unchanged alongside it — the exact reported scenario, live-
+verified.
+
+This closes the whole chain that started with wiring the Notification
+model: per-assignee notifications, ticket reassignment (with
+notifications to both the new and previous assignee), the SYSTEM_ADMIN
+"Assigned to you" fix for `FULL_LIST`, the `?mine=true` backend bug that
+fix uncovered, and this same fix's extension to `DEPARTMENT_QUEUE` — six
+real gaps found and fixed through live testing in a single evening, not
+one of them caught by the test suites alone until reproduced afterward.
+
+**Holding here per client instruction.** EXIF capture-time verification
+remains the one queued item — no action until given the go-ahead.
