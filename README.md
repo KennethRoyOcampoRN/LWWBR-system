@@ -920,3 +920,98 @@ broadcast. Task 14 closes out the units/status-machine portion of M2.
 live activity feed, and attention queue widgets — `DashboardPage` is
 still the placeholder landing page noted above. Holding here on explicit
 instruction; no further M2 work until given the go-ahead.
+
+### Command Center: KPI strip, live activity feed, attention queue — built, not yet live-tested (2026-08-23)
+
+Spec §8.2's remaining Command Center widgets, built around the unit grid
+task 14 already shipped (that page, `/units`, is untouched by this work).
+`DashboardPage` (the `/` landing route) now renders a real `CommandCenter`
+component instead of the placeholder text, but only for a caller holding
+`unit:read` — a role without it (e.g. Restaurant Staff, spec §5.4) still
+gets the plain "Welcome" placeholder, since every widget below reads unit
+data.
+
+**Deliberately not faked**: spec §8.2 lists eight KPI-strip/attention-queue
+items in total; five of them (today's arrivals/departures, open urgent
+work orders, pending payment verifications, open F&B tickets,
+SLA-breached work orders, overdue amenities, unverified payments >24h —
+seven, not five, once counted individually) depend on modules that don't
+exist yet (bookings M4, work orders M3, payments M4, F&B M5, amenities
+M5). Per instruction, these render as explicitly-labelled stub cards/rows
+— dashed border, muted grey, an "—" placeholder value, and a "Coming in
+M3/M4/M5" caption — never a real-looking zero. Only four items are real
+today, all computed from `Unit`/`UnitStatusEvent` data that already
+exists:
+
+- **KPI strip**: Occupied / Ready / Dirty / Out-of-order counts.
+- **Attention queue**: rooms sitting in `VACANT_DIRTY` for more than 3
+  hours (`DIRTY_ATTENTION_THRESHOLD_MINUTES = 180` in
+  `apps/api/src/modules/units/service.ts`), with how long each has been
+  dirty.
+
+Backend: two new endpoints, both gated by `unit:read` (same permission as
+the unit grid) —
+
+- `GET /units/dashboard` → `{ kpi: { occupied, ready, dirty, outOfOrder }, dirtyRooms: [{ id, code, name, dirtySince, dirtyMinutes }] }`.
+  `dirtyRooms` only lists units already past the 3h threshold — the "when
+  did this unit become dirty" timestamp is the `createdAt` of the latest
+  `UnitStatusEvent` for that unit (the event that put it into its current
+  `VACANT_DIRTY` state), falling back to the `Unit` row's own `createdAt`
+  for a unit that has never had a status event (e.g. still sitting at its
+  seeded default with nothing in the table yet).
+- `GET /units/activity?limit=` → `{ events: [{ id, unitId, unitCode, unitName, fromStatus, toStatus, note, actorName, createdAt }] }`,
+  the most recent `UnitStatusEvent` rows across every unit, newest first
+  (default limit 20, capped at 50). This only backfills the feed on page
+  load — a page open when a status change happens learns about it from
+  the existing `unit.status.changed` realtime broadcast (task 14), not by
+  polling this endpoint.
+
+6 new router tests (permission gating on both endpoints, KPI counting
+across all four statuses plus the threshold filter, the no-prior-event
+fallback, activity ordering/shape, and limit clamping) — all passing
+against the mocked Prisma client, same pattern as every other units
+router test.
+
+Frontend (`DashboardPage.tsx`): the KPI strip and attention queue both
+poll `/units/dashboard` every 60s (same fallback principle as
+`UnitsPage`'s poll, spec §3: "a dropped socket must never leave a stale
+board with no recovery path") and also refresh immediately on any
+`unit.status.changed` broadcast, since a status change can move a unit in
+or out of "dirty" or "out of order." The live activity feed **reuses
+task 14's existing realtime subscription** (`subscribeToUnitStatusChanges`
+from `lib/realtime.ts`) rather than opening a second channel — a live
+broadcast is prepended to the feed (capped at 30 items client-side) using
+the same `summary` string the backend already builds for the broadcast
+payload. Department filtering (spec §8.2: "filterable by department, if
+cheap") was **not** built — `Unit` has no `department` field in the
+schema, so there's nothing to filter by yet; the spec itself allows a flat
+list as the fallback ("otherwise just a flat recent-events list is fine
+for now").
+
+1 new component test (`App.smoke.test.tsx`) renders the Command Center for
+a `RESORT_MANAGER`-equivalent caller and asserts: the real KPI numbers
+render, a stub KPI card shows its "Coming in M3" label rather than a bare
+zero, the one real attention-queue row (a dirty room past the threshold)
+appears alongside the stub rows, and the activity feed renders a
+backfilled event with its actor name. The four existing units-grid
+component tests were updated to wait for the "Units" nav link instead of
+the old "Welcome, ..." placeholder text as their landing-page signal,
+since a caller with `unit:read` (all four of those tests use one) now
+lands on the real Command Center, not the placeholder.
+
+Full repo verification: lint, typecheck, and build are clean across all
+three workspaces; `apps/api` is 124/127 (the same 3 network-blocked
+round-trip tests as every prior milestone, unrelated to this change and
+unchanged since M0); `apps/web` is 15/15.
+
+**Not yet live-tested against the real Supabase database** — same
+sandbox network limitation as every prior milestone. Before relying on
+this: reload the Command Center as a role holding `unit:read` and confirm
+real counts match the Units grid; force a unit to `VACANT_DIRTY` and
+either wait 3h or temporarily lower
+`DIRTY_ATTENTION_THRESHOLD_MINUTES` to confirm it surfaces in the
+attention queue; change a unit's status in one browser and confirm the
+KPI strip, attention queue, and activity feed all update in the other
+within a few seconds without a manual refresh (same mechanism as task
+14's grid live-update, so should hold, but not yet watched directly on
+this page specifically).

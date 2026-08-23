@@ -295,7 +295,7 @@ describe('App', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
     await user.click(screen.getByRole('link', { name: 'Units' }));
 
     await waitFor(() => expect(screen.getByText('101')).toBeInTheDocument());
@@ -351,7 +351,7 @@ describe('App', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
     await user.click(screen.getByRole('link', { name: 'Units' }));
     await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
     await user.click(screen.getByText('R01'));
@@ -401,7 +401,7 @@ describe('App', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
     await user.click(screen.getByRole('link', { name: 'Units' }));
     await waitFor(() => expect(screen.getByText('R02')).toBeInTheDocument());
     await user.click(screen.getByText('R02'));
@@ -459,7 +459,7 @@ describe('App', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText(/Welcome,/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
     await userEvent.setup().click(screen.getByRole('link', { name: 'Units' }));
     await waitFor(() => expect(screen.getByText('Cleaning')).toBeInTheDocument());
 
@@ -502,5 +502,62 @@ describe('App', () => {
       });
     });
     expect(screen.getByText('Cleaned')).toBeInTheDocument();
+  });
+
+  it('renders the Command Center: real KPI counts, an explicitly-stubbed KPI/attention item, a dirty-room alert, and the activity feed', async () => {
+    const managerUser = {
+      ...currentUser,
+      roles: ['RESORT_MANAGER'],
+      permissions: { 'unit:read': 'ALL' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/units/dashboard')) {
+        return jsonResponse(200, {
+          kpi: { occupied: 3, ready: 2, dirty: 1, outOfOrder: 1 },
+          dirtyRooms: [{ id: 'unit_9', code: 'R09', name: 'Room 9', dirtyMinutes: 200 }],
+        });
+      }
+      if (url.includes('/units/activity')) {
+        return jsonResponse(200, {
+          events: [
+            {
+              id: 'event_1',
+              unitCode: 'R05',
+              unitName: 'Room 5',
+              fromStatus: 'CLEANING',
+              toStatus: 'CLEANED',
+              note: null,
+              actorName: 'Room Attendant 1 (Demo)',
+              createdAt: '2026-08-23T09:00:00Z',
+            },
+          ],
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+
+    // Real KPI counts, computed from actual unit data.
+    await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+    expect(screen.getByText('Occupied')).toBeInTheDocument();
+
+    // Stubbed KPI cards are explicitly labelled, not shown as a bare "0".
+    expect(screen.getByText('Open urgent work orders')).toBeInTheDocument();
+    expect(screen.getAllByText('Coming in M3').length).toBeGreaterThan(0);
+
+    // Attention queue: the one real item (a room dirty past 3h) plus the
+    // three stubbed items for later milestones.
+    expect(screen.getByText(/R09 — Room 9 still dirty/i)).toBeInTheDocument();
+    expect(screen.getByText('SLA-breached work orders')).toBeInTheDocument();
+
+    // Live activity feed, backfilled from GET /units/activity.
+    await waitFor(() => expect(screen.getByText(/R05 — Room 5: Cleaning → Cleaned/i)).toBeInTheDocument());
+    expect(screen.getByText(/Room Attendant 1 \(Demo\)/i)).toBeInTheDocument();
   });
 });

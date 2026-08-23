@@ -425,6 +425,106 @@ describe('POST /api/v1/units/:id/force-status', () => {
   });
 });
 
+describe('GET /api/v1/units/dashboard', () => {
+  it('requires unit:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('computes KPI counts and flags rooms dirty past the 3h threshold', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    const now = Date.now();
+    const fourHoursAgo = new Date(now - 4 * 60 * 60 * 1000);
+    const oneHourAgo = new Date(now - 60 * 60 * 1000);
+    mockPrisma.unit.findMany.mockResolvedValue([
+      fakeUnit({ id: 'unit_occupied', status: 'OCCUPIED', createdAt: fourHoursAgo }),
+      fakeUnit({ id: 'unit_ready', status: 'READY', createdAt: fourHoursAgo }),
+      fakeUnit({ id: 'unit_ooo', status: 'OUT_OF_ORDER', createdAt: fourHoursAgo }),
+      fakeUnit({ id: 'unit_dirty_long', code: '102', name: 'Room 102', status: 'VACANT_DIRTY', createdAt: fourHoursAgo }),
+      fakeUnit({ id: 'unit_dirty_recent', code: '103', name: 'Room 103', status: 'VACANT_DIRTY', createdAt: oneHourAgo }),
+    ]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      { unitId: 'unit_dirty_long', createdAt: fourHoursAgo },
+      { unitId: 'unit_dirty_recent', createdAt: oneHourAgo },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi).toEqual({ occupied: 1, ready: 1, dirty: 2, outOfOrder: 1 });
+    expect(res.body.dirtyRooms).toHaveLength(1);
+    expect(res.body.dirtyRooms[0]).toMatchObject({ id: 'unit_dirty_long', code: '102' });
+  });
+
+  it('falls back to the unit\'s createdAt when it has no status event yet', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    mockPrisma.unit.findMany.mockResolvedValue([
+      fakeUnit({ id: 'unit_never_touched', status: 'VACANT_DIRTY', createdAt: fourHoursAgo }),
+    ]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.dirtyRooms).toHaveLength(1);
+    expect(res.body.dirtyRooms[0].id).toBe('unit_never_touched');
+  });
+});
+
+describe('GET /api/v1/units/activity', () => {
+  it('requires unit:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    const res = await request(createApp()).get('/api/v1/units/activity').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('returns recent status-change events across all units, newest first', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      {
+        id: 'event_2',
+        unitId: 'unit_1',
+        fromStatus: 'CLEANING',
+        toStatus: 'CLEANED',
+        note: null,
+        createdAt: new Date('2026-08-23T10:00:00Z'),
+        unit: { code: '101', name: 'Room 101' },
+        actor: { fullName: 'Room Attendant 1 (Demo)' },
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/activity').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.events).toEqual([
+      {
+        id: 'event_2',
+        unitId: 'unit_1',
+        unitCode: '101',
+        unitName: 'Room 101',
+        fromStatus: 'CLEANING',
+        toStatus: 'CLEANED',
+        note: null,
+        actorName: 'Room Attendant 1 (Demo)',
+        createdAt: '2026-08-23T10:00:00.000Z',
+      },
+    ]);
+    expect(mockPrisma.unitStatusEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 20 }),
+    );
+  });
+
+  it('clamps an oversized limit query param to the max', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/units/activity?limit=9999')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(mockPrisma.unitStatusEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+  });
+});
+
 describe('GET /api/v1/units/:id/timeline', () => {
   it('returns the unit status event history', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));

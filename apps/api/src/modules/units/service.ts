@@ -156,6 +156,136 @@ export async function updateUnit(id: string, input: UpdateUnitInput) {
   return prisma.unit.update({ where: { id }, data: input });
 }
 
+// Spec §8.2 attention queue: "rooms dirty >3h." SLA-breached work orders,
+// overdue amenities, and unverified payments >24h are the other three
+// items that section lists, but all three depend on modules that don't
+// exist yet (work orders M3, amenities M5, payments M4) — this constant
+// and the query below are only for the one item this milestone can
+// actually compute, from `UnitStatusEvent` timestamps already in the
+// database.
+export const DIRTY_ATTENTION_THRESHOLD_MINUTES = 180;
+
+export interface DirtyRoom {
+  id: string;
+  code: string;
+  name: string;
+  dirtySince: string;
+  dirtyMinutes: number;
+}
+
+// Spec §8.2 KPI strip: "Occupied / Ready / Dirty / Out-of-order counts."
+// Arrivals/departures, urgent work orders, pending payment verifications,
+// and open F&B tickets are the other four KPIs that section lists, but
+// all four depend on modules that don't exist yet (bookings M4, work
+// orders M3, payments M4, F&B M5) — the frontend renders those as
+// explicit "coming in a later milestone" placeholders rather than faking
+// a plausible-looking zero. Only the four status counts below are real.
+export interface UnitsDashboard {
+  kpi: {
+    occupied: number;
+    ready: number;
+    dirty: number;
+    outOfOrder: number;
+  };
+  dirtyRooms: DirtyRoom[];
+}
+
+export async function getUnitsDashboard(): Promise<UnitsDashboard> {
+  const units = await prisma.unit.findMany({
+    where: { deletedAt: null },
+    select: { id: true, code: true, name: true, status: true, createdAt: true },
+  });
+
+  const kpi = { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0 };
+  const dirtyUnits: typeof units = [];
+  for (const unit of units) {
+    switch (unit.status) {
+      case 'OCCUPIED':
+        kpi.occupied += 1;
+        break;
+      case 'READY':
+        kpi.ready += 1;
+        break;
+      case 'VACANT_DIRTY':
+        kpi.dirty += 1;
+        dirtyUnits.push(unit);
+        break;
+      case 'OUT_OF_ORDER':
+        kpi.outOfOrder += 1;
+        break;
+    }
+  }
+
+  // The event that put a unit into its *current* VACANT_DIRTY state tells
+  // us when it became dirty. A unit that has never had a status event
+  // (e.g. still sitting at its seeded default) falls back to when the
+  // unit row itself was created.
+  const latestEvents = dirtyUnits.length
+    ? await prisma.unitStatusEvent.findMany({
+        where: { unitId: { in: dirtyUnits.map((u) => u.id) } },
+        orderBy: { createdAt: 'desc' },
+        distinct: ['unitId'],
+        select: { unitId: true, createdAt: true },
+      })
+    : [];
+  const dirtySinceByUnitId = new Map(latestEvents.map((e) => [e.unitId, e.createdAt]));
+
+  const now = Date.now();
+  const dirtyRooms: DirtyRoom[] = dirtyUnits
+    .map((unit) => {
+      const dirtySince = dirtySinceByUnitId.get(unit.id) ?? unit.createdAt;
+      const dirtyMinutes = Math.floor((now - dirtySince.getTime()) / 60_000);
+      return { id: unit.id, code: unit.code, name: unit.name, dirtySince: dirtySince.toISOString(), dirtyMinutes };
+    })
+    .filter((room) => room.dirtyMinutes >= DIRTY_ATTENTION_THRESHOLD_MINUTES)
+    .sort((a, b) => b.dirtyMinutes - a.dirtyMinutes);
+
+  return { kpi, dirtyRooms };
+}
+
+export interface UnitActivityEvent {
+  id: string;
+  unitId: string;
+  unitCode: string;
+  unitName: string;
+  fromStatus: UnitStatusKey;
+  toStatus: UnitStatusKey;
+  note: string | null;
+  actorName: string;
+  createdAt: string;
+}
+
+// Spec §8.2 live activity feed: "realtime stream of status changes... a
+// flat recent-events list is fine for now." This is the initial list a
+// freshly-loaded Command Center renders before any live broadcast has
+// arrived — reuses the same `UnitStatusEvent` table the unit timeline
+// (getUnitTimeline above) already reads, just across every unit instead
+// of one. New events after page load arrive via the existing
+// `unit.status.changed` realtime broadcast (see broadcastUnitStatusChanged
+// above) — this endpoint is only for backfilling the feed on load.
+export async function listUnitActivity(limit: number): Promise<UnitActivityEvent[]> {
+  const events = await prisma.unitStatusEvent.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    include: {
+      unit: { select: { code: true, name: true } },
+      actor: { select: { fullName: true } },
+    },
+  });
+
+  return events.map((event) => ({
+    id: event.id,
+    unitId: event.unitId,
+    unitCode: event.unit.code,
+    unitName: event.unit.name,
+    fromStatus: event.fromStatus as UnitStatusKey,
+    toStatus: event.toStatus as UnitStatusKey,
+    note: event.note,
+    actorName: event.actor.fullName,
+    createdAt: event.createdAt.toISOString(),
+  }));
+}
+
 export async function getUnitTimeline(unitId: string) {
   const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
   if (!unit) {

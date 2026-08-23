@@ -16,12 +16,17 @@ import {
   createUnit,
   createUnitType,
   forceUnitStatus,
+  getUnitsDashboard,
   getUnitTimeline,
+  listUnitActivity,
   listUnits,
   listUnitTypes,
   updateUnit,
   updateUnitType,
 } from './service.js';
+
+const DEFAULT_ACTIVITY_LIMIT = 20;
+const MAX_ACTIVITY_LIMIT = 50;
 
 export const unitsRouter = Router();
 
@@ -74,6 +79,33 @@ unitsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = updateUnitSchema.parse(req.body);
     res.status(200).json({ unit: await updateUnit(req.params.id as string, body) });
+  }),
+);
+
+// Spec §8.2 Command Center: KPI strip counts + the "rooms dirty >3h"
+// attention-queue item, both computed live from real Unit/UnitStatusEvent
+// data. See getUnitsDashboard's own doc comment for what's deliberately
+// NOT here (arrivals/departures, work orders, payments, F&B — all later
+// milestones) and why.
+unitsRouter.get(
+  '/units/dashboard',
+  requirePermission('unit:read'),
+  asyncHandler(async (_req, res) => {
+    res.status(200).json(await getUnitsDashboard());
+  }),
+);
+
+// Spec §8.2 live activity feed's initial backfill — see listUnitActivity's
+// doc comment. Ongoing updates reach the page via the existing
+// unit.status.changed realtime broadcast, not by polling this endpoint.
+unitsRouter.get(
+  '/units/activity',
+  requirePermission('unit:read'),
+  asyncHandler(async (req, res) => {
+    const requested = Number.parseInt(req.query.limit as string, 10);
+    const limit =
+      Number.isFinite(requested) && requested > 0 ? Math.min(requested, MAX_ACTIVITY_LIMIT) : DEFAULT_ACTIVITY_LIMIT;
+    res.status(200).json({ events: await listUnitActivity(limit) });
   }),
 );
 
