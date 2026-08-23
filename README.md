@@ -1449,3 +1449,81 @@ than leave as a maybe. New test asserts the header on `GET /units`.
 
 `apps/api` 145/148 (same 3 pre-existing network-blocked round-trip
 tests); `apps/web` 16/16.
+
+### Create Work Order form + photo-upload UI (2026-08-23) — done, browser-verified this sandbox's way
+
+The frontend for the first M3 slice, so the mandatory photo gate is
+testable end to end in the browser rather than just trusted from the
+backend test suite. New `/work-orders` route + nav item (gated on
+`workorder:read`, the floor every role holds, same pattern as `/units`
+on `unit:read`) — `WorkOrdersPage.tsx`: a "New ticket" form (shown only
+to a caller holding `workorder:create`) above a live ticket list.
+
+**Photo upload**: `api.ts` gained `api.upload()` — the first multipart
+caller this frontend has ever had. Required a real fix in the shared
+request helper: it always set `Content-Type: application/json`
+unconditionally before this, which would have broken every upload (a
+`FormData` body needs the browser to set its own
+`multipart/form-data; boundary=...`, never a hardcoded JSON type).
+`request()` now only sets that header when the body isn't `FormData`.
+Selecting a file uploads it immediately via `POST /files`, and the
+returned `fileId` is held client-side until the ticket itself is
+submitted — matching the two-step API design from the first M3 slice
+(photos are referenced by id, not embedded as raw bytes in the create
+request).
+
+**The photo-requirement hint is informational only, never a blocking
+disabled button** — deliberately, since spec §7.2.1 says the real gate
+must be server-side "not just a disabled button," and because a client-
+side block would have made it impossible to actually see the server's
+real `422 PHOTO_REQUIRED` response in the browser, which is exactly
+what this slice exists to make testable. The "Issue photos" section
+shows a `Required for <Type>` badge (read from the shared
+`DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS` constant — the same default the
+backend falls back to) when the selected type needs one, but the
+Create button is never disabled by it: the request always actually
+fires, and a genuine `PHOTO_REQUIRED` error renders inline, styled the
+same as every other form error on this page, not a toast after the
+fact.
+
+**Browser-verified, not just component-tested** — this sandbox still
+can't reach the real Supabase project, so full login-to-database
+end-to-end isn't possible here (same standing limitation as every prior
+milestone), but the *rendered, built* frontend bundle was driven
+through a real headless Chromium (Playwright, using this environment's
+pre-installed browser) against the actual dev server, with only the
+network layer mocked at the HTTP level (`page.route()`) rather than
+anything React-level — the real login form, the real nav, the real
+`WorkOrdersPage` component, the real file `<input>`, all doing their
+real thing. The driven sequence: log in → open Work Orders → select
+`MAINTENANCE` (the "Required for Maintenance" badge appears) → submit
+with no photo attached → the server's real `422 PHOTO_REQUIRED`
+response renders as "An ISSUE photo is required..." → attach a real
+file to the file input → submit again → `201`, success message,
+new ticket appears in the list, form resets. Caught and fixed one real
+bug this way that no unit test would have: the error copy read "A
+ISSUE photo," not "An ISSUE photo" — fixed with an actual article-
+selection check, not a hardcoded string.
+
+3 new component tests (`WorkOrdersPage.test.tsx`, same
+render-the-real-`<App/>`-with-mocked-`fetch` pattern as every other
+frontend test this session): the full photo-gate round trip described
+above: no-photo rejection with the real error text, then success after
+attaching one, with the ticket list and form-reset both asserted;
+`HOUSEKEEPING` (a type that doesn't require a photo) creating directly;
+the New-ticket form correctly hidden for a caller without
+`workorder:create` while the ticket list still renders. Plus 1 new
+`api.test.ts` test asserting `api.upload()` sends a real `FormData`
+body with no explicit `Content-Type` header.
+
+Full repo verification: lint, typecheck, build clean across all 3
+workspaces; `packages/shared` 44/44; `apps/api` 145/148 (same 3
+pre-existing network-blocked tests, untouched by this frontend-only
+slice); `apps/web` 20/20 (+4).
+
+**Not yet built this slice**: assignment/status-transition UI (the
+ticket list is read-only — no assign/start/done/verify/reopen/cancel
+buttons yet, matching the backend, which also doesn't have those
+endpoints), the department-scoped verify UI, department dashboards,
+"My tasks." Ready for the client's own live browser test of ticket
+creation and the photo gate against the real Supabase database.

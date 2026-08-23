@@ -11,6 +11,7 @@ import { RolesPage } from './routes/RolesPage.js';
 import { SessionsPage } from './routes/SessionsPage.js';
 import { UnitsPage } from './routes/UnitsPage.js';
 import { UsersPage } from './routes/UsersPage.js';
+import { WorkOrdersPage } from './routes/WorkOrdersPage.js';
 
 export function App() {
   return (
@@ -28,6 +29,14 @@ export function App() {
                   element={
                     <RequirePermission permission="unit:read">
                       <UnitsPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/work-orders"
+                  element={
+                    <RequirePermission permission="workorder:read">
+                      <WorkOrdersPage />
                     </RequirePermission>
                   }
                 />

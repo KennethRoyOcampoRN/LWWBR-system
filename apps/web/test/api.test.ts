@@ -69,4 +69,21 @@ describe('api client', () => {
     await expect(api.post('/auth/refresh')).rejects.toBeInstanceOf(ApiRequestError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('upload() sends a FormData body with no explicit Content-Type — the browser must set its own multipart boundary', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body;
+      expect(body).toBeInstanceOf(FormData);
+      expect((body as FormData).get('file')).toBeInstanceOf(File);
+      const headers = init?.headers as Record<string, string> | undefined;
+      expect(headers?.['Content-Type']).toBeUndefined();
+      return jsonResponse(201, { file: { id: 'file_1' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = new File([new Uint8Array([1, 2, 3])], 'issue.jpg', { type: 'image/jpeg' });
+    const result = await api.upload<{ file: { id: string } }>('/files', file);
+
+    expect(result.file.id).toBe('file_1');
+  });
 });

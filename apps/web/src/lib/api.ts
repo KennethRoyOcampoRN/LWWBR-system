@@ -25,10 +25,15 @@ export class ApiRequestError extends Error {
 // as-is or this would loop forever the moment the refresh token itself
 // is also invalid/expired.
 async function request<T>(path: string, init?: RequestInit, skipRefresh = false): Promise<T> {
+  // A FormData body (file uploads) must never get an explicit
+  // Content-Type — the browser sets its own `multipart/form-data;
+  // boundary=...` when it serializes the body, and a hardcoded
+  // 'application/json' here would make the server unable to parse it.
+  const isFormData = init?.body instanceof FormData;
   const res = await fetch(`/api/v1${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...init?.headers },
   });
 
   if (res.status === 204) {
@@ -67,4 +72,11 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: data !== undefined ? JSON.stringify(data) : undefined }),
   put: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PUT', body: data !== undefined ? JSON.stringify(data) : undefined }),
+  // Multipart upload — used by POST /files. `field` matches the name
+  // multer's .single() expects server-side ('file').
+  upload: <T>(path: string, file: File, field = 'file') => {
+    const formData = new FormData();
+    formData.append(field, file);
+    return request<T>(path, { method: 'POST', body: formData });
+  },
 };
