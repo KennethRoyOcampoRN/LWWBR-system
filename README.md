@@ -3230,3 +3230,50 @@ route's secret check (missing, wrong, correct), and the sweep's
 (same 3 pre-existing network-blocked round-trip tests), `apps/web` 36/36
 (unchanged — no frontend work this slice). Full repo lint/typecheck/build
 clean.
+
+### M5, slice 3: amenity request/issue/return UI (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** Same working agreement as
+slices 1-2. Frontend for the workflow slice 2 built on the API for —
+closing out the amenity module's first full vertical slice, catalogue
+through return.
+
+Extended `AmenitiesPage.tsx` with a "Requests" section below the
+catalogue: a request form (`amenity:request` holders) and a list of
+requests with a status badge and permission-gated action buttons per
+row — Approve/Cancel on `REQUESTED`, Issue/Cancel on `APPROVED`,
+Return on `ISSUED`/`OVERDUE` — matching each row's actual current status
+against the transition table from slice 2, not a fixed action set.
+
+Issue and Return each open an inline sub-form rather than firing
+immediately, since both need data the transition table's permission gate
+alone can't capture: Issue requires a due-back date/time and, for a
+deposit-requiring item, a "Deposit collected (₱X, informational only)"
+checkbox — both enforced client-side before the request goes out, and
+enforced again server-side (slice 2's actual gate) since the client-side
+check is only a better error message, not the real authorization.
+Return lets the issuer pick `RETURNED` or `LOST_DAMAGED` with an optional
+condition note. Consistent with every money-adjacent field so far, the
+deposit checkbox stores nothing beyond itself — no amount, no `Payment`
+row.
+
+A 60-second poll fallback (same pattern as the Command Center) keeps the
+request list from going stale if two staff are working the same request
+queue in different tabs — no realtime subscription for amenity requests
+yet, deliberately deferred rather than adding a second broadcast-consumer
+pattern in the same slice that already added a broadcast producer
+(slice 2's `amenity.request.changed` emit).
+
+Verified: 1 new frontend test driving the full lifecycle in one pass —
+submit → approve → issue (asserting both the due-back and deposit gates
+block the confirm button with the right error text before succeeding) →
+return — plus a real headless-browser Playwright run doing the exact
+same sequence against a mocked API, confirming the UI actually renders
+and updates correctly end to end, not just that the mocked fetch calls
+were made. `packages/shared` 63/63, `apps/api` 257/260 (same 3
+pre-existing network-blocked round-trip tests, unchanged this slice),
+`apps/web` 37/37. Full repo lint/typecheck/build clean.
+
+This closes out the amenity module (catalogue + full request/issue/
+return workflow). Next: the F&B menu, order creation, and kitchen
+kanban (spec §7.3).

@@ -30,6 +30,24 @@ const readOnlyUser = {
   permissions: { 'amenity:read': 'ALL' },
 };
 
+// Holds every amenity:* capability so one test can drive the full
+// request -> approve -> issue -> return lifecycle without switching users
+// (matches SYSTEM_ADMIN/RESORT_MANAGER holding all of them in the real
+// seed — see rolePermissions.ts).
+const fullAccessUser = {
+  ...managerUser,
+  id: 'user_3',
+  fullName: 'Resort Manager (Demo)',
+  permissions: {
+    'amenity:read': 'ALL',
+    'amenity:manage': 'ALL',
+    'amenity:request': 'ALL',
+    'amenity:approve': 'ALL',
+    'amenity:issue': 'ALL',
+    'amenity:return': 'ALL',
+  },
+};
+
 const kayak = {
   id: 'amenity_1',
   name: 'Kayak',
@@ -64,6 +82,7 @@ describe('AmenitiesPage', () => {
         items = [...items, created];
         return jsonResponse(201, { amenityItem: created });
       }
+      if (url.endsWith('/amenity-requests')) return jsonResponse(200, { amenityRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -91,6 +110,7 @@ describe('AmenitiesPage', () => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
       if (url.endsWith('/amenity-items')) return jsonResponse(200, { amenityItems: [kayak] });
+      if (url.endsWith('/amenity-requests')) return jsonResponse(200, { amenityRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -101,5 +121,86 @@ describe('AmenitiesPage', () => {
     await waitFor(() => expect(screen.getByText('Kayak')).toBeInTheDocument());
     expect(screen.queryByText('Add an item')).not.toBeInTheDocument();
     expect(screen.queryByText('Deactivate')).not.toBeInTheDocument();
+  });
+
+  it('drives a request through approve -> issue (deposit gate) -> return', async () => {
+    const user = userEvent.setup();
+    let amenityRequests: Record<string, unknown>[] = [];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: fullAccessUser });
+      if (url.endsWith('/amenity-items')) return jsonResponse(200, { amenityItems: [kayak] });
+
+      if (url.endsWith('/amenity-requests') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityRequests });
+      }
+      if (url.endsWith('/amenity-requests') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toMatchObject({ amenityItemId: 'amenity_1', qty: 1 });
+        const created = {
+          id: 'request_1',
+          referenceNo: 'AR-260824-0001',
+          qty: 1,
+          status: 'REQUESTED',
+          dueBackAt: null,
+          notes: null,
+          amenityItem: { id: 'amenity_1', name: 'Kayak', requiresDeposit: true, depositAmount: 1000 },
+          requestedBy: { fullName: 'Resort Manager (Demo)' },
+        };
+        amenityRequests = [created];
+        return jsonResponse(201, { amenityRequest: created });
+      }
+      if (url.match(/\/amenity-requests\/request_1\/status$/) && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        const current = amenityRequests[0] as Record<string, unknown>;
+        if (body.toStatus === 'ISSUED') {
+          // The deposit gate: the component must not even attempt the
+          // request until depositCollected is confirmed client-side —
+          // but assert defensively here too, since the real backend gate
+          // is the actual enforcement point.
+          expect(body.depositCollected).toBe(true);
+          expect(body.dueBackAt).toBeTruthy();
+        }
+        const updated = { ...current, status: body.toStatus, dueBackAt: body.dueBackAt ?? current.dueBackAt };
+        amenityRequests = [updated];
+        return jsonResponse(200, { amenityRequest: updated });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Amenities' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Kayak').length).toBeGreaterThan(0));
+
+    // Submit the request.
+    await user.selectOptions(screen.getByLabelText('Item'), 'amenity_1');
+    await user.click(screen.getByRole('button', { name: 'Submit request' }));
+    await waitFor(() => expect(screen.getByText('AR-260824-0001')).toBeInTheDocument());
+    expect(screen.getByText('Requested')).toBeInTheDocument();
+
+    // Approve it.
+    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(screen.getByText('Approved')).toBeInTheDocument());
+
+    // Open the Issue panel — confirm deposit is required for this item.
+    await user.click(screen.getByRole('button', { name: 'Issue' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm issue' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/due-back/i);
+
+    await user.type(screen.getByLabelText('Due back'), '2026-09-01T10:00');
+    await user.click(screen.getByRole('button', { name: 'Confirm issue' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/deposit/i);
+
+    await user.click(screen.getByLabelText(/Deposit collected/));
+    await user.click(screen.getByRole('button', { name: 'Confirm issue' }));
+    await waitFor(() => expect(screen.getByText('Issued')).toBeInTheDocument());
+
+    // Return it.
+    await user.click(screen.getByRole('button', { name: 'Return' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm returned' }));
+    await waitFor(() => expect(screen.getByText('Returned')).toBeInTheDocument());
   });
 });
