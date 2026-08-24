@@ -3277,3 +3277,70 @@ pre-existing network-blocked round-trip tests, unchanged this slice),
 This closes out the amenity module (catalogue + full request/issue/
 return workflow). Next: the F&B menu, order creation, and kitchen
 kanban (spec §7.3).
+
+### Launch checklist correction: the amenity-overdue job secret is a real launch task, not just a check (2026-08-24)
+
+Client note before the F&B slice below: item 6 of spec.md's §11.1 M7
+launch checklist previously only said to "confirm the Netlify Scheduled
+Functions... are registered and each fires once against the deployed
+endpoints." That undersold it — `JOB_SECRET` (M5's amenity-overdue sweep,
+last session) has to actually be rotated off the local-dev placeholder
+to a real production value in Netlify's environment config, *and* each
+Scheduled Function's own outbound call has to be wired to send that
+exact value in the `x-job-secret` header, or the endpoint 401s every
+time it fires. Expanded the item to say so explicitly — this is
+configuration to do at launch, not just behavior to verify. No code
+change, spec.md only.
+
+### M5, restaurant slice 1: the menu (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** Continuing into F&B with
+the same working agreement: small slices, everything below is
+typecheck/lint/build plus real tests against mocked data and a real
+headless-browser Playwright run — nothing checked against live data.
+
+First restaurant slice, mirroring the amenity module's own opening
+slice: the menu catalogue only (spec §6 `MenuItem`). Order creation and
+the kitchen kanban (spec §7.3) are the next slice, not this one.
+
+New `apps/api/src/modules/fnb/` module (schema/service/router, same
+shape as `amenities/`): `GET /menu-items` (`fnb:read`), `POST`/`PATCH
+/menu-items` (`fnb:manage_menu`) — both permission keys already existed
+in the seeded matrix, unused until now. `MenuItem.category` stays free
+text in the create/update form, deliberately not a closed enum like
+`AmenityItem.category` — spec's own data model leaves it as a plain
+string (§6: `category` with no enum listed), so the UI doesn't invent a
+category list the client never asked for.
+
+New `/restaurant` page + nav item (`FnbPage.tsx`, gated on `fnb:read`,
+invisible to Maintenance/Housekeeping staff — neither holds any `fnb:*`
+key). Read-only table for `fnb:read`-only holders (Restaurant Staff); an
+add-item form and an availability toggle per row for `fnb:manage_menu`
+holders (Restaurant Manager, System Admin, Resort Manager).
+
+Also seeded spec §10's "~25 menu items across Rice Meals, Silog,
+Grilled, Pulutan, Drinks, Desserts" in `seed.ts` — create-if-missing by
+`name`, same idempotency pattern as `AmenityItem`/`UnitType`, so a
+re-run never clobbers real menu edits made through the new admin page.
+**This part is unverified beyond typecheck**, same caveat as the amenity
+seed data last session — no network path to a real database from this
+sandbox.
+
+No payment/settlement machinery touched or built here — that question
+belongs to the order-creation slice next (spec §7.6 wants
+`CHARGE_TO_ROOM` orders to auto-post a `FolioCharge` and validate against
+an active checked-in booking, which is squarely the kind of thing the
+monitoring-not-transactions principle rules out or reduces to
+informational-only; flagged in that slice's own report, not guessed at
+here since the menu slice never touches it).
+
+Verified: 8 new backend tests (permission gates on both routes, negative
+price rejected, the Decimal→number conversion, 404 on an unknown item),
+3 new frontend tests (manage-menu holder can list/add/toggle
+availability; read-only holder sees the table but no form or toggle),
+and a real headless-browser Playwright run confirming the menu renders,
+an item can be added, and the availability toggle flips a row.
+`packages/shared` 63/63 (unchanged — no shared-package logic this
+slice), `apps/api` 265/268 (same 3 pre-existing network-blocked
+round-trip tests), `apps/web` 40/40. Full repo lint/typecheck/build
+clean.

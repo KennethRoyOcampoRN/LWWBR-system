@@ -9,7 +9,7 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read';
+  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read' | 'fnb:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -27,6 +27,10 @@ const NAV_ITEMS: {
   // Manager/Staff hold no amenity:* key at all, so this item is invisible
   // to them, same as every permission-gated nav item.
   { to: '/amenities', label: 'Amenities', permission: 'amenity:read' },
+  // M5, restaurant slice 1 (2026-08-24): the menu only — order creation
+  // and the kitchen board are a later slice. Per the role matrix,
+  // Maintenance/Housekeeping staff hold no fnb:* key at all.
+  { to: '/restaurant', label: 'Restaurant', permission: 'fnb:read' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

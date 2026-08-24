@@ -4,6 +4,7 @@ import { AmenitiesPage } from './routes/AmenitiesPage.js';
 import { AppShell } from './routes/AppShell.js';
 import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
+import { FnbPage } from './routes/FnbPage.js';
 import { LoginPage } from './routes/LoginPage.js';
 import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
@@ -62,6 +63,14 @@ export function App() {
                   element={
                     <RequirePermission permission="amenity:read">
                       <AmenitiesPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/restaurant"
+                  element={
+                    <RequirePermission permission="fnb:read">
+                      <FnbPage />
                     </RequirePermission>
                   }
                 />

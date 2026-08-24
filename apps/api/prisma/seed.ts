@@ -123,6 +123,40 @@ const AMENITY_ITEM_SEEDS = [
   { name: 'Billiard Table', category: 'OTHER' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
 ];
 
+// Spec §10: "~25 menu items across Rice Meals, Silog, Grilled, Pulutan,
+// Drinks, Desserts." Placeholder prices, same "client re-prices for
+// real through the admin UI" reasoning as UnitType's baseRate seeds —
+// this menu is what a resort restaurant in Batangas actually serves, not
+// invented filler.
+const MENU_ITEM_SEEDS = [
+  { name: 'Plain Rice', category: 'Rice Meals', price: 25, prepMinutes: 5 },
+  { name: 'Garlic Rice', category: 'Rice Meals', price: 35, prepMinutes: 5 },
+  { name: 'Chicken Adobo with Rice', category: 'Rice Meals', price: 150, prepMinutes: 15 },
+  { name: 'Pork Sinigang with Rice', category: 'Rice Meals', price: 170, prepMinutes: 20 },
+  { name: 'Beef Caldereta with Rice', category: 'Rice Meals', price: 190, prepMinutes: 20 },
+  { name: 'Chicken Curry with Rice', category: 'Rice Meals', price: 160, prepMinutes: 15 },
+  { name: 'Tapsilog', category: 'Silog', price: 130, prepMinutes: 12 },
+  { name: 'Bangsilog', category: 'Silog', price: 140, prepMinutes: 12 },
+  { name: 'Longsilog', category: 'Silog', price: 110, prepMinutes: 10 },
+  { name: 'Tocilog', category: 'Silog', price: 120, prepMinutes: 10 },
+  { name: 'Spamsilog', category: 'Silog', price: 130, prepMinutes: 10 },
+  { name: 'Grilled Liempo', category: 'Grilled', price: 220, prepMinutes: 25 },
+  { name: 'Grilled Bangus', category: 'Grilled', price: 200, prepMinutes: 20 },
+  { name: 'Grilled Pork Chop', category: 'Grilled', price: 210, prepMinutes: 20 },
+  { name: 'Grilled Chicken Inasal', category: 'Grilled', price: 180, prepMinutes: 20 },
+  { name: 'Sisig', category: 'Pulutan', price: 220, prepMinutes: 15 },
+  { name: 'Crispy Pata', category: 'Pulutan', price: 380, prepMinutes: 30 },
+  { name: 'Calamares', category: 'Pulutan', price: 190, prepMinutes: 15 },
+  { name: 'Sizzling Tofu', category: 'Pulutan', price: 130, prepMinutes: 12 },
+  { name: 'Bottled Water', category: 'Drinks', price: 25, prepMinutes: undefined },
+  { name: 'Soft Drinks', category: 'Drinks', price: 45, prepMinutes: undefined },
+  { name: 'Buko Juice', category: 'Drinks', price: 60, prepMinutes: 5 },
+  { name: 'Iced Tea Pitcher', category: 'Drinks', price: 120, prepMinutes: 5 },
+  { name: 'San Mig Light', category: 'Drinks', price: 90, prepMinutes: undefined },
+  { name: 'Halo-Halo', category: 'Desserts', price: 120, prepMinutes: 10 },
+  { name: 'Leche Flan', category: 'Desserts', price: 70, prepMinutes: undefined },
+];
+
 async function main() {
   console.warn(`Seeding ${PERMISSION_KEYS.length} permissions...`);
   for (const key of PERMISSION_KEYS) {
@@ -269,6 +303,26 @@ async function main() {
         condition: 'Good',
         requiresDeposit: seed.requiresDeposit,
         depositAmount: seed.depositAmount,
+      },
+    });
+  }
+
+  console.warn(`Seeding ${MENU_ITEM_SEEDS.length} menu items...`);
+  // Same create-if-missing reasoning as the amenity items above — once
+  // the client re-prices the real menu through the Restaurant admin
+  // page, a re-run of this seed must not clobber that back to
+  // placeholder prices. `name` is this seed's idempotency key; MenuItem
+  // has no other natural unique column.
+  for (const [index, seed] of MENU_ITEM_SEEDS.entries()) {
+    const existing = await prisma.menuItem.findFirst({ where: { name: seed.name } });
+    if (existing) continue;
+    await prisma.menuItem.create({
+      data: {
+        name: seed.name,
+        category: seed.category,
+        price: seed.price,
+        prepMinutes: seed.prepMinutes,
+        sortOrder: index,
       },
     });
   }
