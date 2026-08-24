@@ -3400,3 +3400,67 @@ advance-order filter), and every status transition's permission gate.
 `packages/shared` 70/70, `apps/api` 277/280 (same 3 pre-existing
 network-blocked round-trip tests), `apps/web` 40/40 (unchanged — no
 frontend work this slice). Full repo lint/typecheck/build clean.
+
+### M5, restaurant slice 3: kitchen kanban UI (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** Same working agreement.
+This closes out the F&B module's first full vertical slice (menu →
+order placement → kitchen board), same shape as the amenity module's
+own three-slice arc last session.
+
+Extended `FnbPage.tsx` with a "Kitchen board" section: three columns
+(Received/Preparing/Ready — `SERVED`/`CANCELLED` drop off the active
+board, matching spec's framing of the kanban as the kitchen's *current*
+work) and a "Place an order" form. Each card shows a live-computed
+minutes-since-received badge, amber at `FNB_ORDER_AMBER_MINUTES` (20)
+and red at `FNB_ORDER_RED_MINUTES` (35) per spec §7.3 — computed at
+fetch time and refreshed by realtime + a 30s poll fallback, not a
+client-side ticking clock, matching every other timing display already
+in this codebase (the Command Center's `dirtyMinutes` follows the exact
+same pattern).
+
+**A real access gap found while wiring the order form, fixed the same
+way this codebase already fixed an identical one:** `CHARGE_TO_ROOM`
+orders need a room picker, but Restaurant Staff — who spec's own role
+matrix (§5.4) gives `fnb:create` — holds no `unit:read` at all, so
+`GET /units` would 403 for them. Same shape as the problem
+`listAssignableUsers`/`GET /work-orders/assignable-users` already solved
+for POCs needing an assignment picker without full `user:read`: added
+`GET /units/orderable` (new, `units/service.ts` +
+`units/router.ts`), gated on `fnb:create` rather than `unit:read`,
+returning only what an order-placement picker needs (id/code/name/
+status) — not the general unit-management payload. This wasn't a
+guess; it directly mirrors an existing, documented precedent in this
+same codebase for the identical class of problem.
+
+The `CHARGE_TO_ROOM` picker also disables any unit whose live status
+isn't `OCCUPIED`, matching slice 2's server-side gate — the UI catches
+the mistake before the request round-trips, the server-side check (422
+`UNIT_NOT_OCCUPIED`) is still the real enforcement.
+
+New `subscribeToFnbOrderChanges` in `lib/realtime.ts`, mirroring
+`subscribeToUnitStatusChanges` — same `property` channel, listening for
+both `fnb.order.created` and `fnb.order.status.changed` and triggering a
+plain refetch (the board doesn't need a patch-in-place payload, just
+"something changed").
+
+Verified: 2 new backend tests for `GET /units/orderable` (gated on
+`fnb:create` not `unit:read`; succeeds for Restaurant Staff specifically,
+who has the former but not the latter), 1 new frontend test driving a
+full order through place → start preparing → mark ready → mark served
+and confirming it drops off the board once served, and a real
+headless-browser Playwright run doing that same sequence plus confirming
+the `CHARGE_TO_ROOM` picker actually disables a non-occupied room in a
+real DOM. `packages/shared` 70/70 (unchanged — no shared-package logic
+this slice), `apps/api` 279/282 (same 3 pre-existing network-blocked
+round-trip tests), `apps/web` 41/41. Full repo lint/typecheck/build
+clean.
+
+This closes out the F&B module's first vertical slice. Remaining M5
+backlog: nothing else spec requires — menu, ordering, kitchen kanban,
+advance orders, amenity catalogue, and the full amenity request/issue/
+return workflow are all built. M5's acceptance criteria that touch
+folio/payment machinery (the `CHARGE_TO_ROOM` auto-post, the `NO_ACTIVE_FOLIO`
+gate) were deliberately not built per the client's monitoring-not-
+transactions scope call — that's a documented scope decision, not
+something left undone.

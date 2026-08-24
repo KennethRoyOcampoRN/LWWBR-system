@@ -109,6 +109,52 @@ export function subscribeToUnitStatusChanges(
   };
 }
 
+// Spec §9.1: `fnb.order.created`/`fnb.order.status.changed`, same
+// `property` channel and `{ entityId, actorId, at, summary }` shape as
+// `unit.status.changed` — see apps/api's fnb/service.ts
+// broadcastFnbOrderChanged. The kitchen board only needs "something
+// changed, refetch," not a patch-in-place payload, so both event names
+// feed the same callback.
+export interface FnbOrderChangedPayload {
+  entityId: string;
+  actorId: string;
+  at: string;
+  summary: string;
+}
+
+/**
+ * Subscribes to the `property` channel's `fnb.order.created` and
+ * `fnb.order.status.changed` broadcasts. Same disabled/connecting/
+ * connected/reconnecting status contract and cleanup-safety as
+ * subscribeToUnitStatusChanges.
+ */
+export function subscribeToFnbOrderChanges(
+  onEvent: (payload: FnbOrderChangedPayload) => void,
+  onStatusChange: (status: RealtimeConnectionStatus) => void,
+): () => void {
+  const client = getSupabaseClient();
+  if (!client) {
+    onStatusChange('disabled');
+    return () => {};
+  }
+
+  let channel: RealtimeChannel | null = client.channel('property');
+  onStatusChange('connecting');
+  const handleBroadcast = ({ payload }: { payload: unknown }) => onEvent(payload as FnbOrderChangedPayload);
+  channel.on('broadcast', { event: 'fnb.order.created' }, handleBroadcast);
+  channel.on('broadcast', { event: 'fnb.order.status.changed' }, handleBroadcast);
+  channel.subscribe((status) => {
+    onStatusChange(status === 'SUBSCRIBED' ? 'connected' : 'reconnecting');
+  });
+
+  return () => {
+    if (channel) {
+      void client.removeChannel(channel);
+      channel = null;
+    }
+  };
+}
+
 /**
  * Subscribes to both channels a signed-in user's notifications can arrive
  * on: their own `user:{id}` channel (assigned-to-you, reopened-on-you)

@@ -130,6 +130,29 @@ describe('GET /api/v1/units and /unit-types', () => {
   });
 });
 
+describe('GET /api/v1/units/orderable', () => {
+  it('requires fnb:create, not unit:read', async () => {
+    // POC_HOUSEKEEPING holds unit:read but not fnb:create — proves this
+    // route is gated on the F&B permission, not the general one.
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    const res = await request(createApp()).get('/api/v1/units/orderable').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  // RESTAURANT_STAFF holds fnb:create but no unit:read at all (spec
+  // §5.4's "unit read" row) — the whole reason this narrowly-scoped
+  // route exists rather than reusing GET /units.
+  it('succeeds for RESTAURANT_STAFF, who has fnb:create but not unit:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ status: 'OCCUPIED' })]);
+
+    const res = await request(createApp()).get('/api/v1/units/orderable').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.units).toHaveLength(1);
+    expect(res.body.units[0].status).toBe('OCCUPIED');
+  });
+});
+
 describe('POST /api/v1/units/:id/status', () => {
   it('allows a caller with unit:update_status to move CLEANED -> READY directly — no QC handoff (client decision, 2026-08-22, INSPECTED retired)', async () => {
     // Formerly a two-hop hand-off (CLEANED -> INSPECTED via workorder:verify,

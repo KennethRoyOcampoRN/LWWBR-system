@@ -230,6 +230,24 @@ export async function listUnits(): Promise<UnitSummaryWithNote[]> {
   }));
 }
 
+// Spec §8.1/§8.3: Admin Staff and Cashier place F&B orders "incl.
+// advance orders," and Restaurant Staff creates orders too (fnb:create,
+// per the role matrix) — but Restaurant Staff holds no unit:read at all
+// (spec §5.4's "unit read" row: — for REST_STAFF), so GET /units would
+// 403 for them. Same reasoning as listAssignableUsers above (a POC
+// holding workorder:assign but not user:read needs a narrowly-scoped
+// picker, not a widened boundary): this is gated on fnb:create itself in
+// the router, not unit:read, and returns only what an order-placement
+// picker needs — not the full unit management payload.
+export async function listOrderableUnits() {
+  const units = await prisma.unit.findMany({
+    where: { deletedAt: null, isActive: true },
+    select: { id: true, code: true, name: true, status: true },
+    orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+  });
+  return units;
+}
+
 export async function createUnit(input: CreateUnitInput) {
   const unitType = await prisma.unitType.findFirst({ where: { id: input.unitTypeId, deletedAt: null } });
   if (!unitType) {

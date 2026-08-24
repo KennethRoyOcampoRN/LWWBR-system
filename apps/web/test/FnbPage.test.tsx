@@ -30,6 +30,16 @@ const restaurantStaffUser = {
   permissions: { 'fnb:read': 'ALL' },
 };
 
+// Holds every fnb:* capability so one test can drive order placement
+// through the full kanban lifecycle without switching users (matches
+// SYSTEM_ADMIN/RESORT_MANAGER-with-Restaurant-Staff-hat holding all of
+// these together in practice).
+const fullAccessUser = {
+  ...restaurantManagerUser,
+  id: 'user_3',
+  permissions: { 'fnb:read': 'ALL', 'fnb:manage_menu': 'ALL', 'fnb:create': 'ALL', 'fnb:update_status': 'ALL' },
+};
+
 const sisig = {
   id: 'menu_1',
   name: 'Sisig',
@@ -62,6 +72,7 @@ describe('FnbPage', () => {
         items = [...items, created];
         return jsonResponse(201, { menuItem: created });
       }
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -96,6 +107,7 @@ describe('FnbPage', () => {
         items = [{ ...items[0]!, ...body }];
         return jsonResponse(200, { menuItem: items[0] });
       }
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -112,6 +124,7 @@ describe('FnbPage', () => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: restaurantStaffUser });
       if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: [sisig] });
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -121,5 +134,80 @@ describe('FnbPage', () => {
     await waitFor(() => expect(screen.getByText('Sisig')).toBeInTheDocument());
     expect(screen.queryByText('Add a menu item')).not.toBeInTheDocument();
     expect(screen.queryByText('Mark unavailable')).not.toBeInTheDocument();
+  });
+
+  it('drives an order through place -> start preparing -> mark ready -> mark served', async () => {
+    const user = userEvent.setup();
+    let fnbOrders: Record<string, unknown>[] = [];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: fullAccessUser });
+      if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: [sisig] });
+      if (url.endsWith('/units/orderable')) {
+        return jsonResponse(200, { units: [{ id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' }] });
+      }
+      if (url.includes('/fnb-orders') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { fnbOrders });
+      }
+      if (url.endsWith('/fnb-orders') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toMatchObject({ type: 'DINE_IN', settlement: 'PAY_NOW', lines: [{ menuItemId: 'menu_1', qty: 2 }] });
+        const created = {
+          id: 'order_1',
+          referenceNo: 'FB-260824-0001',
+          unit: null,
+          guestName: null,
+          type: 'DINE_IN',
+          scheduledFor: null,
+          settlement: 'PAY_NOW',
+          status: 'RECEIVED',
+          subtotal: 500,
+          notes: null,
+          createdAt: new Date().toISOString(),
+          createdBy: { fullName: 'Restaurant Manager (Demo)' },
+          lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } }],
+        };
+        fnbOrders = [created];
+        return jsonResponse(201, { fnbOrder: created });
+      }
+      if (url.match(/\/fnb-orders\/order_1\/status$/) && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        const current = fnbOrders[0] as Record<string, unknown>;
+        const updated = { ...current, status: body.toStatus };
+        fnbOrders = [updated];
+        return jsonResponse(200, { fnbOrder: updated });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Restaurant' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Sisig').length).toBeGreaterThan(0));
+
+    await user.selectOptions(screen.getByRole('combobox', { name: /^Type$/ }), 'DINE_IN');
+    // Select the menu item on the order line (the only <select> without an
+    // accessible name is the line's own menu-item picker).
+    const lineSelect = screen.getAllByRole('combobox').find((el) => el.textContent?.includes('Select an item'));
+    await user.selectOptions(lineSelect!, 'menu_1');
+    const qtyInput = screen.getAllByRole('spinbutton').find((el) => (el as HTMLInputElement).value === '1')!;
+    await user.clear(qtyInput);
+    await user.type(qtyInput, '2');
+    await user.click(screen.getByRole('button', { name: 'Place order' }));
+
+    await waitFor(() => expect(screen.getByText('FB-260824-0001')).toBeInTheDocument());
+    expect(screen.getByText('Received (1)')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Start preparing' }));
+    await waitFor(() => expect(screen.getByText('Preparing (1)')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Mark ready' }));
+    await waitFor(() => expect(screen.getByText('Ready (1)')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Mark served' }));
+    // SERVED drops off the active board — none of the three columns show it anymore.
+    await waitFor(() => expect(screen.queryByText('FB-260824-0001')).not.toBeInTheDocument());
   });
 });
