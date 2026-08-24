@@ -18,9 +18,13 @@ export const PERMISSION_KEYS = [
   // a code change — seeded to SYSTEM_ADMIN only for now.
   'unit:force_status',
   'unittype:manage',
-  'booking:read',
-  'booking:create',
-  'booking:update',
+  // booking:read/booking:create/booking:update removed 2026-08-24: this
+  // app no longer creates or manages reservations (redesign, client
+  // decision) — booking:create's only route/nav item is gone,
+  // booking:read's only two routes (search, get-by-id) are gone, and
+  // booking:update was never wired to any endpoint even before this
+  // change. booking:checkin/booking:checkout stay — check-in now
+  // creates the Booking row directly, and checkout still flips it.
   'booking:checkin',
   'booking:checkout',
   'payment:read',

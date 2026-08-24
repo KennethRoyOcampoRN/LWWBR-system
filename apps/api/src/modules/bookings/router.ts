@@ -1,93 +1,68 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import { requirePermission } from '../auth/requirePermission.js';
-import { checkInBookingSchema, checkOutBookingSchema, createBookingSchema, searchBookingsQuerySchema } from './schema.js';
-import {
-  checkInBooking,
-  checkOutBooking,
-  createBooking,
-  getBooking,
-  listUpcomingBookingsForUnit,
-  searchBookings,
-} from './service.js';
+import { bookingGroupQuerySchema, checkInBookingSchema, checkOutBookingSchema } from './schema.js';
+import { checkInBooking, checkOutUnits, findOccupiedUnitsForReferenceNo, listUpcomingBookingsForUnit } from './service.js';
 
 export const bookingsRouter = Router();
 
-// First M4 slice, spec §6/§7.5: booking creation with real availability
-// checking. requirePermission already loaded req.authUser fresh from the
-// database — reused here rather than a second getMe() call, same
-// pattern as every other create route in this codebase.
+// Redesign, 2026-08-24 (client decision, live-testing feedback): "this
+// app's job is monitoring the resort's current, live state, not
+// managing reservations." POST /bookings (creation), GET /bookings
+// (search), and GET /bookings/:id are gone — every guest already has a
+// real booking on the resort's external booking website before
+// arriving, so there's no reservation to create ahead of time and
+// nothing to search for before it exists in this app. Check-in below is
+// now the only way a Booking row ever gets created.
 bookingsRouter.post(
-  '/bookings',
-  requirePermission('booking:create'),
+  '/bookings/checkin',
+  requirePermission('booking:checkin'),
   asyncHandler(async (req, res) => {
-    const body = createBookingSchema.parse(req.body);
-    const booking = await createBooking(body, req.authUser!);
+    const body = checkInBookingSchema.parse(req.body);
+    const booking = await checkInBooking(body, req.authUser!);
     res.status(201).json({ booking });
   }),
 );
 
-// Powers the "guest name lookup" half of check-in. No route-ordering
-// concern with GET /bookings/:id below — `search` is a query param, not
-// a path segment, so there's no :id-swallowing risk like the
-// /work-orders/assignable-users case earlier this session.
+// Checklist checkout, redesign 2026-08-24: "show a checklist of all
+// rooms tied to that same Booking ID... let the user check/uncheck any
+// combination." This endpoint builds that checklist — every unit
+// currently Occupied under a CHECKED_IN booking sharing `referenceNo`,
+// which the client pre-checks the unit it was opened from and lets the
+// front desk adjust before calling POST /bookings/checkout.
 bookingsRouter.get(
-  '/bookings',
-  requirePermission('booking:read'),
+  '/bookings/group',
+  requirePermission('booking:checkout'),
   asyncHandler(async (req, res) => {
-    const query = searchBookingsQuerySchema.parse(req.query);
-    const bookings = await searchBookings(query.search);
-    res.status(200).json({ bookings });
-  }),
-);
-
-// `:id` accepts either the cuid or the human-readable referenceNo — see
-// findBookingWithUnits's own doc comment in service.ts.
-bookingsRouter.get(
-  '/bookings/:id',
-  requirePermission('booking:read'),
-  asyncHandler(async (req, res) => {
-    const booking = await getBooking(req.params.id as string);
-    res.status(200).json({ booking });
-  }),
-);
-
-// Urgent gap, 2026-08-23: "with check-in not yet built, there's
-// currently no way to process this guest's arrival at all." Single
-// static permission (booking:checkin) rather than the dynamic
-// getMe()-derived pattern the work-order status endpoint uses — unlike
-// that endpoint, check-in has exactly one possible permission
-// regardless of which of the two allowed `from` statuses (PENDING/
-// CONFIRMED) applies, so there's nothing to derive.
-bookingsRouter.post(
-  '/bookings/:id/checkin',
-  requirePermission('booking:checkin'),
-  asyncHandler(async (req, res) => {
-    const body = checkInBookingSchema.parse(req.body);
-    const booking = await checkInBooking(req.params.id as string, body, req.authUser!);
-    res.status(200).json({ booking });
+    const query = bookingGroupQuerySchema.parse(req.query);
+    const units = await findOccupiedUnitsForReferenceNo(query.referenceNo);
+    res.status(200).json({ units });
   }),
 );
 
 // "Build checkout as a simple, permanent status flip... unconditional."
+// `unitIds` is the confirmed checklist result — see checkOutUnits's own
+// comment in service.ts for how a checkout call can finalize more than
+// one Booking row at once (a group checked in across waves under one
+// external ID) while leaving a partially-cleared row at CHECKED_IN.
 bookingsRouter.post(
-  '/bookings/:id/checkout',
+  '/bookings/checkout',
   requirePermission('booking:checkout'),
   asyncHandler(async (req, res) => {
     const body = checkOutBookingSchema.parse(req.body);
-    const booking = await checkOutBooking(req.params.id as string, body, req.authUser!);
-    res.status(200).json({ booking });
+    const result = await checkOutUnits(body.unitIds, body, req.authUser!);
+    res.status(200).json(result);
   }),
 );
 
-// Gated on unit:read, not booking:read — this is fundamentally "does
-// this unit have a reservation," the same kind of unit-level fact the
-// units module's own /units/:id/timeline already answers, not a
-// booking-resource read. A Room Attendant (HOUSEKEEPING_STAFF) who
-// holds unit:read but never booking:read still needs to see this — real
-// gap found live-testing: "a cashier or housekeeper looking at the
-// Units page has no way to know a room has an upcoming booking at all."
-// Lives on the bookings router (not units/router.ts) since it queries
+// Gated on unit:read, not a booking permission — this is fundamentally
+// "does this unit have a reservation," the same kind of unit-level fact
+// the units module's own /units/:id/timeline already answers. A Room
+// Attendant (HOUSEKEEPING_STAFF) who holds unit:read but never
+// booking:checkin/booking:checkout still needs to see this — real gap
+// found live-testing: "a cashier or housekeeper looking at the Units
+// page has no way to know a room has an upcoming booking at all." Lives
+// on the bookings router (not units/router.ts) since it queries
 // Booking/BookingUnit, which this module owns — mounted at a /units/...
 // path is fine, Express doesn't care which router file declares a path.
 bookingsRouter.get(

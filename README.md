@@ -2579,3 +2579,119 @@ against a mocked API: "Check out" on an Occupied unit's CHECKED_IN,
 `npx prisma db push` needed before the client's live test, unlike the
 previous one. **Not yet live-tested against the real Supabase
 database.**
+
+### Architectural pivot: no more internal reservations — Check-in creates the Booking record directly, Bookings page removed (2026-08-24)
+
+Client decision, live-testing feedback, three parts. Verbatim framing:
+"this app's job is monitoring the resort's current, live state, not
+managing reservations... every guest, including walk-ins, is already
+logged on the resort's separate booking website first and always
+arrives with a real external booking ID — there is no scenario where a
+reservation needs to be created inside this app."
+
+**Check-in is now a quick-action on the Units page**, gated on
+`booking:checkin`, below the grid — a `CheckInPanel` component in
+`UnitsPage.tsx`. Deliberately just four fields: guest name, Booking ID
+(free text, capturing the *external* site's reference, not something
+this app generates), check-in date, and a room checklist (same
+live-status-aware picker the old "New booking" form used). A selected
+room that isn't `READY` shows the same warn-not-block pattern already
+built (`409 UNIT_NOT_READY` → "Check in anyway"). On confirm, the
+room(s) move to `OCCUPIED` via the existing automatic transition, logged
+through the same `UnitStatusEvent`/audit trail every other status change
+uses — `fromStatus` shows the room's real prior state (e.g. `DIRTY`),
+not a fabricated one.
+
+**The Bookings page is gone entirely** — both "New booking" and "Find a
+booking." So is its nav item. Walked through what that touched rather
+than just hiding the route:
+
+- `POST /bookings` (creation), `GET /bookings` (search), and
+  `GET /bookings/:id` are deleted, along with the availability engine
+  that backed creation — `windowsConflict`, `resolveBookingWindow`,
+  `getBookingWindowSettings`, and the four `booking.*` Settings that fed
+  it (no longer seeded; not retroactively deleted from an already-seeded
+  database, since nothing reads them anymore either way).
+- `booking:create` and `booking:read` are removed from
+  `packages/shared/src/permissions.ts` and every role grant — their only
+  routes are gone. `booking:update` is removed too: grep confirmed it
+  was *never* wired to any endpoint, even before this change.
+  `booking:checkin`/`booking:checkout` stay (check-in now creates the
+  row directly; checkout still flips it).
+- The `Booking`/`BookingUnit` models themselves are **not** dead — kept
+  and reused, not replaced with a separate lightweight record. They're
+  the join point `FolioCharge`, `Payment`, `WorkOrder`, `AmenityRequest`,
+  `FnbOrder`, and `Incident` all already hang off via `bookingId` for
+  future milestones, and `BookingUnit` already models "which rooms
+  belong together" — exactly what the multi-room checkout grouping below
+  needs. A separate model would have fragmented that.
+
+**Data model tradeoff, flagged and resolved with the client before
+building** (both confirmed via `AskUserQuestion`, not decided silently):
+
+1. Several columns Check-in never collects (`pax`, `departureDate`,
+   `endAt`, `totalAmount`, `BookingUnit.rate`) went nullable rather than
+   holding a fabricated placeholder. `endAt` is filled in with the
+   *actual* checkout moment once it happens — a real fact, not a planned
+   one — matching "record what actually happened," consistent with the
+   monitoring-not-transactions principle from the prior slice.
+2. `referenceNo` (holding the free-text external Booking ID) is no
+   longer `@unique`. A group can arrive in waves under the same external
+   ID across more than one check-in submission — each is its own Booking
+   row, matched back together by string equality, not by a single row's
+   id. Indexed instead (`@@index([referenceNo])`) for lookup speed.
+
+**Multi-room checkout became a checklist**, not last slice's binary
+"just this room / all rooms" prompt. New endpoint
+`GET /bookings/group?referenceNo=` returns every currently-Occupied unit
+sharing a booking's external ID — potentially spanning more than one
+Booking row now that referenceNo isn't unique. The drawer pre-checks the
+room it was opened from; the front desk can check/uncheck any
+combination before confirming. `POST /bookings/checkout` now takes
+`unitIds: string[]` directly instead of a single booking id — each
+requested unit is validated (Occupied, under a `CHECKED_IN` booking)
+before anything is written, then grouped by its *own* Booking row: a row
+only finalizes to `CHECKED_OUT` (and only then gets its `CheckOutRecord`)
+once every one of its own units has cleared, so one call can finalize
+multiple Booking rows independently, or none at all.
+
+**The still-missing spec §7.1 auto-ticket, found while touching this
+code again, wired up:** confirmed checkout's `OCCUPIED -> VACANT_DIRTY`
+never actually called `createWorkOrder`, despite the transition itself
+working since the original check-in slice. Added inside
+`applyAutomaticUnitStatusChange` (`units/service.ts`), firing on every
+`VACANT_DIRTY` transition regardless of caller (single-room, multi-room,
+any Booking row) — an untitled-but-titled "Post-checkout cleaning —
+{unit.code}" `HOUSEKEEPING` ticket, `NORMAL` priority, no photo required
+(`HOUSEKEEPING`'s own `onCreate` requirement is empty), best-effort like
+the realtime broadcast beside it (a failure there is logged, never fails
+the checkout). Second cross-module import in this codebase (units ->
+workorders), same justification as the first (bookings -> units): ticket
+lifecycle is owned there.
+
+34 backend tests rewritten/added covering: check-in creating the Booking
+row directly (single- and multi-room, hard blocks, the not-Ready
+warning/acknowledge round trip, no ticket on check-in); the group
+checklist query's own where-clause; checkout validating and grouping by
+owning Booking row across a single row, a multi-unit row, and — the new
+case — two *different* rows sharing one referenceNo (only the row that
+actually clears finalizes); the housekeeping ticket assertion and its
+best-effort failure path; the nullable-`endAt` fix to
+`listUpcomingBookingsForUnit`'s own filter (a plain `endAt >= now` would
+have silently dropped every currently-occupied guest with no known
+departure — caught while making `endAt` nullable, not by a report).
+5 new frontend tests replacing the old Bookings-page ones: permission-
+gated visibility of both the Check-in panel and the drawer's Check-out
+button, a direct check-in, the not-Ready warning from the panel, and
+both checklist shapes (single-room auto-confirm, multi-room with a
+toggle). Re-verified live in a real headless browser: the Bookings nav
+item is gone, and the Check-in panel completes a real check-in end to
+end against a mocked API.
+
+`packages/shared` 55/55; `apps/api` 223/226 (same 3 pre-existing
+network-blocked round-trip tests); `apps/web` 32/32. Full repo
+lint/typecheck/build clean. **Schema change this slice** — `referenceNo`
+losing `@unique`, and `pax`/`departureDate`/`endAt`/`totalAmount`/
+`BookingUnit.rate` going nullable — run `npx prisma db push` before the
+client's live test. **Not yet live-tested against the real Supabase
+database.**

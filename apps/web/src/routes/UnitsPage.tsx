@@ -5,7 +5,7 @@ import {
   type AnyUnitStatusKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
@@ -60,11 +60,19 @@ interface UpcomingBooking {
   type: 'OVERNIGHT' | 'DAY_TOUR';
   status: string;
   startAt: string;
-  endAt: string;
-  // Redesign, 2026-08-24: powers the check-out prompt below — "check out
-  // just this room, or all rooms under this booking?" only asked when
-  // this booking actually spans more than one unit.
-  unitCount: number;
+  // Nullable, redesign 2026-08-24: Check-in never collects a departure
+  // date, so a currently-CHECKED_IN stay has no known end until the
+  // actual checkout moment fills this in.
+  endAt: string | null;
+}
+
+// The checkout checklist's own row shape — GET /bookings/group?referenceNo=.
+interface CheckOutCandidateUnit {
+  unitId: string;
+  code: string;
+  name: string;
+  bookingId: string;
+  guestName: string;
 }
 
 interface TimelineEvent {
@@ -109,20 +117,19 @@ function UnitDetailDrawer({
   const [forcing, setForcing] = useState(false);
   const [forceError, setForceError] = useState<string | null>(null);
 
-  // Redesign, 2026-08-24 (live-testing feedback): "day-to-day check-in/
-  // check-out moves to where staff are already looking: the Unit
-  // drawer." checkInSubmittingId/checkOutSubmittingId are keyed by
-  // booking id, not a single boolean — the Bookings list below can show
-  // more than one row, each with its own action in flight independently.
-  const [checkInSubmittingId, setCheckInSubmittingId] = useState<string | null>(null);
-  const [checkInWarning, setCheckInWarning] = useState<{ bookingId: string; unitCode: string; unitStatus: string } | null>(null);
-  const [checkInError, setCheckInError] = useState<string | null>(null);
-  // Multi-room checkout: "checking out from any one of those units
-  // should ask: check out just this room, or all rooms under this
-  // booking?" Only set (and only shown) for a booking whose unitCount > 1
-  // — a single-unit booking's checkout never needs to ask.
-  const [checkOutPromptBookingId, setCheckOutPromptBookingId] = useState<string | null>(null);
-  const [checkOutSubmittingId, setCheckOutSubmittingId] = useState<string | null>(null);
+  // Redesign, 2026-08-24 (live-testing feedback): check-in is no longer
+  // an action performed *on* a row here — every guest already has a real
+  // external booking, so there's no pre-existing PENDING reservation to
+  // act on anymore. Check-in moved to its own panel below the grid (see
+  // CheckInPanel, at the bottom of this file). Check-out stays, now as a
+  // checklist rather than a binary prompt — "show a checklist of all
+  // rooms tied to that same Booking ID... let the user check/uncheck any
+  // combination," since a group's rooms can span more than one Booking
+  // row (checked in across waves under the same external ID).
+  const [checkOutChecklistBookingId, setCheckOutChecklistBookingId] = useState<string | null>(null);
+  const [checkOutChecklist, setCheckOutChecklist] = useState<CheckOutCandidateUnit[] | 'loading' | 'error'>('loading');
+  const [checkOutSelectedUnitIds, setCheckOutSelectedUnitIds] = useState<string[]>([]);
+  const [checkOutSubmitting, setCheckOutSubmitting] = useState(false);
   const [checkOutError, setCheckOutError] = useState<string | null>(null);
 
   // Refetches on unit.id (opening a different unit) AND unit.version
@@ -161,62 +168,48 @@ function UnitDetailDrawer({
     void fetchUpcomingBookings();
   }, [unit.id, unit.version, fetchUpcomingBookings]);
 
-  async function checkIn(booking: UpcomingBooking, acknowledgeNotReady = false) {
-    setCheckInSubmittingId(booking.id);
-    setCheckInError(null);
+  // Multi-room checkout as a checklist, client decision 2026-08-24: opens
+  // the checklist for whichever units currently share this booking's
+  // external ID and are still Occupied — pre-checks this drawer's own
+  // unit, since that's the room the front desk actually clicked "Check
+  // out" from.
+  async function openCheckOutChecklist(booking: UpcomingBooking) {
+    setCheckOutError(null);
+    setCheckOutChecklistBookingId(booking.id);
+    setCheckOutChecklist('loading');
     try {
-      await api.post(`/bookings/${booking.id}/checkin`, acknowledgeNotReady ? { acknowledgeNotReady: true } : {});
-      setCheckInWarning(null);
-      await fetchUpcomingBookings();
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.code === 'UNIT_NOT_READY') {
-        const details = err.details as { unitCode?: string; unitStatus?: string } | undefined;
-        setCheckInWarning({
-          bookingId: booking.id,
-          unitCode: details?.unitCode ?? 'The unit',
-          unitStatus: details?.unitStatus ?? 'not ready',
-        });
-      } else if (err instanceof ApiRequestError && err.code === 'UNIT_UNAVAILABLE') {
-        setCheckInError(err.message);
-      } else {
-        setCheckInError(err instanceof ApiRequestError ? err.message : 'Could not check in this booking.');
-      }
-    } finally {
-      setCheckInSubmittingId(null);
+      const res = await api.get<{ units: CheckOutCandidateUnit[] }>(
+        `/bookings/group?referenceNo=${encodeURIComponent(booking.referenceNo)}`,
+      );
+      setCheckOutChecklist(res.units);
+      setCheckOutSelectedUnitIds(res.units.some((u) => u.unitId === unit.id) ? [unit.id] : []);
+    } catch {
+      setCheckOutChecklist('error');
     }
   }
 
-  // `scope: 'unit'` sends this drawer's own unit id — "check out just
-  // this room," leaving every other unit under the booking Occupied.
-  // `scope: 'all'` omits unitId entirely — every unit still Occupied
-  // under the booking checks out together. A single-unit booking's
-  // checkout always uses 'all': same request either way, but no prompt
-  // was ever shown for it, so there's no meaningful "just this room" to
-  // distinguish.
-  async function checkOut(booking: UpcomingBooking, scope: 'unit' | 'all') {
-    setCheckOutSubmittingId(booking.id);
-    setCheckOutError(null);
-    try {
-      await api.post(`/bookings/${booking.id}/checkout`, scope === 'unit' ? { unitId: unit.id } : {});
-      setCheckOutPromptBookingId(null);
-      await fetchUpcomingBookings();
-    } catch (err) {
-      setCheckOutError(err instanceof ApiRequestError ? err.message : 'Could not check out this booking.');
-    } finally {
-      setCheckOutSubmittingId(null);
-    }
+  function toggleCheckOutUnit(unitId: string) {
+    setCheckOutSelectedUnitIds((prev) => (prev.includes(unitId) ? prev.filter((id) => id !== unitId) : [...prev, unitId]));
   }
 
-  // Multi-room checkout, client decision 2026-08-24: "if a booking spans
-  // multiple units, checking out from any one of those units should ask:
-  // check out just this room, or all rooms under this booking?" Only
-  // asks when there's an actual choice to make.
-  function initiateCheckOut(booking: UpcomingBooking) {
+  function cancelCheckOutChecklist() {
+    setCheckOutChecklistBookingId(null);
+    setCheckOutSelectedUnitIds([]);
     setCheckOutError(null);
-    if (booking.unitCount > 1) {
-      setCheckOutPromptBookingId(booking.id);
-    } else {
-      void checkOut(booking, 'all');
+  }
+
+  async function confirmCheckOut() {
+    setCheckOutSubmitting(true);
+    setCheckOutError(null);
+    try {
+      await api.post('/bookings/checkout', { unitIds: checkOutSelectedUnitIds });
+      setCheckOutChecklistBookingId(null);
+      setCheckOutSelectedUnitIds([]);
+      await fetchUpcomingBookings();
+    } catch (err) {
+      setCheckOutError(err instanceof ApiRequestError ? err.message : 'Could not check out these rooms.');
+    } finally {
+      setCheckOutSubmitting(false);
     }
   }
 
@@ -319,99 +312,90 @@ function UnitDetailDrawer({
         {Array.isArray(upcomingBookings) && upcomingBookings.length > 0 && (
           <ul className="flex flex-col gap-2">
             {upcomingBookings.map((booking) => {
-              // Redesign, 2026-08-24: "A room with a current-day booking
-              // attached... should offer a direct 'Check in' action right
-              // there." Gated on the permission (spec §5.4's own row —
-              // narrowed to RESORT_MANAGER/ADMIN_HEAD/ADMIN_STAFF by
-              // client decision, 2026-08-24) the same way the Verify
-              // button is hidden from a cross-department POC: a role
-              // without the permission simply never sees the button, not
-              // a disabled one.
-              const canCheckIn =
-                Boolean(user?.permissions['booking:checkin']) && (booking.status === 'PENDING' || booking.status === 'CONFIRMED');
+              // Redesign, 2026-08-24: check-in is gone from this list —
+              // every guest already has a real external booking, so
+              // there's never a pre-existing PENDING row to act on here
+              // anymore (see CheckInPanel below the grid instead). Only
+              // checkout remains a row-level action, gated on the
+              // permission the same way the Verify button is hidden from
+              // a cross-department POC.
               const canCheckOut = Boolean(user?.permissions['booking:checkout']) && booking.status === 'CHECKED_IN';
-              const isCheckingIn = checkInSubmittingId === booking.id;
-              const isCheckingOut = checkOutSubmittingId === booking.id;
-              const showNotReadyWarning = checkInWarning?.bookingId === booking.id;
-              const showCheckOutPrompt = checkOutPromptBookingId === booking.id;
+              const showChecklist = checkOutChecklistBookingId === booking.id;
               return (
                 <li key={booking.id} className="flex flex-col gap-1 text-sm">
                   <div>
                     Booked: {booking.guestName},{' '}
-                    {new Date(booking.startAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })} –{' '}
-                    {new Date(booking.endAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}, ref{' '}
-                    {booking.referenceNo}
+                    {new Date(booking.startAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
+                    {booking.endAt
+                      ? ` – ${new Date(booking.endAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`
+                      : ''}
+                    , ref {booking.referenceNo}
                     <span className="ml-1 text-xs text-gray-500">
                       ({BOOKING_TYPE_LABELS[booking.type]})
                     </span>
                   </div>
 
-                  {showNotReadyWarning && checkInWarning && (
-                    <div role="alert" className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
-                      <p>
-                        {checkInWarning.unitCode} is not Ready yet (currently{' '}
-                        {UNIT_STATUS_LABELS[checkInWarning.unitStatus as AnyUnitStatusKey] ?? checkInWarning.unitStatus}). Spec §7.5:
-                        real check-ins happen while the room is still being finished — this is a warning, not a hard block.
-                      </p>
-                      <button
-                        onClick={() => void checkIn(booking, true)}
-                        disabled={isCheckingIn}
-                        className="w-fit rounded border border-amber-600 bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900 disabled:opacity-50"
-                      >
-                        {isCheckingIn ? 'Checking in…' : 'Check in anyway'}
-                      </button>
-                    </div>
-                  )}
-
-                  {canCheckIn && !showNotReadyWarning && (
+                  {canCheckOut && !showChecklist && (
                     <button
-                      onClick={() => void checkIn(booking)}
-                      disabled={isCheckingIn}
+                      onClick={() => void openCheckOutChecklist(booking)}
                       className="w-fit rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
                     >
-                      {isCheckingIn ? 'Checking in…' : 'Check in'}
+                      Check out
                     </button>
                   )}
 
-                  {/* Multi-room checkout, client decision 2026-08-24:
-                      "checking out from any one of those units should
-                      ask: check out just this room, or all rooms under
-                      this booking?" Only asked when unitCount > 1 —
-                      initiateCheckOut() checks out directly otherwise. */}
-                  {canCheckOut && !showCheckOutPrompt && (
-                    <button
-                      onClick={() => initiateCheckOut(booking)}
-                      disabled={isCheckingOut}
-                      className="w-fit rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                    >
-                      {isCheckingOut ? 'Checking out…' : 'Check out'}
-                    </button>
-                  )}
-
-                  {showCheckOutPrompt && (
+                  {/* Checklist checkout, client decision 2026-08-24: "show
+                      a checklist of all rooms tied to that same Booking
+                      ID... let the user check/uncheck any combination."
+                      Pre-checks this drawer's own unit; can span more
+                      than one Booking row (a group checked in across
+                      waves under the same external ID) since it's built
+                      from GET /bookings/group, not this one row alone. */}
+                  {showChecklist && (
                     <div className="flex flex-col gap-2 rounded border border-blue-300 bg-blue-50 p-2 text-xs text-blue-900">
-                      <p>
-                        This booking includes {booking.unitCount} rooms — check out just this room, or all rooms
-                        under this booking?
-                      </p>
+                      {checkOutChecklist === 'loading' && <p>Loading rooms…</p>}
+                      {checkOutChecklist === 'error' && (
+                        <p role="alert" className="text-red-700">
+                          Could not load the rooms for this booking.
+                        </p>
+                      )}
+                      {Array.isArray(checkOutChecklist) && (
+                        <>
+                          <p className="font-medium">
+                            {checkOutChecklist.length > 1
+                              ? `${checkOutChecklist.length} rooms are on Booking ID ${booking.referenceNo} — pick which to check out:`
+                              : 'Confirm check-out:'}
+                          </p>
+                          <ul className="flex flex-col gap-1">
+                            {checkOutChecklist.map((candidate) => (
+                              <li key={candidate.unitId}>
+                                <label className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={checkOutSelectedUnitIds.includes(candidate.unitId)}
+                                    onChange={() => toggleCheckOutUnit(candidate.unitId)}
+                                  />
+                                  {candidate.code} — {candidate.name}
+                                  {candidate.guestName !== booking.guestName ? ` (${candidate.guestName})` : ''}
+                                </label>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
                       <div className="flex flex-wrap gap-2">
                         <button
-                          onClick={() => void checkOut(booking, 'unit')}
-                          disabled={isCheckingOut}
-                          className="rounded border border-blue-600 bg-white px-2 py-1 font-medium text-blue-900 disabled:opacity-50"
-                        >
-                          {isCheckingOut ? 'Checking out…' : 'Just this room'}
-                        </button>
-                        <button
-                          onClick={() => void checkOut(booking, 'all')}
-                          disabled={isCheckingOut}
+                          onClick={() => void confirmCheckOut()}
+                          disabled={checkOutSubmitting || checkOutSelectedUnitIds.length === 0}
                           className="rounded bg-blue-600 px-2 py-1 font-medium text-white disabled:opacity-50"
                         >
-                          {isCheckingOut ? 'Checking out…' : `All ${booking.unitCount} rooms`}
+                          {checkOutSubmitting
+                            ? 'Checking out…'
+                            : `Check out ${checkOutSelectedUnitIds.length || ''} room${checkOutSelectedUnitIds.length === 1 ? '' : 's'}`}
                         </button>
                         <button
-                          onClick={() => setCheckOutPromptBookingId(null)}
-                          disabled={isCheckingOut}
+                          onClick={cancelCheckOutChecklist}
+                          disabled={checkOutSubmitting}
                           className="text-blue-700 hover:underline disabled:opacity-50"
                         >
                           Cancel
@@ -423,11 +407,6 @@ function UnitDetailDrawer({
               );
             })}
           </ul>
-        )}
-        {checkInError && (
-          <p role="alert" className="text-xs text-red-600">
-            {checkInError}
-          </p>
         )}
         {checkOutError && (
           <p role="alert" className="text-xs text-red-600">
@@ -464,9 +443,9 @@ function UnitDetailDrawer({
         <div className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-3">
           <p className="text-sm font-medium text-amber-900">Admin override</p>
           <p className="text-xs text-amber-800">
-            These transitions normally happen automatically (booking check-in / check-out) — no
-            booking module exists yet, so this is a manual stopgap. Every use is audited distinctly.
-            Prefer waiting for the real flow once M4 lands.
+            These transitions normally happen automatically via check-in/check-out — this is a
+            manual stopgap for when that real flow can't be used (stale data, testing). Every use is
+            audited distinctly. Prefer the real check-in/check-out flow when it's available.
           </p>
           <div className="flex flex-wrap gap-2">
             {overrideNext.map((status) => (
@@ -558,7 +537,195 @@ function UnitDetailDrawer({
   );
 }
 
+// Spec §7.5: "A unit that is OUT_OF_ORDER or BLOCKED cannot be assigned
+// at all" — pre-filtered client-side so the front desk never even tries
+// to pick one, though the server enforces the same rule regardless.
+// Reused from the old "New booking" form's own picker — same live-
+// status-aware checklist, just without the rate/pricing fields.
+function isBookable(unit: UnitRow): boolean {
+  return unit.isActive && unit.status !== 'OUT_OF_ORDER' && unit.status !== 'BLOCKED';
+}
+
+// "YYYY-MM-DD" for today in Asia/Manila, as a default for the date
+// picker — 'en-CA' formats a plain date as ISO order, no locale parsing
+// needed to build the string back up.
+function todayInManila(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+}
+
+// New feature, 2026-08-24 (client decision, live-testing feedback):
+// "this app's job is monitoring the resort's current, live state, not
+// managing reservations... every guest ... already arrives with a real
+// external booking ID." Replaces the old Bookings-page reservation form
+// entirely — this both creates the Booking record and moves the
+// selected room(s) to OCCUPIED in one action, deliberately just the four
+// fields asked for. Gated on booking:checkin by the caller (UnitsPage
+// below), same as every other permission-gated panel in this app.
+function CheckInPanel({ units, onCheckedIn }: { units: UnitRow[]; onCheckedIn: () => void }) {
+  const [guestName, setGuestName] = useState('');
+  const [externalBookingId, setExternalBookingId] = useState('');
+  const [checkInDate, setCheckInDate] = useState(todayInManila);
+  const [selectedUnitIds, setSelectedUnitIds] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [notReadyWarning, setNotReadyWarning] = useState<{ unitCode: string; unitStatus: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  function toggleUnit(id: string) {
+    setSelectedUnitIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function submit(acknowledgeNotReady: boolean) {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.post('/bookings/checkin', {
+        guestName: guestName.trim(),
+        externalBookingId: externalBookingId.trim(),
+        checkInDate,
+        units: selectedUnitIds.map((unitId) => ({ unitId })),
+        acknowledgeNotReady,
+      });
+      setSuccess(`${guestName.trim()} checked in — Booking ID ${externalBookingId.trim()}.`);
+      setNotReadyWarning(null);
+      setGuestName('');
+      setExternalBookingId('');
+      setCheckInDate(todayInManila());
+      setSelectedUnitIds([]);
+      onCheckedIn();
+    } catch (err) {
+      // Spec §7.5: "A unit that simply isn't READY yet at check-in raises
+      // a warning the front desk acknowledges rather than a hard block."
+      // First attempt omits acknowledgeNotReady; a 409 UNIT_NOT_READY
+      // shows the warning, and "Check in anyway" resubmits with it true.
+      if (err instanceof ApiRequestError && err.code === 'UNIT_NOT_READY') {
+        const details = err.details as { unitCode?: string; unitStatus?: string } | undefined;
+        setNotReadyWarning({ unitCode: details?.unitCode ?? 'The unit', unitStatus: details?.unitStatus ?? 'not ready' });
+      } else {
+        setError(err instanceof ApiRequestError ? err.message : 'Could not check in this guest.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (selectedUnitIds.length === 0) {
+      setError('Select at least one room.');
+      return;
+    }
+    await submit(false);
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded border border-blue-300 bg-blue-50 p-4">
+      <h2 className="text-sm font-semibold">Check-in</h2>
+      <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <label className="flex flex-col gap-1 text-sm">
+            Guest name
+            <input
+              required
+              className="rounded border border-gray-300 px-2 py-1"
+              value={guestName}
+              onChange={(e) => setGuestName(e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Booking ID
+            <input
+              required
+              className="rounded border border-gray-300 px-2 py-1"
+              value={externalBookingId}
+              onChange={(e) => setExternalBookingId(e.target.value)}
+              placeholder="from the resort's booking website"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Check-in date
+            <input
+              required
+              type="date"
+              className="rounded border border-gray-300 px-2 py-1"
+              value={checkInDate}
+              onChange={(e) => setCheckInDate(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="flex flex-col gap-2 rounded border border-gray-200 bg-white p-3">
+          <p className="text-sm font-medium">
+            Rooms
+            <span className="ml-1 text-xs font-normal text-gray-500">
+              (out-of-order/blocked rooms are shown but cannot be selected)
+            </span>
+          </p>
+          <ul className="flex flex-col gap-1">
+            {units.map((unit) => {
+              const bookable = isBookable(unit);
+              const checked = selectedUnitIds.includes(unit.id);
+              return (
+                <li key={unit.id} className="flex flex-wrap items-center gap-2 text-sm">
+                  <label className={`flex items-center gap-2 ${bookable ? '' : 'opacity-50'}`}>
+                    <input type="checkbox" disabled={!bookable} checked={checked} onChange={() => toggleUnit(unit.id)} />
+                    {unit.code} — {unit.name}
+                  </label>
+                  <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${UNIT_STATUS_CLASSES[unit.status]}`}>
+                    {UNIT_STATUS_LABELS[unit.status]}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        {notReadyWarning && (
+          <div role="alert" className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+            <p>
+              {notReadyWarning.unitCode} is not Ready yet (currently{' '}
+              {UNIT_STATUS_LABELS[notReadyWarning.unitStatus as AnyUnitStatusKey] ?? notReadyWarning.unitStatus}). Spec §7.5:
+              real check-ins happen while the room is still being finished — this is a warning, not a hard block.
+            </p>
+            <button
+              onClick={() => void submit(true)}
+              disabled={submitting}
+              className="w-fit rounded border border-amber-600 bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-900 disabled:opacity-50"
+            >
+              {submitting ? 'Checking in…' : 'Check in anyway'}
+            </button>
+          </div>
+        )}
+
+        {error && (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        )}
+        {success && (
+          <p role="status" className="text-sm font-medium text-green-800">
+            {success}
+          </p>
+        )}
+
+        {!notReadyWarning && (
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-fit rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {submitting ? 'Checking in…' : 'Check in'}
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}
+
 export function UnitsPage() {
+  const { user } = useAuth();
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
   const [unitTypes, setUnitTypes] = useState<UnitTypeRow[]>([]);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
@@ -682,6 +849,14 @@ export function UnitsPage() {
             </button>
           ))}
         </div>
+      )}
+
+      {/* New feature, 2026-08-24: check-in as a quick-action below the
+          grid, gated on booking:checkin — same pattern as the Verify
+          button being hidden from a cross-department POC, so roles
+          without it (housekeeping, maintenance) see no clutter. */}
+      {Boolean(user?.permissions['booking:checkin']) && Array.isArray(units) && (
+        <CheckInPanel units={units} onCheckedIn={() => void fetchUnits()} />
       )}
 
       {selectedUnit && (

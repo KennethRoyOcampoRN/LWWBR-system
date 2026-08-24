@@ -686,14 +686,14 @@ describe('App', () => {
     expect(screen.getByText(/Room Attendant 1 \(Demo\)/i)).toBeInTheDocument();
   });
 
-  // Redesign, 2026-08-24 (live-testing feedback): check-in/check-out
-  // moved from a dedicated Bookings-page panel into the Unit drawer
-  // itself — "day-to-day check-in/check-out moves to where staff are
-  // already looking." Gated on booking:checkin/booking:checkout the same
-  // way the work order Verify button is hidden from a cross-department
-  // POC — see the "hides the check-in/check-out section entirely" test
-  // below for the negative case.
-  describe('check-in / check-out from the Unit drawer', () => {
+  // Redesign, 2026-08-24 (client decision, live-testing feedback): "this
+  // app's job is monitoring the resort's current, live state, not
+  // managing reservations... every guest already has a real booking ID."
+  // The old Bookings page is gone; check-in is now a quick-action panel
+  // below the Units grid, and check-out is a checklist in the Unit
+  // drawer. Both gated on booking:checkin/booking:checkout the same way
+  // the work order Verify button is hidden from a cross-department POC.
+  describe('Check-in panel and checklist check-out on the Units page', () => {
     const readyUnit = {
       id: 'unit_1',
       code: 'R01',
@@ -707,30 +707,30 @@ describe('App', () => {
       notes: null,
       isActive: true,
     };
-    const pendingBooking = {
+    const occupiedBooking = {
       id: 'booking_1',
-      referenceNo: 'LWW-260824-0001',
+      referenceNo: 'EXT-100',
       guestName: 'Arrival Guest',
       type: 'OVERNIGHT',
-      status: 'PENDING',
+      status: 'CHECKED_IN',
       startAt: '2026-08-24T06:00:00.000Z',
-      endAt: '2026-08-25T04:00:00.000Z',
-      unitCount: 1,
+      endAt: null,
     };
 
-    it('hides the check-in/check-out section entirely for a role without booking:checkin or booking:checkout', async () => {
+    it('hides both the Check-in panel and the drawer Check-out button for a role without either permission', async () => {
       const housekeepingUser = {
         ...currentUser,
         roles: ['HOUSEKEEPING_STAFF'],
         permissions: { 'unit:read': 'ALL', 'unit:update_status': 'ALL' },
       };
+      const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
-        if (url.endsWith('/units')) return jsonResponse(200, { units: [readyUnit] });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedUnit] });
         if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
         if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
-        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [pendingBooking] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [occupiedBooking] });
         return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -740,35 +740,34 @@ describe('App', () => {
       await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
       await userEvent.setup().click(screen.getByRole('link', { name: 'Units' }));
       await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
-      await userEvent.setup().click(screen.getByText('R01'));
 
+      expect(screen.queryByText('Check-in')).not.toBeInTheDocument();
+
+      await userEvent.setup().click(screen.getByText('R01'));
       expect(await screen.findByText(/Booked: Arrival Guest/)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Check in' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Check out' })).not.toBeInTheDocument();
     });
 
-    it('checks in directly from the drawer for a role with booking:checkin', async () => {
+    it('checks in a guest directly from the Check-in panel below the grid', async () => {
       const user = userEvent.setup();
       const adminStaffUser = {
         ...currentUser,
         roles: ['ADMIN_STAFF'],
         permissions: { 'unit:read': 'ALL', 'booking:checkin': 'ALL', 'booking:checkout': 'ALL' },
       };
-      let bookingsCallCount = 0;
+      let checkinBody: unknown = null;
+      let unitsCallCount = 0;
       const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
-        if (url.endsWith('/units')) return jsonResponse(200, { units: [readyUnit] });
-        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
-        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
-        if (url.endsWith('/units/unit_1/bookings')) {
-          bookingsCallCount += 1;
-          if (bookingsCallCount === 1) return jsonResponse(200, { bookings: [pendingBooking] });
-          return jsonResponse(200, { bookings: [{ ...pendingBooking, status: 'CHECKED_IN' }] });
+        if (url.endsWith('/units')) {
+          unitsCallCount += 1;
+          return jsonResponse(200, { units: [readyUnit] });
         }
-        if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
-          expect(JSON.parse(init.body as string)).toEqual({});
-          return jsonResponse(200, { booking: { ...pendingBooking, status: 'CHECKED_IN' } });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/bookings/checkin') && init?.method === 'POST') {
+          checkinBody = JSON.parse(init.body as string);
+          return jsonResponse(201, { booking: { id: 'booking_1', referenceNo: 'EXT-100', status: 'CHECKED_IN' } });
         }
         return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
       });
@@ -778,19 +777,28 @@ describe('App', () => {
 
       await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
       await user.click(screen.getByRole('link', { name: 'Units' }));
-      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
-      await user.click(screen.getByText('R01'));
+      await waitFor(() => expect(screen.getByText('Check-in')).toBeInTheDocument());
 
-      const checkInButton = await screen.findByRole('button', { name: 'Check in' });
-      await user.click(checkInButton);
+      await user.type(screen.getByLabelText('Guest name'), 'Arrival Guest');
+      await user.type(screen.getByLabelText('Booking ID'), 'EXT-100');
+      await user.click(screen.getByLabelText('R01 — Room 1'));
+      const callsBeforeSubmit = unitsCallCount;
+      await user.click(screen.getByRole('button', { name: 'Check in' }));
 
-      // The list refetches after a successful check-in — the booking now
-      // shows CHECKED_IN, so "Check in" is gone and "Check out" appears.
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Check out' })).toBeInTheDocument());
-      expect(screen.queryByRole('button', { name: 'Check in' })).not.toBeInTheDocument();
+      expect(await screen.findByText(/Arrival Guest checked in/)).toBeInTheDocument();
+      expect(checkinBody).toEqual(
+        expect.objectContaining({
+          guestName: 'Arrival Guest',
+          externalBookingId: 'EXT-100',
+          units: [{ unitId: 'unit_1' }],
+          acknowledgeNotReady: false,
+        }),
+      );
+      // Grid refetches after a successful check-in.
+      await waitFor(() => expect(unitsCallCount).toBeGreaterThan(callsBeforeSubmit));
     });
 
-    it('warns rather than hard-blocking check-in from a not-yet-Ready unit, then checks in on acknowledge', async () => {
+    it('warns rather than hard-blocking check-in from a not-yet-Ready room, then checks in on acknowledge', async () => {
       const user = userEvent.setup();
       const dirtyUnit = { ...readyUnit, status: 'VACANT_DIRTY' };
       const adminStaffUser = {
@@ -803,9 +811,7 @@ describe('App', () => {
         if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
         if (url.endsWith('/units')) return jsonResponse(200, { units: [dirtyUnit] });
         if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
-        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
-        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [pendingBooking] });
-        if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
+        if (url.endsWith('/bookings/checkin') && init?.method === 'POST') {
           const body = JSON.parse(init.body as string) as { acknowledgeNotReady?: boolean };
           if (!body.acknowledgeNotReady) {
             return jsonResponse(409, {
@@ -816,7 +822,7 @@ describe('App', () => {
               },
             });
           }
-          return jsonResponse(200, { booking: { ...pendingBooking, status: 'CHECKED_IN' } });
+          return jsonResponse(201, { booking: { id: 'booking_1', referenceNo: 'EXT-100', status: 'CHECKED_IN' } });
         }
         return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
       });
@@ -826,21 +832,22 @@ describe('App', () => {
 
       await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
       await user.click(screen.getByRole('link', { name: 'Units' }));
-      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
-      await user.click(screen.getByText('R01'));
+      await waitFor(() => expect(screen.getByText('Check-in')).toBeInTheDocument());
 
-      await user.click(await screen.findByRole('button', { name: 'Check in' }));
+      await user.type(screen.getByLabelText('Guest name'), 'Arrival Guest');
+      await user.type(screen.getByLabelText('Booking ID'), 'EXT-100');
+      await user.click(screen.getByLabelText('R01 — Room 1'));
+      await user.click(screen.getByRole('button', { name: 'Check in' }));
 
       expect(await screen.findByText(/R01 is not Ready yet/)).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: 'Check in anyway' }));
 
-      await waitFor(() => expect(screen.queryByText(/R01 is not Ready yet/)).not.toBeInTheDocument());
+      expect(await screen.findByText(/Arrival Guest checked in/)).toBeInTheDocument();
     });
 
-    it('prompts "just this room or all rooms" when checking out a multi-unit booking, and sends unitId for "just this room"', async () => {
+    it('checks out a single-room booking directly, pre-confirmed with no prompt needed', async () => {
       const user = userEvent.setup();
       const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };
-      const twoRoomBooking = { ...pendingBooking, status: 'CHECKED_IN', unitCount: 2 };
       const adminStaffUser = {
         ...currentUser,
         roles: ['ADMIN_STAFF'],
@@ -853,10 +860,62 @@ describe('App', () => {
         if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedUnit] });
         if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
         if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
-        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [twoRoomBooking] });
-        if (url.endsWith('/bookings/booking_1/checkout') && init?.method === 'POST') {
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [occupiedBooking] });
+        if (url.includes('/bookings/group?referenceNo=')) {
+          return jsonResponse(200, {
+            units: [{ unitId: 'unit_1', code: 'R01', name: 'Room 1', bookingId: 'booking_1', guestName: 'Arrival Guest' }],
+          });
+        }
+        if (url.endsWith('/bookings/checkout') && init?.method === 'POST') {
           checkoutBody = JSON.parse(init.body as string);
-          return jsonResponse(200, { booking: { ...twoRoomBooking, status: 'CHECKED_IN' } });
+          return jsonResponse(200, { checkedOutUnitIds: ['unit_1'], finalizedBookingIds: ['booking_1'] });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await user.click(screen.getByText('R01'));
+
+      await user.click(await screen.findByRole('button', { name: 'Check out' }));
+      expect(await screen.findByText('Confirm check-out:')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /Check out 1 room/ }));
+
+      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1'] }));
+    });
+
+    it('shows a checklist for a multi-room booking, pre-checking the room opened from, and lets the front desk add another room before confirming', async () => {
+      const user = userEvent.setup();
+      const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };
+      const adminStaffUser = {
+        ...currentUser,
+        roles: ['ADMIN_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkout': 'ALL' },
+      };
+      let checkoutBody: unknown = null;
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [occupiedBooking] });
+        if (url.includes('/bookings/group?referenceNo=')) {
+          return jsonResponse(200, {
+            units: [
+              { unitId: 'unit_1', code: 'R01', name: 'Room 1', bookingId: 'booking_1', guestName: 'Arrival Guest' },
+              { unitId: 'unit_2', code: 'R02', name: 'Room 2', bookingId: 'booking_2', guestName: 'Arrival Guest' },
+            ],
+          });
+        }
+        if (url.endsWith('/bookings/checkout') && init?.method === 'POST') {
+          checkoutBody = JSON.parse(init.body as string);
+          return jsonResponse(200, { checkedOutUnitIds: ['unit_1', 'unit_2'], finalizedBookingIds: ['booking_1', 'booking_2'] });
         }
         return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
       });
@@ -871,10 +930,17 @@ describe('App', () => {
 
       await user.click(await screen.findByRole('button', { name: 'Check out' }));
 
-      expect(await screen.findByText(/This booking includes 2 rooms/)).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: 'Just this room' }));
+      expect(await screen.findByText(/2 rooms are on Booking ID EXT-100/)).toBeInTheDocument();
+      const room1Checkbox = screen.getByLabelText(/R01 — Room 1/) as HTMLInputElement;
+      const room2Checkbox = screen.getByLabelText(/R02 — Room 2/) as HTMLInputElement;
+      // Pre-checked: the room this drawer was opened from.
+      expect(room1Checkbox.checked).toBe(true);
+      expect(room2Checkbox.checked).toBe(false);
 
-      await waitFor(() => expect(checkoutBody).toEqual({ unitId: 'unit_1' }));
+      await user.click(room2Checkbox);
+      await user.click(screen.getByRole('button', { name: /Check out 2 rooms/ }));
+
+      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1', 'unit_2'] }));
     });
   });
 });

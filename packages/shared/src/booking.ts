@@ -1,10 +1,16 @@
 import type { PermissionKey } from './permissions.js';
 
-// Spec §6's Booking model + §7.5's availability rules. Mirrors
-// workOrder.ts's split: enum-shaped keys/types the frontend and backend
-// both need, plus pure helpers with no Prisma/Express dependency so they
-// can be unit-tested directly and reused client-side for a preview
-// without duplicating the overlap math.
+// Redesign, 2026-08-24 (client decision, live-testing feedback): this
+// app monitors the resort's live state, it does not manage
+// reservations — every guest already has a real booking on the
+// resort's separate external booking website before arriving, so
+// there's no scenario where this app needs to create one, check
+// overlapping windows, or enforce a turnaround buffer between
+// reservations. The overlap/availability engine (windowsConflict,
+// resolveBookingWindow, BookingWindowSettings) that used to live here
+// is gone — a Booking row is now created only at the moment of
+// check-in (see the units/checkin flow), already occupying real rooms
+// right now, not reserving them for a future window.
 
 export const BOOKING_TYPE_KEYS = ['OVERNIGHT', 'DAY_TOUR'] as const;
 export type BookingTypeKey = (typeof BOOKING_TYPE_KEYS)[number];
@@ -16,7 +22,10 @@ export type BookingSourceKey = (typeof BOOKING_SOURCE_KEYS)[number];
 // the doc (§7.6 "a booking currently CHECKED_IN", §8.4 needs a NO_SHOW
 // state to report on) rather than spelling it out as a pipe list — see
 // the Prisma schema's own comment on BookingStatus for the full
-// reasoning.
+// reasoning. PENDING/CONFIRMED/CANCELLED/NO_SHOW are legacy as of the
+// 2026-08-24 redesign — nothing can produce them anymore, see
+// BOOKING_TRANSITIONS below — kept only because a live database may
+// still hold historical rows in these states from before the redesign.
 export const BOOKING_STATUS_KEYS = ['PENDING', 'CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT', 'CANCELLED', 'NO_SHOW'] as const;
 export type BookingStatusKey = (typeof BOOKING_STATUS_KEYS)[number];
 
@@ -25,25 +34,17 @@ export interface BookingTransition {
   permission: PermissionKey;
 }
 
-// Urgent real-world gap found live-testing, 2026-08-23: a booking
-// created for today had no way to actually process the guest's arrival
-// — check-in didn't exist yet. This is the transition table §7 asks
-// for ("implement each as an explicit transition table... never
-// duplicate this logic"), but deliberately minimal: only the two edges
-// this slice actually builds an endpoint for. PENDING and CONFIRMED
-// both go straight to CHECKED_IN — spec never describes a manual
-// PENDING -> CONFIRMED step, and since payment/confirmation tracking is
-// explicitly out of scope for this system (client decision, 2026-08-23:
-// "payment is handled entirely outside this system... this system's
-// purpose is monitoring and coordinating, not handling money"), there's
-// no trigger that would ever move a booking to CONFIRMED anyway — both
-// states mean the same thing here: "not yet arrived." CANCELLED/NO_SHOW
-// have no triggering endpoint yet either — the enum values exist (spec
-// §6) but nothing in this codebase can produce them, so their edges
-// stay empty rather than advertising a button with nowhere to wire up.
+// Simplified, 2026-08-24: a Booking row is now created directly at
+// CHECKED_IN (check-in creates it — there's no more "PENDING awaiting
+// arrival" step, since every guest already has a real reservation
+// elsewhere and this app only records the point they actually show up).
+// The only live edge left is the same one as before: CHECKED_IN ->
+// CHECKED_OUT. PENDING/CONFIRMED/CANCELLED/NO_SHOW keep empty edges —
+// nothing in this codebase can ever produce or act on a booking in one
+// of those states anymore, so there's no button to wire up regardless.
 export const BOOKING_TRANSITIONS: Record<BookingStatusKey, BookingTransition[]> = {
-  PENDING: [{ to: 'CHECKED_IN', permission: 'booking:checkin' }],
-  CONFIRMED: [{ to: 'CHECKED_IN', permission: 'booking:checkin' }],
+  PENDING: [],
+  CONFIRMED: [],
   CHECKED_IN: [{ to: 'CHECKED_OUT', permission: 'booking:checkout' }],
   CHECKED_OUT: [],
   CANCELLED: [],
@@ -65,60 +66,10 @@ export function allowedBookingTransitions(
   return (BOOKING_TRANSITIONS[from] ?? []).filter((t) => permissions[t.permission]).map((t) => t.to);
 }
 
-// A booking in either of these states no longer holds its unit(s) — it
-// never happened (CANCELLED) or already ended (CHECKED_OUT) — so it must
-// never participate in an availability/overlap check. NO_SHOW is
-// deliberately *not* here: a no-show still held the unit for its
-// original window and the front desk needs that reflected in the
-// timeline, even though no guest arrived.
+// Still used by listUpcomingBookingsForUnit (the Unit drawer's Bookings
+// section) and by the checkout grouping query — a booking in either of
+// these states no longer holds its unit(s), so it must never surface as
+// something still relevant to a room's current state. NO_SHOW is
+// deliberately *not* here for the same historical reason as before, even
+// though nothing produces it anymore.
 export const BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY: readonly BookingStatusKey[] = ['CANCELLED', 'CHECKED_OUT'];
-
-export interface BookingWindowSettings {
-  // "HH:mm" in Asia/Manila, per spec §7.5's Setting shape.
-  dayTourWindow: { start: string; end: string };
-  checkInTime: string;
-  checkOutTime: string;
-  turnaroundMinutes: number;
-}
-
-// Spec §7.5: "Day tours are a single fixed block, 9:00 AM - 5:00 PM
-// (confirmed by the client)." / "Overnight bookings resolve from
-// booking.checkInTime (default 14:00) and booking.checkOutTime (default
-// 12:00)." / "turnaroundMinutes (default 60)." These are the fallback
-// values the backend reads live Setting rows against, seeded once but
-// editable later without a deploy — never hardcode 9-to-5 anywhere else.
-export const DEFAULT_BOOKING_WINDOW_SETTINGS: BookingWindowSettings = {
-  dayTourWindow: { start: '09:00', end: '17:00' },
-  checkInTime: '14:00',
-  checkOutTime: '12:00',
-  turnaroundMinutes: 60,
-};
-
-// Spec §7.5: "Availability is a datetime overlap check on startAt/endAt
-// across BookingUnit, not a date-equality comparison" plus the
-// turnaround buffer. Spec states the buffer directionally ("a booking
-// cannot start within turnaroundMinutes of the previous booking's
-// endAt"), but the same housekeeping-gap reasoning applies regardless of
-// which of the two bookings comes first in time — a new booking ending
-// too close to an *already-scheduled later* booking needs the same gap.
-// This is applied symmetrically: two windows conflict unless there is at
-// least `turnaroundMinutes` of clear time between whichever one ends
-// first and whichever one starts second. All arguments are real
-// Date/epoch-ms values — this function does no timezone resolution
-// itself (see resolveBookingWindow's own doc comment for that).
-export function windowsConflict(
-  aStart: Date | number,
-  aEnd: Date | number,
-  bStart: Date | number,
-  bEnd: Date | number,
-  turnaroundMinutes: number,
-): boolean {
-  const bufferMs = turnaroundMinutes * 60_000;
-  const aStartMs = +aStart;
-  const aEndMs = +aEnd;
-  const bStartMs = +bStart;
-  const bEndMs = +bEnd;
-  const aEndsBeforeBWithGap = aEndMs + bufferMs <= bStartMs;
-  const bEndsBeforeAWithGap = bEndMs + bufferMs <= aStartMs;
-  return !(aEndsBeforeBWithGap || bEndsBeforeAWithGap);
-}

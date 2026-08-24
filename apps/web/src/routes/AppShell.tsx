@@ -9,7 +9,7 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'booking:create';
+  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -18,10 +18,10 @@ const NAV_ITEMS: {
   // to read at least your own") — this nav item is effectively always
   // visible, same as the pattern already established for it server-side.
   { to: '/work-orders', label: 'Work Orders', permission: 'workorder:read' },
-  // Gated on booking:create rather than booking:read since this first M4
-  // slice is creation-only — there's no booking list/detail view yet for
-  // a read-only holder to land on. Revisit once GET /bookings exists.
-  { to: '/bookings', label: 'Bookings', permission: 'booking:create' },
+  // "Bookings" nav item removed 2026-08-24 (redesign, client decision):
+  // this app no longer creates or manages reservations — check-in is now
+  // a quick-action on the Units page itself (see UnitsPage.tsx's
+  // CheckInPanel), not a separate screen.
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

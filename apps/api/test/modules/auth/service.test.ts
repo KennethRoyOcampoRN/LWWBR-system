@@ -365,7 +365,7 @@ describe('getMe', () => {
     mockPrisma.user.findFirst.mockResolvedValue(fakeUser());
     const user = await getMe('user_1');
     expect(user.roles).toEqual(['RESORT_MANAGER']);
-    expect(user.permissions['booking:create']).toBe('ALL');
+    expect(user.permissions['booking:checkin']).toBe('ALL');
   });
 
   it('rejects a soft-deleted or inactive user', async () => {

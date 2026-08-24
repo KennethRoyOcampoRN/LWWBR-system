@@ -6,7 +6,6 @@
 // No real staff names anywhere (spec §12 rule 9) — every demo user's
 // fullName is the role label itself, never a person.
 import {
-  DEFAULT_BOOKING_WINDOW_SETTINGS,
   DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS,
   PERMISSION_KEYS,
   ROLE_KEYS,
@@ -246,34 +245,16 @@ async function main() {
     update: { value: DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS },
   });
 
-  console.warn('Seeding booking window settings...');
-  // Spec §7.5: four separate Setting rows (not one combined blob, unlike
-  // workOrder.photoRequirements above), so the client can loosen or
-  // tighten one independently — e.g. change the turnaround buffer
-  // without touching check-in/out times. Same overwrite-on-seed
-  // treatment as photoRequirements: this should always match the shared
-  // default until a SYSTEM_ADMIN deliberately edits it through an admin
-  // UI (not yet built).
-  await prisma.setting.upsert({
-    where: { key: 'booking.dayTourWindow' },
-    create: { key: 'booking.dayTourWindow', value: DEFAULT_BOOKING_WINDOW_SETTINGS.dayTourWindow },
-    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.dayTourWindow },
-  });
-  await prisma.setting.upsert({
-    where: { key: 'booking.checkInTime' },
-    create: { key: 'booking.checkInTime', value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkInTime },
-    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkInTime },
-  });
-  await prisma.setting.upsert({
-    where: { key: 'booking.checkOutTime' },
-    create: { key: 'booking.checkOutTime', value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkOutTime },
-    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.checkOutTime },
-  });
-  await prisma.setting.upsert({
-    where: { key: 'booking.turnaroundMinutes' },
-    create: { key: 'booking.turnaroundMinutes', value: DEFAULT_BOOKING_WINDOW_SETTINGS.turnaroundMinutes },
-    update: { value: DEFAULT_BOOKING_WINDOW_SETTINGS.turnaroundMinutes },
-  });
+  // booking.dayTourWindow/checkInTime/checkOutTime/turnaroundMinutes
+  // Settings removed 2026-08-24: they backed the old reservation
+  // availability engine (resolving a booking's startAt/endAt, checking
+  // for overlaps) which is gone entirely — this app no longer creates
+  // reservations, so there's no window to resolve and no turnaround
+  // buffer to enforce. Not retroactively deleted from an already-seeded
+  // database — if the client's own Supabase project already has these
+  // four Setting rows from an earlier seed run, they're harmless
+  // leftovers with no code left reading them; nothing here cleans them
+  // up automatically.
 
   console.warn('Verifying final role assignments...');
   const demoUsers = await prisma.user.findMany({

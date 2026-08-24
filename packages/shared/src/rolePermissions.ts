@@ -59,6 +59,14 @@ import type { RoleKey } from './roles.js';
 //    key to any other role afterward via the Roles admin page — this is
 //    only the seed default, same as every other role/permission decision
 //    made this session.
+//
+// 4. booking:read/booking:create/booking:update dropped entirely,
+//    2026-08-24: the reservation-creation redesign (see booking.ts's own
+//    header comment) removed every route these three ever gated —
+//    booking:create's only route/nav item, and booking:read's only two
+//    routes (search, get-by-id). booking:update never had a route to
+//    begin with, even before this change. No grants for any of the
+//    three below; PERMISSION_KEYS itself no longer lists them.
 export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, PermissionScope>>> = {
   SYSTEM_ADMIN: {
     'amenity:approve': 'ALL',
@@ -70,9 +78,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'audit:read': 'ALL',
     'booking:checkin': 'ALL',
     'booking:checkout': 'ALL',
-    'booking:create': 'ALL',
-    'booking:read': 'ALL',
-    'booking:update': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'cash:verify': 'ALL',
@@ -120,7 +125,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
   },
   OWNER: {
     'audit:read': 'ALL',
-    'booking:read': 'ALL',
     'cash:read': 'ALL',
     'folio:read': 'ALL',
     'incident:create': 'ALL', // resolved ambiguity — see header comment
@@ -145,9 +149,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'audit:read': 'ALL',
     'booking:checkin': 'ALL',
     'booking:checkout': 'ALL',
-    'booking:create': 'ALL',
-    'booking:read': 'ALL',
-    'booking:update': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'cash:verify': 'ALL',
@@ -194,7 +195,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
-    'booking:read': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'cash:verify': 'ALL',
@@ -232,9 +232,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:return': 'ALL',
     'booking:checkin': 'ALL',
     'booking:checkout': 'ALL',
-    'booking:create': 'ALL',
-    'booking:read': 'ALL',
-    'booking:update': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'fnb:create': 'ALL',
@@ -269,9 +266,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:return': 'ALL',
     'booking:checkin': 'ALL',
     'booking:checkout': 'ALL',
-    'booking:create': 'ALL',
-    'booking:read': 'ALL',
-    'booking:update': 'ALL',
     'fnb:create': 'ALL',
     'fnb:read': 'ALL',
     'folio:charge': 'ALL',
@@ -293,9 +287,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
-    'booking:create': 'ALL',
-    'booking:read': 'ALL',
-    'booking:update': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'fnb:create': 'ALL',
@@ -319,7 +310,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
-    'booking:read': 'ALL',
     'incident:create': 'ALL',
     'inspection:read': 'ALL',
     'inspection:submit': 'ALL',
@@ -402,7 +392,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'workorder:update_status': 'ALL',
   },
   RESTAURANT_MANAGER: {
-    'booking:read': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'fnb:create': 'ALL',

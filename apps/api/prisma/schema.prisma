@@ -333,14 +333,16 @@ enum BookingType {
   DAY_TOUR
 }
 
-// Not spelled out as a pipe list in spec.md, but inferred from spec text:
-// bookings are held (PENDING/CONFIRMED) before a stay, §7.6 refers to "a
-// booking currently CHECKED_IN", CheckInRecord/CheckOutRecord are 1:1 with
-// Booking, and §8.4 report #2 is "Arrivals / departures / no-shows" (which
-// requires a NO_SHOW state to report on). CANCELLED covers a held booking
-// that never arrives by guest/staff choice, distinct from a no-show. The
-// full transition table for these values still needs to be built in
-// packages/shared per spec §7 before M4 — this only types the field.
+// PENDING/CONFIRMED/CANCELLED/NO_SHOW are legacy, 2026-08-24: they
+// described a booking held *before* arrival, back when this app created
+// reservations itself. That flow is gone — a Booking row is only ever
+// created at the moment of check-in, already CHECKED_IN — so nothing in
+// this codebase can produce these four values anymore.
+// BOOKING_TRANSITIONS in packages/shared reflects that (their edges are
+// empty). Kept in the enum rather than dropped: shrinking a Postgres
+// enum is a real migration risk against a live database that may
+// already hold rows in these states from before this redesign, and
+// there's no operational need to force-migrate that historical data.
 enum BookingStatus {
   PENDING
   CONFIRMED
@@ -350,22 +352,43 @@ enum BookingStatus {
   NO_SHOW
 }
 
+// Redesign, 2026-08-24 (client decision, live-testing feedback): this
+// app monitors the resort's live state, it does not manage reservations
+// — every guest already has a real booking on the resort's separate
+// external booking website before arriving, so this model no longer
+// represents "a reservation we took," it represents "a guest we checked
+// in." A Booking row is now created *at* check-in (never before), and
+// `referenceNo` holds the free-text external booking ID typed in at
+// that moment — no longer generated here, and deliberately not unique:
+// a group can arrive in waves under the same external ID across more
+// than one check-in submission, so more than one Booking row can
+// legitimately share one referenceNo string. Several fields that used
+// to be required at creation time are now nullable because Check-in
+// simply never collects them — pax, departureDate, and endAt genuinely
+// aren't known yet (endAt is filled in with the *actual* checkout
+// moment once the guest leaves, not a planned departure); totalAmount
+// stays null permanently, since pricing is out of scope per the
+// client's "this system monitors, it does not handle money" decision,
+// 2026-08-23. `type`/`source` are still supplied (constants, since
+// Check-in's form doesn't ask) rather than dropped, so existing
+// day-tour-vs-overnight and channel reporting concepts aren't lost if a
+// later milestone wants them back.
 model Booking {
   id            String        @id @default(cuid())
-  referenceNo   String        @unique
+  referenceNo   String
   guestName     String
   guestPhone    String?
   guestEmail    String?
   source        BookingSource
   type          BookingType
   status        BookingStatus
-  pax           Int
+  pax           Int?
   childrenPax   Int           @default(0)
   arrivalDate   DateTime
-  departureDate DateTime
+  departureDate DateTime?
   startAt       DateTime
-  endAt         DateTime
-  totalAmount   Decimal       @db.Decimal(12, 2)
+  endAt         DateTime?
+  totalAmount   Decimal?      @db.Decimal(12, 2)
   notes         String?
   createdById   String
   createdAt     DateTime      @default(now())
@@ -386,13 +409,17 @@ model Booking {
 
   @@index([status])
   @@index([startAt, endAt])
+  @@index([referenceNo])
 }
 
 model BookingUnit {
   id        String    @id @default(cuid())
   bookingId String
   unitId    String
-  rate      Decimal   @db.Decimal(12, 2)
+  // Nullable, 2026-08-24: pricing is out of scope now that every
+  // reservation lives on the external booking website — Check-in never
+  // collects a rate.
+  rate      Decimal?  @db.Decimal(12, 2)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
