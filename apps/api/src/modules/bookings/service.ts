@@ -342,6 +342,21 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
 // — `endAt: null` is included alongside `endAt >= now` rather than
 // excluded by the old plain `gte` filter, which would have silently
 // dropped every current guest with no set departure.
+//
+// `status: 'CHECKED_IN'` added to the same OR, 2026-08-24 — real gap
+// found live-testing: a *pre-redesign* booking (created through the old
+// "New booking" flow, checked in before Check-in creation replaced it)
+// has a real, non-null `endAt` resolved from whatever departure date the
+// guest gave at the time. Once that date has passed — entirely possible
+// days later, with the guest never actually checked out — the old
+// `endAt >= now` half of this filter silently dropped the row from this
+// query, so its Check-out button never had a row to render on. A
+// CHECKED_IN booking is *always* current regardless of what its
+// originally-planned end was: the guest hasn't left and nothing has
+// closed it out yet, so it must never be filtered by endAt at all. The
+// endAt half of this OR still matters for a legacy PENDING/CONFIRMED row
+// (unreachable going forward, but historical data may still hold one) —
+// there, a long-past planned arrival really shouldn't linger here.
 export async function listUpcomingBookingsForUnit(unitId: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
@@ -350,7 +365,7 @@ export async function listUpcomingBookingsForUnit(unitId: string) {
       booking: {
         deletedAt: null,
         status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] },
-        OR: [{ endAt: null }, { endAt: { gte: new Date() } }],
+        OR: [{ status: 'CHECKED_IN' }, { endAt: null }, { endAt: { gte: new Date() } }],
       },
     },
     include: {

@@ -2730,3 +2730,47 @@ area net of the nav sidebar), the room checklist stays collapsed until
 clicked, and Occupied/Blocked checkboxes are both disabled while Ready
 stays selectable. No schema change, no `npx prisma db push` needed for
 this slice.
+
+### Real gap found live-testing: pre-redesign bookings invisible to the drawer's own Check-out (2026-08-24)
+
+Logged in as Admin Head (holds `booking:checkout`), C01's drawer showed
+"Bookings" and "Timeline" sections but no Check-out button — unlike
+C02/R07, checked in through the new Check-in flow, which correctly
+showed one. C01's booking (ref `LWW-260823-0002`) predates the redesign:
+created via the old, now-removed "New booking" form and checked in
+through the old flow on 8/23, before Check-in creation replaced it.
+
+Root cause, found by re-reading the nullable-`endAt` migration from two
+slices ago rather than by guessing: `listUpcomingBookingsForUnit`'s own
+query — the one powering the drawer's Bookings section — filters out
+any booking whose `endAt` isn't null and has already passed
+(`OR: [{endAt: null}, {endAt: {gte: now}}]`). That filter was written to
+keep a *new*, open-ended (`endAt: null`) Check-in-flow stay always
+showing. It never accounted for the flip side: an *old* booking has a
+real, non-null `endAt` resolved from whatever departure date the guest
+gave back when it was created. Once that date passes — entirely
+plausible days later, with the guest never actually checked out through
+the app — the row silently drops out of the query entirely. Not "the
+button is hidden for old bookings" as first suspected; the row itself
+never reaches the drawer, so there was never a `<li>` for a button to
+render into. `canCheckOut` (client-side) was never the problem — it's a
+pure function of permission and `booking.status`, unaffected by how or
+when the row was created.
+
+Fixed by adding `{ status: 'CHECKED_IN' }` to the same `OR`: a
+`CHECKED_IN` booking is definitionally current — the guest hasn't left
+and nothing has closed it out — regardless of what its originally-
+planned end date was. The `endAt`-based half of the filter still matters
+for a legacy `PENDING`/`CONFIRMED` row (unreachable going forward, but
+historical data may still hold one) — a long-past planned arrival that
+never happened shouldn't linger in the list either way.
+
+2 new backend tests: the `where` clause's own `OR` shape now asserts all
+three branches; a dedicated case reproducing the exact report (a
+`CHECKED_IN` booking with a real, already-past `endAt`) confirms it
+still reaches the client with its status intact. `apps/api` 224/227
+(+2, same 3 pre-existing network-blocked round-trip tests). Full repo
+lint/typecheck/build clean. No schema change — this is a query fix only,
+no `npx prisma db push` needed. Live data note: **C01 and any other
+pre-redesign booking still sitting Occupied should now show a Check-out
+button** once this is pulled; nothing needs manual cleanup in Supabase.

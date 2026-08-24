@@ -614,10 +614,51 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
     // Redesign, 2026-08-24: must include `endAt: null` (an open-ended,
     // currently-CHECKED_IN stay), not just `endAt >= now` — a plain
     // `gte` filter alone would silently drop every current guest with no
-    // known departure.
+    // known departure. `status: 'CHECKED_IN'` (added in the same OR,
+    // 2026-08-24 — see this function's own comment) covers the other
+    // real gap: a pre-redesign booking's real, non-null endAt that has
+    // since passed.
     expect(whereArg.booking.OR).toEqual(
-      expect.arrayContaining([{ endAt: null }, expect.objectContaining({ endAt: expect.objectContaining({ gte: expect.any(Date) }) })]),
+      expect.arrayContaining([
+        { status: 'CHECKED_IN' },
+        { endAt: null },
+        expect.objectContaining({ endAt: expect.objectContaining({ gte: expect.any(Date) }) }),
+      ]),
     );
+  });
+
+  // Real gap found live-testing, 2026-08-24: a booking created and
+  // checked in through the *old*, now-removed "New booking" flow has a
+  // real, non-null endAt resolved from whatever departure date was given
+  // back then. Once that date has passed — plausible days later, guest
+  // never actually checked out — that row must still reach the client
+  // with its real CHECKED_IN status intact (the mock can't exercise
+  // Postgres's own OR filtering — the test above already pins the
+  // `where` clause's shape; this one guards the rest of the response
+  // path for exactly this row).
+  it('a pre-redesign CHECKED_IN booking whose real endAt has already passed still shows up, so it has a Check-out path', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_HEAD'));
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([
+      {
+        unitId: 'unit_1',
+        booking: {
+          id: 'booking_old',
+          referenceNo: 'LWW-260823-0002',
+          guestName: 'Old Flow Guest',
+          type: 'OVERNIGHT',
+          status: 'CHECKED_IN',
+          startAt: new Date('2026-08-23T06:00:00.000Z'),
+          endAt: new Date('2026-08-24T04:00:00.000Z'), // already in the past
+        },
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/unit_1/bookings').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.bookings).toEqual([
+      expect.objectContaining({ referenceNo: 'LWW-260823-0002', status: 'CHECKED_IN' }),
+    ]);
   });
 
   it('requires authentication', async () => {
