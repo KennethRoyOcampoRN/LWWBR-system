@@ -2467,3 +2467,115 @@ this slice has **not yet been live-tested against the real Supabase
 database** — same sandbox limitation as every prior milestone. Requires
 a schema push before the client's own test:
 `cd apps/api && npx prisma db push`.
+
+### Check-in/check-out redesign: moved into the Unit drawer, multi-room checkout, and the missing housekeeping auto-ticket (2026-08-24)
+
+Live-testing feedback on the previous slice, three parts.
+
+**Permission seed narrowed.** `booking:checkin`/`booking:checkout` used
+to seed to every role spec §5.4's table lists (SYS_ADMIN, RESORT_MGR,
+OPS_SAFETY, ADMIN_HEAD, ADMIN_STAFF, CASHIER). Client decision, explicit
+and narrower: seed only to `RESORT_MANAGER`, `ADMIN_HEAD`, and
+`ADMIN_STAFF` by default (`SYSTEM_ADMIN` keeps every key, as always).
+Removed from `OPS_SAFETY_SUPERVISOR` and `CASHIER` in
+`packages/shared/src/rolePermissions.ts`, documented as a deliberate
+departure from a literal reading of the matrix (same pattern as the
+OWNER quick-action resolution earlier this session) — not a ceiling:
+`SYSTEM_ADMIN` can still grant either key to any other role via the
+Roles admin page. Backend tests that exercised these two endpoints as
+CASHIER were switched to ADMIN_STAFF to match; no test asserted CASHIER
+specifically needed to hold them.
+
+**Check-in/check-out moved from the Bookings page into the Unit
+drawer.** The previous slice's dedicated search-and-act panel is gone —
+day-to-day check-in/check-out now lives where staff are already
+looking, in the same "Bookings" section of `UnitDetailDrawer` that
+already listed a unit's reservations. A booking with status
+PENDING/CONFIRMED gets a direct "Check in" button right on its row; a
+CHECKED_IN booking gets "Check out." Both are gated on
+`booking:checkin`/`booking:checkout` — a role without either permission
+sees the booking list (still gated only on `unit:read`, unchanged) but
+no action buttons at all, same pattern as the work order Verify button
+being hidden from a cross-department POC. The not-Ready
+warning-then-acknowledge flow carried over unchanged, since it "works
+well" per the client's own words — same `409 UNIT_NOT_READY` /
+`acknowledgeNotReady` protocol, just rendered inline under the relevant
+booking row instead of in a separate panel.
+
+The Bookings page keeps its original two jobs — creating a new booking,
+and a read-only "Find a booking" property-wide search by guest name or
+reference number (the same `GET /bookings?search=` endpoint, now with
+every action button stripped out; the drawer is where the action is).
+
+**Multi-room checkout.** Real gap: the previous slice's checkout always
+flipped every unit under a booking at once, with no way to check out
+just one room from a multi-unit reservation. `checkOutBooking`
+(`apps/api/src/modules/bookings/service.ts`) now accepts an optional
+`unitId` — present, checks out only that unit and leaves the rest
+Occupied; omitted, checks out every unit still Occupied (unchanged
+behavior for a single-unit booking). The booking itself only finalizes
+to `CHECKED_OUT` — and only then gets its `CheckOutRecord` — once every
+one of its units has actually cleared; a partial checkout leaves the
+booking at `CHECKED_IN` with no `CheckOutRecord` yet, and the next
+checkout call (from whichever unit) picks up from there. `GET
+/units/:id/bookings` now returns `unitCount` per booking (a plain
+`_count`, not the full unit list) so the drawer can decide whether to
+prompt at all — a single-unit booking's checkout never asks. When it
+does span more than one unit, clicking "Check out" shows "This booking
+includes N rooms — check out just this room, or all rooms under this
+booking?" with both paths wired to the same endpoint, just with or
+without `unitId`.
+
+**The missing spec §7.1 auto-ticket, actually wired up.** Asked
+directly whether checkout's `OCCUPIED -> VACANT_DIRTY` transition
+auto-creates a `HOUSEKEEPING` work order per spec §7.1 — it did not; the
+transition itself worked but nothing ever called `createWorkOrder`. Real
+gap, not cosmetic: a room going Dirty with nothing alerting housekeeping
+defeats the point of the automatic status change. Added directly inside
+`applyAutomaticUnitStatusChange` (`apps/api/src/modules/units/
+service.ts`), scoped specifically to a `VACANT_DIRTY` transition: an
+untitled, no-photo-required (`HOUSEKEEPING`'s own `onCreate` requirement
+is empty), `NORMAL`-priority ticket titled "Post-checkout cleaning —
+{unit.code}", department `HOUSEKEEPING`. Best-effort like the realtime
+broadcast beside it — a failure here is logged, never fails the checkout
+itself. This is the second cross-module import in this codebase (units
+-> workorders, after bookings -> units in the previous slice), same
+justification: WorkOrder lifecycle (referenceNo generation, the
+realtime broadcast, department notification) is owned by that module.
+Deliberately scoped only to this real trigger, not to every path that
+can reach `VACANT_DIRTY` — the `SYSTEM_ADMIN` override and
+forced-correction panels are stopgap/data-correction tools, not spec's
+actual "on check-out" trigger, and creating a ticket there wasn't asked
+for.
+
+`applyAutomaticUnitStatusChange`'s signature changed from a bare
+`actorId: string` to the caller's full identity (id/department/roles/
+permissions), since `createWorkOrder` needs that shape;
+`req.authUser` already carried every field, so no router change was
+needed to satisfy it.
+
+7 new/updated backend tests (multi-room checkout: partial checkout
+leaves the booking CHECKED_IN with no CheckOutRecord yet, the last unit
+finalizes it, "all rooms" flips both in one call, a `unitId` outside the
+booking is rejected, a non-Occupied unit is rejected; the housekeeping
+ticket is asserted on checkout and asserted absent on check-in; checkout
+still succeeds if the ticket-creation call itself fails). One pre-existing
+test was fixed incidentally — a hardcoded `referenceNo` date literal
+that depended on real wall-clock "today," now pinned with
+`vi.setSystemTime`. 5 new frontend tests in `App.smoke.test.tsx`
+covering the permission-gated visibility, a direct check-in, the
+not-Ready warning/acknowledge round trip from the drawer, and the
+multi-room prompt sending the right `unitId`. `BookingsPage.test.tsx`'s
+4 old check-in/check-out tests were replaced with 1 read-only search
+test.
+
+`packages/shared` 62/62; `apps/api` 245/248 (+7, same 3 pre-existing
+network-blocked round-trip tests); `apps/web` 35/35 (+5, net −4 removed
++9 added across the two files). Full repo lint/typecheck/build clean.
+Re-verified the multi-room checkout prompt in a real headless browser
+against a mocked API: "Check out" on an Occupied unit's CHECKED_IN,
+2-room booking shows the prompt, and "Just this room" sends
+`{unitId: "unit_1"}`. **No schema change this slice** — no
+`npx prisma db push` needed before the client's live test, unlike the
+previous one. **Not yet live-tested against the real Supabase
+database.**

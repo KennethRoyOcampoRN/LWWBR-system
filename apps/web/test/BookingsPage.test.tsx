@@ -164,126 +164,29 @@ describe('BookingsPage', () => {
     expect(screen.getByText(/Fixed block: 9:00 AM/)).toBeInTheDocument();
   });
 
-  const readyBookingSearchResult = {
-    id: 'booking_1',
-    referenceNo: 'LWW-260823-0003',
-    guestName: 'Arrival Guest',
-    type: 'OVERNIGHT',
-    status: 'PENDING',
-    startAt: '2026-08-23T06:00:00.000Z',
-    endAt: '2026-08-24T04:00:00.000Z',
-    units: [{ unitId: 'unit_1', rate: 2500, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'READY' } }],
-  };
-
-  it('checks in a booking straight from a Ready unit', async () => {
+  // Redesign, 2026-08-24: check-in/check-out moved to the Unit drawer
+  // (see App.smoke.test.tsx) — what remains here is the read-only,
+  // property-wide "Find a booking" search this page always specifically
+  // offered, now with no action buttons attached to it.
+  it('finds a booking by guest name property-wide, read-only — no check-in/check-out action here anymore', async () => {
     const user = userEvent.setup();
-    let checkinCalled = false;
-
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
-      if (url.endsWith('/units')) return jsonResponse(200, { units });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes });
-      if (url.includes('/bookings?search=')) return jsonResponse(200, { bookings: [readyBookingSearchResult] });
-      if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
-        checkinCalled = true;
-        expect(JSON.parse(init.body as string)).toEqual({});
-        return jsonResponse(200, { booking: { ...readyBookingSearchResult, status: 'CHECKED_IN' } });
-      }
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Bookings' })).toBeInTheDocument());
-    await user.click(screen.getByRole('link', { name: 'Bookings' }));
-    await waitFor(() => expect(screen.getByText('Check-in / check-out')).toBeInTheDocument());
-
-    await user.type(screen.getByLabelText('Booking reference or guest name'), 'Arrival Guest');
-    await user.click(screen.getByRole('button', { name: 'Look up' }));
-
-    await user.click(await screen.findByText('Arrival Guest'));
-    await user.click(await screen.findByRole('button', { name: 'Confirm arrival' }));
-
-    expect(await screen.findByText('LWW-260823-0003 checked in — Arrival Guest.')).toBeInTheDocument();
-    expect(checkinCalled).toBe(true);
-  });
-
-  it('warns rather than blocks when the unit is not yet Ready, then checks in on acknowledge', async () => {
-    const user = userEvent.setup();
-    const dirtyResult = {
-      ...readyBookingSearchResult,
-      units: [{ unitId: 'unit_1', rate: 2500, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'VACANT_DIRTY' } }],
-    };
-    let secondAttemptBody: unknown = null;
-
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
-      if (url.endsWith('/units')) return jsonResponse(200, { units });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes });
-      if (url.includes('/bookings?search=')) return jsonResponse(200, { bookings: [dirtyResult] });
-      if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
-        const body = JSON.parse(init.body as string) as { acknowledgeNotReady?: boolean };
-        if (!body.acknowledgeNotReady) {
-          return jsonResponse(409, {
-            error: {
-              code: 'UNIT_NOT_READY',
-              message: 'R01 is not Ready yet (currently VACANT_DIRTY) — confirm to check in anyway.',
-              details: { unitId: 'unit_1', unitCode: 'R01', unitStatus: 'VACANT_DIRTY' },
-            },
-          });
-        }
-        secondAttemptBody = body;
-        return jsonResponse(200, { booking: { ...dirtyResult, status: 'CHECKED_IN' } });
-      }
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Bookings' })).toBeInTheDocument());
-    await user.click(screen.getByRole('link', { name: 'Bookings' }));
-    await waitFor(() => expect(screen.getByText('Check-in / check-out')).toBeInTheDocument());
-
-    await user.type(screen.getByLabelText('Booking reference or guest name'), 'Arrival Guest');
-    await user.click(screen.getByRole('button', { name: 'Look up' }));
-    await user.click(await screen.findByText('Arrival Guest'));
-    await user.click(await screen.findByRole('button', { name: 'Confirm arrival' }));
-
-    expect(await screen.findByText(/R01 is not Ready yet/)).toBeInTheDocument();
-    expect(screen.queryByText(/checked in —/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Check in anyway' }));
-
-    expect(await screen.findByText('LWW-260823-0003 checked in — Arrival Guest.')).toBeInTheDocument();
-    expect(secondAttemptBody).toEqual({ acknowledgeNotReady: true });
-  });
-
-  it('blocks check-in with a hard error when the unit is already occupied by another booking', async () => {
-    const user = userEvent.setup();
-    const occupiedResult = {
-      ...readyBookingSearchResult,
-      units: [{ unitId: 'unit_1', rate: 2500, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } }],
+    const searchResult = {
+      id: 'booking_1',
+      referenceNo: 'LWW-260823-0003',
+      guestName: 'Arrival Guest',
+      type: 'OVERNIGHT',
+      status: 'PENDING',
+      startAt: '2026-08-23T06:00:00.000Z',
+      endAt: '2026-08-24T04:00:00.000Z',
+      units: [{ unitId: 'unit_1', rate: 2500, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'READY' } }],
     };
 
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
       if (url.endsWith('/units')) return jsonResponse(200, { units });
       if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes });
-      if (url.includes('/bookings?search=')) return jsonResponse(200, { bookings: [occupiedResult] });
-      if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
-        return jsonResponse(409, {
-          error: {
-            code: 'UNIT_UNAVAILABLE',
-            message: 'R01 is already occupied by another booking.',
-            details: { unitId: 'unit_1', unitCode: 'R01', reason: 'OCCUPIED' },
-          },
-        });
-      }
+      if (url.includes('/bookings?search=')) return jsonResponse(200, { bookings: [searchResult] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -292,54 +195,16 @@ describe('BookingsPage', () => {
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Bookings' })).toBeInTheDocument());
     await user.click(screen.getByRole('link', { name: 'Bookings' }));
-    await waitFor(() => expect(screen.getByText('Check-in / check-out')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Find a booking')).toBeInTheDocument());
 
     await user.type(screen.getByLabelText('Booking reference or guest name'), 'Arrival Guest');
     await user.click(screen.getByRole('button', { name: 'Look up' }));
-    await user.click(await screen.findByText('Arrival Guest'));
-    await user.click(await screen.findByRole('button', { name: 'Confirm arrival' }));
 
-    expect(await screen.findByText(/R01 cannot be checked in right now/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Check in anyway' })).not.toBeInTheDocument();
-  });
-
-  it('checks out a currently checked-in booking with an unconditional status flip', async () => {
-    const user = userEvent.setup();
-    const checkedInResult = {
-      ...readyBookingSearchResult,
-      status: 'CHECKED_IN',
-      units: [{ unitId: 'unit_1', rate: 2500, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } }],
-    };
-    let checkoutBody: unknown = null;
-
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
-      if (url.endsWith('/units')) return jsonResponse(200, { units });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes });
-      if (url.includes('/bookings?search=')) return jsonResponse(200, { bookings: [checkedInResult] });
-      if (url.endsWith('/bookings/booking_1/checkout') && init?.method === 'POST') {
-        checkoutBody = JSON.parse(init.body as string);
-        return jsonResponse(200, { booking: { ...checkedInResult, status: 'CHECKED_OUT' } });
-      }
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Bookings' })).toBeInTheDocument());
-    await user.click(screen.getByRole('link', { name: 'Bookings' }));
-    await waitFor(() => expect(screen.getByText('Check-in / check-out')).toBeInTheDocument());
-
-    await user.type(screen.getByLabelText('Booking reference or guest name'), 'Arrival Guest');
-    await user.click(screen.getByRole('button', { name: 'Look up' }));
-    await user.click(await screen.findByText('Arrival Guest'));
-    // No balance/payment gate — the button is available unconditionally
-    // for a CHECKED_IN booking.
-    await user.click(await screen.findByRole('button', { name: 'Confirm departure (check out)' }));
-
-    expect(await screen.findByText('LWW-260823-0003 checked out — Arrival Guest.')).toBeInTheDocument();
-    expect(checkoutBody).toEqual({});
+    expect(await screen.findByText('Arrival Guest')).toBeInTheDocument();
+    expect(screen.getByText('LWW-260823-0003')).toBeInTheDocument();
+    expect(screen.getByText('R01')).toBeInTheDocument();
+    // No action button here anymore — that moved to the Unit drawer.
+    expect(screen.queryByRole('button', { name: 'Confirm arrival' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /confirm departure/i })).not.toBeInTheDocument();
   });
 });

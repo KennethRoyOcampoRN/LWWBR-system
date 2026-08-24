@@ -46,6 +46,19 @@ import type { RoleKey } from './roles.js';
 // narrow exception rather than a breach of "read-only except
 // payment:verify and report:export." OWNER is granted workorder:create
 // and incident:create below; every other write-shaped key stays withheld.
+//
+// 3. booking:checkin/booking:checkout narrowed below the table (client
+//    decision, 2026-08-24): §5.4's row grants these to SYS_ADMIN,
+//    RESORT_MGR, OPS_SAFETY, ADMIN_HEAD, ADMIN_STAFF, and CASHIER. The
+//    client's own instruction while redesigning the check-in/check-out
+//    flow was explicit and narrower — "seed booking:checkin and
+//    booking:checkout to RESORT_MANAGER, ADMIN_HEAD, and ADMIN_STAFF by
+//    default" — so OPS_SAFETY_SUPERVISOR and CASHIER no longer carry
+//    these two keys in the seed (SYSTEM_ADMIN keeps them, as it does
+//    every key). Not a permanent ceiling: SYSTEM_ADMIN can grant either
+//    key to any other role afterward via the Roles admin page — this is
+//    only the seed default, same as every other role/permission decision
+//    made this session.
 export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, PermissionScope>>> = {
   SYSTEM_ADMIN: {
     'amenity:approve': 'ALL',
@@ -181,8 +194,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
-    'booking:checkin': 'ALL',
-    'booking:checkout': 'ALL',
     'booking:read': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
@@ -282,8 +293,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
-    'booking:checkin': 'ALL',
-    'booking:checkout': 'ALL',
     'booking:create': 'ALL',
     'booking:read': 'ALL',
     'booking:update': 'ALL',

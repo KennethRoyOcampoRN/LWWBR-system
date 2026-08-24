@@ -7,6 +7,9 @@ import {
   type BookingStatusKey,
   type BookingTypeKey,
   type BookingWindowSettings,
+  type PermissionKey,
+  type PermissionScope,
+  type RoleKey,
 } from '@lwwbr/shared';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
@@ -108,8 +111,17 @@ function nightsBetween(arrivalDate: string, departureDate: string): number {
   return Math.round((departureUtc - arrivalUtc) / 86_400_000);
 }
 
+// department/roles/permissions, added 2026-08-24: applyAutomaticUnitStatusChange
+// now needs the caller's full identity (not just id) to auto-create the
+// post-checkout HOUSEKEEPING work order via createWorkOrder, which
+// itself expects that shape. req.authUser (router.ts) already carries
+// every one of these fields — see AuthenticatedUser in auth/service.ts —
+// so no router change was needed to satisfy this.
 interface BookingActor {
   id: string;
+  department: string;
+  roles: readonly RoleKey[];
+  permissions: Partial<Record<PermissionKey, PermissionScope>>;
 }
 
 function bookingToJson<
@@ -354,7 +366,7 @@ export async function checkInBooking(idOrReferenceNo: string, input: CheckInBook
   }
 
   for (const bu of booking.units) {
-    await applyAutomaticUnitStatusChange(bu.unit.id, 'OCCUPIED', actor.id);
+    await applyAutomaticUnitStatusChange(bu.unit.id, 'OCCUPIED', actor);
   }
 
   await prisma.checkInRecord.create({
@@ -393,6 +405,22 @@ export async function checkInBooking(idOrReferenceNo: string, input: CheckInBook
 // check, now or later." No balance/folio check anywhere in this
 // function, deliberately — payment lives entirely outside this system
 // per the client's own architectural correction, 2026-08-23.
+//
+// Multi-room checkout, added 2026-08-24 (redesign, live-testing
+// feedback): "if a booking spans multiple units, checking out from any
+// one of those units should ask: check out just this room, or all rooms
+// under this booking?" `input.unitId` is that choice — present, checks
+// out only that one unit and leaves the rest Occupied; omitted, checks
+// out every unit still Occupied under the booking (the original
+// all-at-once behavior, still exactly what a single-unit booking's
+// checkout does).
+//
+// The booking itself only finalizes to CHECKED_OUT — and only then gets
+// its CheckOutRecord (damages/deposit paperwork) — once every one of its
+// units has actually cleared. A partial checkout (some units still
+// Occupied) leaves the booking at CHECKED_IN with no CheckOutRecord yet;
+// the next checkout call against this same booking (whichever unit
+// initiates it) will see it's still CHECKED_IN and can proceed normally.
 export async function checkOutBooking(idOrReferenceNo: string, input: CheckOutBookingInput, actor: BookingActor) {
   const booking = await findBookingWithUnits(idOrReferenceNo);
 
@@ -401,14 +429,35 @@ export async function checkOutBooking(idOrReferenceNo: string, input: CheckOutBo
     throw new ApiError(422, 'INVALID_TRANSITION', `Cannot check out a booking from ${fromStatus}`);
   }
 
-  for (const bu of booking.units) {
+  let targetUnits = booking.units;
+  if (input.unitId) {
+    const match = booking.units.find((bu) => bu.unit.id === input.unitId);
+    if (!match) {
+      throw new ApiError(422, 'VALIDATION_ERROR', 'That unit is not part of this booking.');
+    }
+    targetUnits = [match];
+  }
+
+  for (const bu of targetUnits) {
     if (bu.unit.status !== 'OCCUPIED') {
       throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code} is not currently Occupied.`);
     }
   }
 
-  for (const bu of booking.units) {
-    await applyAutomaticUnitStatusChange(bu.unit.id, 'VACANT_DIRTY', actor.id);
+  for (const bu of targetUnits) {
+    await applyAutomaticUnitStatusChange(bu.unit.id, 'VACANT_DIRTY', actor);
+  }
+
+  // Units outside targetUnits weren't touched by this call — their
+  // status in this already-fetched `booking.units` snapshot is still
+  // current. If any of them is still Occupied, this booking isn't fully
+  // checked out yet.
+  const targetUnitIds = new Set(targetUnits.map((bu) => bu.unit.id));
+  const stillOccupiedElsewhere = booking.units.some(
+    (bu) => !targetUnitIds.has(bu.unit.id) && bu.unit.status === 'OCCUPIED',
+  );
+  if (stillOccupiedElsewhere) {
+    return getBooking(booking.id);
   }
 
   await prisma.checkOutRecord.create({
@@ -454,6 +503,13 @@ export async function checkOutBooking(idOrReferenceNo: string, input: CheckOutBo
 // either. The additional `endAt >= now` filter is what actually makes
 // this "current or future": excluding CANCELLED/CHECKED_OUT alone would
 // still let a merely-old PENDING/NO_SHOW booking linger in the list.
+// `unitCount`, added 2026-08-24: powers the Unit drawer's check-out
+// prompt — "checking out from any one of those units should ask: check
+// out just this room, or all rooms under this booking?" — without a
+// second round trip to GET /bookings/:id just to learn how many units a
+// booking spans. Deliberately a raw count via `_count`, not the full
+// unit list: the drawer only needs the number to decide whether to
+// prompt at all (unitCount === 1 never prompts).
 export async function listUpcomingBookingsForUnit(unitId: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
@@ -467,11 +523,23 @@ export async function listUpcomingBookingsForUnit(unitId: string) {
     },
     include: {
       booking: {
-        select: { id: true, referenceNo: true, guestName: true, type: true, status: true, startAt: true, endAt: true },
+        select: {
+          id: true,
+          referenceNo: true,
+          guestName: true,
+          type: true,
+          status: true,
+          startAt: true,
+          endAt: true,
+          _count: { select: { units: { where: { deletedAt: null } } } },
+        },
       },
     },
     orderBy: { booking: { startAt: 'asc' } },
     take: 5,
   });
-  return bookingUnits.map((bu) => bu.booking);
+  return bookingUnits.map((bu) => {
+    const { _count, ...booking } = bu.booking;
+    return { ...booking, unitCount: _count.units };
+  });
 }

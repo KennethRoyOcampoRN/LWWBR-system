@@ -685,4 +685,196 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText(/R05 — Room 5: Cleaning → Cleaned/i)).toBeInTheDocument());
     expect(screen.getByText(/Room Attendant 1 \(Demo\)/i)).toBeInTheDocument();
   });
+
+  // Redesign, 2026-08-24 (live-testing feedback): check-in/check-out
+  // moved from a dedicated Bookings-page panel into the Unit drawer
+  // itself — "day-to-day check-in/check-out moves to where staff are
+  // already looking." Gated on booking:checkin/booking:checkout the same
+  // way the work order Verify button is hidden from a cross-department
+  // POC — see the "hides the check-in/check-out section entirely" test
+  // below for the negative case.
+  describe('check-in / check-out from the Unit drawer', () => {
+    const readyUnit = {
+      id: 'unit_1',
+      code: 'R01',
+      name: 'Room 1',
+      unitTypeId: 'type_1',
+      type: 'ROOM',
+      capacity: 2,
+      floor: null,
+      status: 'READY',
+      version: 3,
+      notes: null,
+      isActive: true,
+    };
+    const pendingBooking = {
+      id: 'booking_1',
+      referenceNo: 'LWW-260824-0001',
+      guestName: 'Arrival Guest',
+      type: 'OVERNIGHT',
+      status: 'PENDING',
+      startAt: '2026-08-24T06:00:00.000Z',
+      endAt: '2026-08-25T04:00:00.000Z',
+      unitCount: 1,
+    };
+
+    it('hides the check-in/check-out section entirely for a role without booking:checkin or booking:checkout', async () => {
+      const housekeepingUser = {
+        ...currentUser,
+        roles: ['HOUSEKEEPING_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'unit:update_status': 'ALL' },
+      };
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [readyUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [pendingBooking] });
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await userEvent.setup().click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await userEvent.setup().click(screen.getByText('R01'));
+
+      expect(await screen.findByText(/Booked: Arrival Guest/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Check in' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Check out' })).not.toBeInTheDocument();
+    });
+
+    it('checks in directly from the drawer for a role with booking:checkin', async () => {
+      const user = userEvent.setup();
+      const adminStaffUser = {
+        ...currentUser,
+        roles: ['ADMIN_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkin': 'ALL', 'booking:checkout': 'ALL' },
+      };
+      let bookingsCallCount = 0;
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [readyUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) {
+          bookingsCallCount += 1;
+          if (bookingsCallCount === 1) return jsonResponse(200, { bookings: [pendingBooking] });
+          return jsonResponse(200, { bookings: [{ ...pendingBooking, status: 'CHECKED_IN' }] });
+        }
+        if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
+          expect(JSON.parse(init.body as string)).toEqual({});
+          return jsonResponse(200, { booking: { ...pendingBooking, status: 'CHECKED_IN' } });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await user.click(screen.getByText('R01'));
+
+      const checkInButton = await screen.findByRole('button', { name: 'Check in' });
+      await user.click(checkInButton);
+
+      // The list refetches after a successful check-in — the booking now
+      // shows CHECKED_IN, so "Check in" is gone and "Check out" appears.
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Check out' })).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: 'Check in' })).not.toBeInTheDocument();
+    });
+
+    it('warns rather than hard-blocking check-in from a not-yet-Ready unit, then checks in on acknowledge', async () => {
+      const user = userEvent.setup();
+      const dirtyUnit = { ...readyUnit, status: 'VACANT_DIRTY' };
+      const adminStaffUser = {
+        ...currentUser,
+        roles: ['ADMIN_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkin': 'ALL' },
+      };
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [dirtyUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [pendingBooking] });
+        if (url.endsWith('/bookings/booking_1/checkin') && init?.method === 'POST') {
+          const body = JSON.parse(init.body as string) as { acknowledgeNotReady?: boolean };
+          if (!body.acknowledgeNotReady) {
+            return jsonResponse(409, {
+              error: {
+                code: 'UNIT_NOT_READY',
+                message: 'R01 is not Ready yet (currently VACANT_DIRTY) — confirm to check in anyway.',
+                details: { unitId: 'unit_1', unitCode: 'R01', unitStatus: 'VACANT_DIRTY' },
+              },
+            });
+          }
+          return jsonResponse(200, { booking: { ...pendingBooking, status: 'CHECKED_IN' } });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await user.click(screen.getByText('R01'));
+
+      await user.click(await screen.findByRole('button', { name: 'Check in' }));
+
+      expect(await screen.findByText(/R01 is not Ready yet/)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Check in anyway' }));
+
+      await waitFor(() => expect(screen.queryByText(/R01 is not Ready yet/)).not.toBeInTheDocument());
+    });
+
+    it('prompts "just this room or all rooms" when checking out a multi-unit booking, and sends unitId for "just this room"', async () => {
+      const user = userEvent.setup();
+      const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };
+      const twoRoomBooking = { ...pendingBooking, status: 'CHECKED_IN', unitCount: 2 };
+      const adminStaffUser = {
+        ...currentUser,
+        roles: ['ADMIN_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkout': 'ALL' },
+      };
+      let checkoutBody: unknown = null;
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [twoRoomBooking] });
+        if (url.endsWith('/bookings/booking_1/checkout') && init?.method === 'POST') {
+          checkoutBody = JSON.parse(init.body as string);
+          return jsonResponse(200, { booking: { ...twoRoomBooking, status: 'CHECKED_IN' } });
+        }
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await user.click(screen.getByText('R01'));
+
+      await user.click(await screen.findByRole('button', { name: 'Check out' }));
+
+      expect(await screen.findByText(/This booking includes 2 rooms/)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Just this room' }));
+
+      await waitFor(() => expect(checkoutBody).toEqual({ unitId: 'unit_1' }));
+    });
+  });
 });

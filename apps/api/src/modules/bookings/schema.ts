@@ -81,7 +81,16 @@ export type CheckInBookingInput = z.infer<typeof checkInBookingSchema>;
 // not gated on any payment-settlement check, now or later." No balance
 // field anywhere in this schema, deliberately — see the client's own
 // architectural note: payment lives entirely outside this system.
+//
+// `unitId`, added 2026-08-24: multi-room checkout redesign — "checking
+// out from any one of those units should ask: check out just this room,
+// or all rooms." Omitted (the original behavior): check out every unit
+// still Occupied under the booking. Present: check out only that one
+// unit, leaving the rest Occupied — see checkOutBooking's own comment in
+// service.ts for how a booking only finalizes to CHECKED_OUT once every
+// unit has cleared.
 export const checkOutBookingSchema = z.object({
+  unitId: z.string().min(1).optional(),
   damagesNoted: z.string().trim().max(2000).optional(),
   depositRefunded: z.boolean().optional().default(false),
 });

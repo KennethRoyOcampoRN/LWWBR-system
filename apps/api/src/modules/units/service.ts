@@ -10,6 +10,15 @@ import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
 import { prisma } from '../../lib/prisma.js';
+// Second cross-module import in this codebase (see
+// applyAutomaticUnitStatusChange's own comment below for the first,
+// bookings -> units). Spec §7.1: "OCCUPIED -> VACANT_DIRTY happens
+// automatically on check-out and auto-creates a HOUSEKEEPING work order
+// for that unit" — WorkOrder lifecycle (referenceNo generation, the
+// realtime workorder.created broadcast, department notification) is
+// owned by the work orders module, so this reuses it rather than
+// duplicating a second, parallel ticket-creation path here.
+import { createWorkOrder } from '../workorders/service.js';
 import type {
   ChangeUnitStatusInput,
   CreateUnitInput,
@@ -69,7 +78,7 @@ async function broadcastUnitStatusChanged(params: {
 export async function applyAutomaticUnitStatusChange(
   unitId: string,
   toStatus: 'OCCUPIED' | 'VACANT_DIRTY',
-  actorId: string,
+  actor: { id: string; department: string; roles: readonly RoleKey[]; permissions: Partial<Record<PermissionKey, PermissionScope>> },
 ): Promise<{ id: string; code: string; fromStatus: UnitStatusKey; toStatus: UnitStatusKey; version: number }> {
   const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
   if (!unit) {
@@ -86,11 +95,50 @@ export async function applyAutomaticUnitStatusChange(
   }
 
   await prisma.unitStatusEvent.create({
-    data: { unitId, fromStatus, toStatus, actorId, source: 'AUTOMATIC' },
+    data: { unitId, fromStatus, toStatus, actorId: actor.id, source: 'AUTOMATIC' },
   });
 
   const newVersion = unit.version + 1;
-  await broadcastUnitStatusChanged({ unitId, code: unit.code, fromStatus, toStatus, actorId, version: newVersion, note: null });
+  await broadcastUnitStatusChanged({
+    unitId,
+    code: unit.code,
+    fromStatus,
+    toStatus,
+    actorId: actor.id,
+    version: newVersion,
+    note: null,
+  });
+
+  // Spec §7.1: "auto-creates a HOUSEKEEPING work order for that unit."
+  // Real gap found live-testing, 2026-08-24: the transition itself was
+  // wired (M4's original check-in/check-out slice) but never actually
+  // created the ticket — a room going Dirty with nothing alerting
+  // housekeeping. Scoped specifically to this real trigger (check-out),
+  // not to every path that can reach VACANT_DIRTY — the SYSTEM_ADMIN
+  // override and forced-correction panels in changeUnitStatus/
+  // forceUnitStatus below are stopgap/data-correction tools, not the
+  // spec's actual "on check-out" trigger, and creating a ticket there too
+  // was never asked for. No photo required (HOUSEKEEPING's onCreate
+  // requirement is empty, see DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS) and
+  // NORMAL priority — this is routine post-checkout turnover, not an
+  // urgent ticket that should page the whole department.
+  if (toStatus === 'VACANT_DIRTY') {
+    try {
+      await createWorkOrder(
+        {
+          type: 'HOUSEKEEPING',
+          title: `Post-checkout cleaning — ${unit.code}`,
+          priority: 'NORMAL',
+          department: 'HOUSEKEEPING',
+          unitId,
+          photos: [],
+        },
+        actor,
+      );
+    } catch (error) {
+      console.error('Auto-creating the post-checkout HOUSEKEEPING work order failed:', error);
+    }
+  }
 
   return { id: unitId, code: unit.code, fromStatus, toStatus, version: newVersion };
 }
