@@ -3146,3 +3146,87 @@ return workflow + the overdue sweep job (§7.4); the F&B menu, order
 creation, and kitchen kanban (§7.3). No design ambiguity hit yet in this
 slice worth flagging — the payments-scope question was already resolved
 by the client's own instruction before I started.
+
+### M5, slice 2: amenity request/issue/return workflow + overdue sweep job (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** Same phone-only working
+agreement as slice 1: small slices, everything checked here is
+typecheck/lint/build plus real backend tests against a mocked Prisma
+client — no browser run this time (backend-only slice, no new frontend
+surface to click through), and definitely nothing against real data.
+
+Backend-only slice, deliberately: the request → approve → issue → return
+workflow (spec §7.4) plus the `POST /jobs/amenity-overdue` sweep. The
+Amenities page UI for this workflow is next.
+
+**New transition table**, `packages/shared/src/amenityRequest.ts`, same
+pattern as `unitStatus.ts`/`workOrder.ts`:
+`REQUESTED -> APPROVED -> ISSUED -> RETURNED`, with `CANCELLED` off
+`APPROVED` and `OVERDUE -> RETURNED | LOST_DAMAGED`. Two judgment calls,
+flagged rather than silently assumed:
+
+1. **`REQUESTED -> CANCELLED` added**, even though spec's own diagram
+   only draws `CANCELLED` from `APPROVED`. Same reasoning already
+   confirmed by the client for `WorkOrder`'s `OPEN -> CANCELLED` gap
+   earlier this session: an unapproved request needs a withdraw path too,
+   not just a duplicate/mistake stuck waiting for someone to approve it
+   before it can be cancelled. Unlike the work-order case this isn't a
+   client confirmation — it's a documented inference from precedent,
+   worth a second look once you're back at a PC.
+2. **`ISSUED -> OVERDUE` deliberately has no entry in the table at all.**
+   It's the one truly automatic transition (spec: "auto-flips... via
+   `POST /jobs/amenity-overdue`") — it never goes through the manual
+   status-change endpoint, same as units' automatic `READY -> OCCUPIED`/
+   `OCCUPIED -> VACANT_DIRTY` bypassing the manual transition table
+   entirely rather than appearing in it with an override permission.
+
+Both cancellation transitions (`REQUESTED`/`APPROVED -> CANCELLED`) are
+gated on `amenity:approve` — confirmed safe by checking the seeded role
+matrix directly: every role holding `amenity:request` also holds
+`amenity:approve`, so no requester loses the ability to withdraw their
+own request by gating cancellation on the reviewer permission instead of
+inventing a separate key.
+
+**Deposit gate, monitoring-not-transactions applied again:** spec §7.4
+says an item with `requiresDeposit` "cannot move to `ISSUED` without a
+recorded deposit amount." Per the client's explicit instruction this
+session, that's enforced as a plain `depositCollected: boolean`
+confirmation the issuer must tick — a `422 DEPOSIT_REQUIRED` blocks the
+transition otherwise — never a `Payment`/`FolioCharge` posting. Nothing
+about an actual amount collected is persisted anywhere beyond that
+boolean; `AmenityItem.depositAmount` (from slice 1) stays the one
+informational reference figure. `dueBackAt` is separately required on
+issue (needed for the overdue job to ever have something to check).
+
+**New endpoints** (`apps/api/src/modules/amenities/`): `POST`/`GET
+/amenity-requests`, `GET /amenity-requests/:id`, `POST
+/amenity-requests/:id/status` (one generic status-change route, same
+`requireAuth` + `getMe` + transition-table-decides-the-permission pattern
+as work orders'/units' status routes — no single fixed permission gate
+since which key applies depends on the requested transition). Broadcasts
+`amenity.request.changed` on the existing `property` realtime channel
+(spec §9.1), best-effort, same non-fatal pattern as every other broadcast
+in this codebase.
+
+**New job infrastructure** (`apps/api/src/modules/jobs/`): spec §3.1's
+"plain authenticated HTTP endpoint... protected by a shared secret
+header" pattern, built fresh (nothing existed yet). `requireJobSecret`
+compares the `x-job-secret` header against `JOB_SECRET` (already scaffolded
+in `env.ts` since M0/M1, unused until now) using `crypto.timingSafeEqual`
+rather than `===` — this header is a bearer credential on a
+fully internet-exposed API (spec §3.1.1), so a naive comparison's timing
+side-channel is worth closing even though it's a small one.
+`applyAmenityOverdueSweep` is a bulk `updateMany` (not the per-row
+`changeAmenityRequestStatus`), matching that this transition needs no
+permission check — the job route's shared secret is the only
+authorization it needs.
+
+Verified: 8 new transition-table tests (`packages/shared`) covering the
+full lifecycle including both judgment calls above; 16 new backend tests
+(`apps/api`) covering every transition's permission gate, the deposit
+gate (blocked and unblocked), the `dueBackAt` requirement, the job
+route's secret check (missing, wrong, correct), and the sweep's
+`updateMany` where-clause. `packages/shared` 63/63, `apps/api` 257/260
+(same 3 pre-existing network-blocked round-trip tests), `apps/web` 36/36
+(unchanged — no frontend work this slice). Full repo lint/typecheck/build
+clean.

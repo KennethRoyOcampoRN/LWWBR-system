@@ -9,3 +9,4 @@ export * from './unitStatus.js';
 export * from './workOrder.js';
 export * from './booking.js';
 export * from './amenity.js';
+export * from './amenityRequest.js';
