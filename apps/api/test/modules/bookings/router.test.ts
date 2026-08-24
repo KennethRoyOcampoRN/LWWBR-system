@@ -364,7 +364,12 @@ describe('GET /api/v1/bookings/group — the checkout checklist, redesign 2026-0
     ]);
     const whereArg = mockPrisma.bookingUnit.findMany.mock.calls[0]?.[0]?.where;
     expect(whereArg.booking.referenceNo).toBe('EXT-100');
-    expect(whereArg.booking.status).toBe('CHECKED_IN');
+    // Real gap found live-testing, 2026-08-24: was `status: 'CHECKED_IN'`
+    // — too strict for a legacy booking whose own transition never
+    // completed before the old check-in flow was removed. Only the two
+    // genuinely-closed statuses are excluded now; Unit.status is the
+    // real signal (asserted separately below).
+    expect(whereArg.booking.status.notIn).toEqual(expect.arrayContaining(['CANCELLED', 'CHECKED_OUT']));
     expect(whereArg.unit.status).toBe('OCCUPIED');
   });
 
@@ -516,7 +521,7 @@ describe('POST /api/v1/bookings/checkout — checklist-based, redesign 2026-08-2
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 
-  it('rejects a unit whose booking is not currently CHECKED_IN (422 INVALID_TRANSITION)', async () => {
+  it('rejects a unit whose booking is already closed out (CHECKED_OUT), even if the unit itself is still Occupied (422 INVALID_TRANSITION)', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
     const booking = fakeBookingWithUnits({ status: 'CHECKED_OUT' });
     mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
@@ -526,6 +531,36 @@ describe('POST /api/v1/bookings/checkout — checklist-based, redesign 2026-08-2
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  // Real gap found live-testing, 2026-08-24: a booking created and
+  // checked in through the old, now-removed "New booking" flow may never
+  // have completed its own transition to CHECKED_IN before that flow was
+  // deleted — nothing in this codebase can move a legacy PENDING/
+  // CONFIRMED booking forward anymore, so a unit stuck behind one
+  // previously had no checkout path at all. The room being Occupied is
+  // what actually matters — not the booking's own stuck bookkeeping
+  // status.
+  it('checks out a unit whose booking is stuck at a legacy PENDING status, as long as the unit itself is Occupied', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_HEAD'));
+    const booking = fakeBookingWithUnits({ status: 'PENDING' });
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkout').set('Cookie', authCookie()).send({ unitIds: ['unit_1'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.finalizedBookingIds).toEqual(['booking_1']);
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'VACANT_DIRTY' }) }),
+    );
+    expect(mockPrisma.checkOutRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ bookingId: 'booking_1' }) }),
+    );
+    expect(mockPrisma.booking.update).toHaveBeenCalledWith({
+      where: { id: 'booking_1' },
+      data: expect.objectContaining({ status: 'CHECKED_OUT' }),
+    });
   });
 
   it('does not fail checkout when auto-creating the housekeeping work order itself fails', async () => {
@@ -601,7 +636,7 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
     ]);
   });
 
-  it('includes an open-ended (null endAt) CHECKED_IN booking, and excludes CANCELLED/CHECKED_OUT — asserts the actual query', async () => {
+  it('includes an open-ended (null endAt) booking, and excludes CANCELLED/CHECKED_OUT — asserts the actual query', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
     mockPrisma.bookingUnit.findMany.mockResolvedValue([]);
 
@@ -611,32 +646,36 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
     const whereArg = mockPrisma.bookingUnit.findMany.mock.calls[0]?.[0]?.where;
     expect(whereArg.unitId).toBe('unit_1');
     expect(whereArg.booking.status.notIn).toEqual(expect.arrayContaining(['CANCELLED', 'CHECKED_OUT']));
-    // Redesign, 2026-08-24: must include `endAt: null` (an open-ended,
-    // currently-CHECKED_IN stay), not just `endAt >= now` — a plain
-    // `gte` filter alone would silently drop every current guest with no
-    // known departure. `status: 'CHECKED_IN'` (added in the same OR,
-    // 2026-08-24 — see this function's own comment) covers the other
-    // real gap: a pre-redesign booking's real, non-null endAt that has
-    // since passed.
-    expect(whereArg.booking.OR).toEqual(
+    // Redesign, 2026-08-24, twice over — see this function's own
+    // comment. Must include `endAt: null` (an open-ended, currently-
+    // occupied stay), not just `endAt >= now` — a plain `gte` filter
+    // alone would silently drop every current guest with no known
+    // departure. `unit: { status: 'OCCUPIED' }` (not `booking.status ===
+    // 'CHECKED_IN'` — a first attempt that still failed for a booking
+    // stuck at a legacy status) covers the other real gap: a
+    // pre-redesign booking's real, non-null endAt that has since passed
+    // while the room itself is still genuinely Occupied.
+    expect(whereArg.OR).toEqual(
       expect.arrayContaining([
-        { status: 'CHECKED_IN' },
-        { endAt: null },
-        expect.objectContaining({ endAt: expect.objectContaining({ gte: expect.any(Date) }) }),
+        { unit: { status: 'OCCUPIED' } },
+        { booking: { endAt: null } },
+        expect.objectContaining({ booking: expect.objectContaining({ endAt: expect.objectContaining({ gte: expect.any(Date) }) }) }),
       ]),
     );
   });
 
   // Real gap found live-testing, 2026-08-24: a booking created and
-  // checked in through the *old*, now-removed "New booking" flow has a
-  // real, non-null endAt resolved from whatever departure date was given
-  // back then. Once that date has passed — plausible days later, guest
-  // never actually checked out — that row must still reach the client
-  // with its real CHECKED_IN status intact (the mock can't exercise
-  // Postgres's own OR filtering — the test above already pins the
-  // `where` clause's shape; this one guards the rest of the response
-  // path for exactly this row).
-  it('a pre-redesign CHECKED_IN booking whose real endAt has already passed still shows up, so it has a Check-out path', async () => {
+  // checked in through the *old*, now-removed "New booking" flow may
+  // never have completed its own transition to CHECKED_IN before that
+  // flow was deleted, leaving it stuck at a legacy PENDING status
+  // forever with a real, non-null endAt resolved from whatever departure
+  // date was given back then. Once that date has passed — plausible days
+  // later, guest never actually checked out — that row must still reach
+  // the client, because the room itself is still genuinely Occupied (the
+  // mock can't exercise Postgres's own OR filtering — the test above
+  // already pins the `where` clause's shape; this one guards the rest of
+  // the response path for exactly this row).
+  it('a pre-redesign booking stuck at a legacy status, with a real endAt already in the past, still shows up as long as its unit is Occupied', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_HEAD'));
     mockPrisma.bookingUnit.findMany.mockResolvedValue([
       {
@@ -646,7 +685,7 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
           referenceNo: 'LWW-260823-0002',
           guestName: 'Old Flow Guest',
           type: 'OVERNIGHT',
-          status: 'CHECKED_IN',
+          status: 'PENDING',
           startAt: new Date('2026-08-23T06:00:00.000Z'),
           endAt: new Date('2026-08-24T04:00:00.000Z'), // already in the past
         },
@@ -657,7 +696,7 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
 
     expect(res.status).toBe(200);
     expect(res.body.bookings).toEqual([
-      expect.objectContaining({ referenceNo: 'LWW-260823-0002', status: 'CHECKED_IN' }),
+      expect.objectContaining({ referenceNo: 'LWW-260823-0002', status: 'PENDING' }),
     ]);
   });
 

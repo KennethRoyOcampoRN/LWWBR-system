@@ -1,6 +1,7 @@
 import { TZDate } from '@date-fns/tz';
 import {
   BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
+  type BookingStatusKey,
   type PermissionKey,
   type PermissionScope,
   type RoleKey,
@@ -101,14 +102,24 @@ export async function getBooking(id: string) {
 // rather than a single Booking.id, since a group's rooms can have been
 // checked in across more than one submission under the same external
 // ID (client decision) and each submission is its own Booking row.
-// Scoped to CHECKED_IN bookings whose unit is still actually Occupied —
-// a unit already checked out (by anyone, from anywhere) simply isn't a
-// candidate anymore, whichever Booking row it came from.
+//
+// Scoped to Unit.status === 'OCCUPIED' as the primary signal, not a
+// strict `booking.status === 'CHECKED_IN'` requirement — real gap found
+// live-testing 2026-08-24: a booking created and checked in through the
+// *old*, now-removed "New booking" flow may never have actually
+// transitioned to CHECKED_IN before that flow was deleted, leaving it
+// stuck at a legacy PENDING/CONFIRMED status forever (nothing in this
+// codebase can move it forward anymore — BOOKING_TRANSITIONS empties
+// both edges now). The room itself is still genuinely, physically
+// Occupied regardless of what that bookkeeping field says, and that's
+// the fact that actually matters for "can this be checked out." Only
+// CANCELLED/CHECKED_OUT are excluded — a booking in either state has no
+// business being treated as the current occupant of anything.
 export async function findOccupiedUnitsForReferenceNo(referenceNo: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
       deletedAt: null,
-      booking: { deletedAt: null, referenceNo, status: 'CHECKED_IN' },
+      booking: { deletedAt: null, referenceNo, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
       unit: { deletedAt: null, status: 'OCCUPIED' },
     },
     include: {
@@ -257,12 +268,24 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
     throw new ApiError(422, 'VALIDATION_ERROR', 'One or more selected units are not part of any active booking.');
   }
 
+  // Real gap found live-testing, 2026-08-24: this used to hard-require
+  // `bu.booking.status === 'CHECKED_IN'`, which permanently locked out
+  // any booking created through the old, now-removed "New booking" flow
+  // that never actually completed its own transition to CHECKED_IN
+  // before that flow was deleted — nothing in this codebase can move a
+  // legacy PENDING/CONFIRMED booking forward anymore, so a unit stuck
+  // behind one had no checkout path at all. Unit.status === 'OCCUPIED'
+  // is the real signal that matters — a room is either physically
+  // occupied or it isn't, regardless of what the booking's own
+  // bookkeeping status says. Only CANCELLED/CHECKED_OUT are rejected — a
+  // booking in either state has no business being tied to an Occupied
+  // unit's checkout.
   for (const bu of requested) {
-    if (bu.booking.status !== 'CHECKED_IN') {
-      throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code}'s booking is not currently checked in.`);
-    }
     if (bu.unit.status !== 'OCCUPIED') {
       throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code} is not currently Occupied.`);
+    }
+    if (BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY.includes(bu.booking.status as BookingStatusKey)) {
+      throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code}'s booking is already closed out.`);
     }
   }
 
@@ -336,27 +359,31 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
 //
 // Deliberately reuses BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY rather
 // than inventing a second definition of "not relevant anymore." The
-// `endAt` filter, updated 2026-08-24: `endAt` is now nullable (open-
-// ended until actual checkout — see the Prisma schema's own comment), so
-// a currently-CHECKED_IN stay with no known end must still show up here
-// — `endAt: null` is included alongside `endAt >= now` rather than
-// excluded by the old plain `gte` filter, which would have silently
-// dropped every current guest with no set departure.
+// `endAt` filter: `endAt` is nullable (open-ended until actual checkout
+// — see the Prisma schema's own comment), so a currently-occupied stay
+// with no known end must still show up here — `endAt: null` is included
+// alongside `endAt >= now` rather than excluded by a plain `gte` filter,
+// which would silently drop every current guest with no set departure.
 //
-// `status: 'CHECKED_IN'` added to the same OR, 2026-08-24 — real gap
-// found live-testing: a *pre-redesign* booking (created through the old
-// "New booking" flow, checked in before Check-in creation replaced it)
-// has a real, non-null `endAt` resolved from whatever departure date the
-// guest gave at the time. Once that date has passed — entirely possible
-// days later, with the guest never actually checked out — the old
-// `endAt >= now` half of this filter silently dropped the row from this
-// query, so its Check-out button never had a row to render on. A
-// CHECKED_IN booking is *always* current regardless of what its
-// originally-planned end was: the guest hasn't left and nothing has
-// closed it out yet, so it must never be filtered by endAt at all. The
-// endAt half of this OR still matters for a legacy PENDING/CONFIRMED row
-// (unreachable going forward, but historical data may still hold one) —
-// there, a long-past planned arrival really shouldn't linger here.
+// `unit: { status: 'OCCUPIED' }` added to the same OR, 2026-08-24 — real
+// gap found live-testing, twice over. First attempt added `status:
+// 'CHECKED_IN'` to this OR, reasoning that a checked-in booking is
+// always current regardless of endAt — true, but it assumed every
+// legitimately-occupied room's booking actually *reached* CHECKED_IN.
+// It doesn't: a booking created through the old, now-removed "New
+// booking" flow may never have completed its own transition before that
+// flow was deleted, leaving it stuck at a legacy PENDING/CONFIRMED
+// status forever — nothing in this codebase can move it forward anymore
+// (BOOKING_TRANSITIONS empties both edges now). That first fix still
+// filtered such a booking out by endAt once its old departure date
+// passed, exactly reproducing the original bug for a booking with a
+// stuck status. The room being Occupied is the actual ground truth for
+// "is this still current" — not the booking's own bookkeeping status,
+// which historical data can leave in an unreachable state this session's
+// several redesigns never anticipated. The endAt-based branches still
+// matter for a legacy PENDING/CONFIRMED booking whose unit *isn't*
+// Occupied (e.g. already manually corrected back to a clean state) — a
+// long-past planned arrival that never happened shouldn't linger there.
 export async function listUpcomingBookingsForUnit(unitId: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
@@ -365,8 +392,8 @@ export async function listUpcomingBookingsForUnit(unitId: string) {
       booking: {
         deletedAt: null,
         status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] },
-        OR: [{ status: 'CHECKED_IN' }, { endAt: null }, { endAt: { gte: new Date() } }],
       },
+      OR: [{ unit: { status: 'OCCUPIED' } }, { booking: { endAt: null } }, { booking: { endAt: { gte: new Date() } } }],
     },
     include: {
       booking: {

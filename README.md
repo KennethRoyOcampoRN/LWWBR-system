@@ -2774,3 +2774,76 @@ lint/typecheck/build clean. No schema change — this is a query fix only,
 no `npx prisma db push` needed. Live data note: **C01 and any other
 pre-redesign booking still sitting Occupied should now show a Check-out
 button** once this is pulled; nothing needs manual cleanup in Supabase.
+
+### That fix was still wrong for C01 — traced the real cause, keyed checkout off the room's own status instead (2026-08-24)
+
+Client re-tested on the previous commit and C01 still had no Check-out
+button, identical to before. Asked to verify the booking's actual
+database state directly rather than reason from code alone — confirmed
+this sandbox genuinely cannot reach the client's live Supabase project:
+raw TCP to the Postgres pooler (ports 5432/6543) times out, and the
+outbound HTTPS proxy explicitly denies (403) any connection to the
+project's `supabase.co` host — checked directly against the proxy's own
+status endpoint, which logs the rejection. No way to run the query
+myself.
+
+The client's own hypothesis was right, and it exposed a real flaw in the
+*previous* fix. That fix added `{ status: 'CHECKED_IN' }` to
+`listUpcomingBookingsForUnit`'s `OR`, reasoning "a checked-in booking is
+always current regardless of its endAt" — true, but it silently assumed
+every booking behind a genuinely-Occupied room actually *reached*
+CHECKED_IN. C01's doesn't: it was created and checked in through the
+old, now-removed "New booking" flow, and — per the client's own
+hypothesis, which this sandbox can't disprove without DB access but
+which the code fully explains — its own transition to CHECKED_IN may
+never have completed before that flow was deleted, leaving it stuck at
+a legacy `PENDING`/`CONFIRMED` status forever. Nothing in this codebase
+can move a booking out of those two states anymore
+(`BOOKING_TRANSITIONS` empties both edges since the redesign). The
+previous fix's `endAt`-bypass only fired for `CHECKED_IN` specifically,
+so a booking stuck at `PENDING` with a real, now-past `endAt` reproduced
+the exact original bug — the row (and the button behind it) still
+vanished once that old departure date passed.
+
+**Fixed properly this time by changing what "checkoutable" is keyed on
+everywhere in the checkout path — the room's own live `Unit.status`
+(`OCCUPIED`), not the booking's bookkeeping status:**
+
+- `listUpcomingBookingsForUnit`'s `endAt`-bypass now checks
+  `unit.status === 'OCCUPIED'` instead of `booking.status ===
+  'CHECKED_IN'` — a genuinely-occupied room's booking always shows,
+  regardless of what stuck legacy status or stale planned end date it
+  carries.
+- `findOccupiedUnitsForReferenceNo` (the checkout checklist query)
+  dropped its `booking.status === 'CHECKED_IN'` requirement down to
+  excluding only `CANCELLED`/`CHECKED_OUT` — a booking in either of
+  those two states has no business being tied to an Occupied unit's
+  checkout; every other status is a valid checkout candidate as long as
+  the unit itself is Occupied.
+- `checkOutUnits`'s own validation (server-side, the actual write path)
+  makes the same change — `Unit.status === 'OCCUPIED'` is now the
+  primary gate, with only `CANCELLED`/`CHECKED_OUT` bookings rejected.
+- The frontend's `canCheckOut` (`UnitsPage.tsx`) now reads the drawer's
+  own `unit.status` directly instead of `booking.status` — simpler, and
+  it's the same live prop already driving the status badge above it.
+
+This is a deliberate broadening, not a narrow patch for this one row:
+any historical booking left in an inconsistent state by this session's
+several redesigns — not just C01's specific case — now has a real
+checkout path, keyed off the fact that actually matters operationally
+(is the room occupied right now), rather than a bookkeeping field that
+three different flows have written to across the life of this codebase.
+
+4 new/updated backend tests (the checklist query's relaxed status
+filter; checkout succeeding for a unit whose booking is stuck at legacy
+`PENDING`; the drawer query's `OR` now referencing `unit.status`
+directly; the exact reported row — `PENDING` status, past `endAt`,
+Occupied unit — reaching the client). 1 new frontend test reproducing
+the precise report (Admin Head, an Occupied room, a `PENDING`-status
+booking) asserting the Check-out button renders. `apps/api` 225/228
+(+1 net after replacing the prior slice's now-superseded assertions);
+`apps/web` 34/34 (+1). Full repo lint/typecheck/build clean.
+Re-verified in a real headless browser reproducing the exact reported
+case (C01, ref `LWW-260823-0002`, guest "test 2", `PENDING` status,
+Occupied unit): the Bookings section shows the guest, and the Check-out
+button now renders. No schema change, no `npx prisma db push` needed.

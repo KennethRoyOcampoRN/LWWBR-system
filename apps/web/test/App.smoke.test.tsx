@@ -926,6 +926,44 @@ describe('App', () => {
       await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1'] }));
     });
 
+    // Real gap found live-testing, 2026-08-24: a booking created and
+    // checked in through the old, now-removed "New booking" flow may
+    // never have completed its own transition to CHECKED_IN before that
+    // flow was deleted, leaving it stuck at a legacy PENDING status
+    // forever. The Check-out button must still show — it's keyed off the
+    // room's own live status (Occupied), not the booking's bookkeeping
+    // status.
+    it('shows the Check-out button for a room that is Occupied even when its booking is stuck at a legacy PENDING status', async () => {
+      const user = userEvent.setup();
+      const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };
+      const legacyBooking = { ...occupiedBooking, status: 'PENDING' };
+      const adminHeadUser = {
+        ...currentUser,
+        roles: ['ADMIN_HEAD'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkout': 'ALL' },
+      };
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminHeadUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedUnit] });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        if (url.endsWith('/units/unit_1/timeline')) return jsonResponse(200, { events: [] });
+        if (url.endsWith('/units/unit_1/bookings')) return jsonResponse(200, { bookings: [legacyBooking] });
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+      await user.click(screen.getByText('R01'));
+
+      expect(await screen.findByText(/Booked: Arrival Guest/)).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Check out' })).toBeInTheDocument();
+    });
+
     it('shows a checklist for a multi-room booking, pre-checking the room opened from, and lets the front desk add another room before confirming', async () => {
       const user = userEvent.setup();
       const occupiedUnit = { ...readyUnit, status: 'OCCUPIED' };

@@ -319,7 +319,21 @@ function UnitDetailDrawer({
               // checkout remains a row-level action, gated on the
               // permission the same way the Verify button is hidden from
               // a cross-department POC.
-              const canCheckOut = Boolean(user?.permissions['booking:checkout']) && booking.status === 'CHECKED_IN';
+              //
+              // Keyed off unit.status (this drawer's own room), not
+              // booking.status — real gap found live-testing 2026-08-24:
+              // a booking checked in through the old, now-removed "New
+              // booking" flow may never have completed its own
+              // transition to CHECKED_IN before that flow was deleted,
+              // permanently hiding this button for a room that's
+              // genuinely still Occupied. The room's own live status is
+              // the actual fact that matters here; the booking's
+              // bookkeeping status doesn't affect whether the room needs
+              // to be checked out. GET /units/:id/bookings already
+              // excludes CANCELLED/CHECKED_OUT bookings server-side, so
+              // anything reaching this list is a valid checkout target
+              // once the room itself is Occupied.
+              const canCheckOut = Boolean(user?.permissions['booking:checkout']) && unit.status === 'OCCUPIED';
               const showChecklist = checkOutChecklistBookingId === booking.id;
               return (
                 <li key={booking.id} className="flex flex-col gap-1 text-sm">
