@@ -2953,3 +2953,67 @@ Final tallies across the whole arc: `packages/shared` 55/55, `apps/api`
 225/228 (same 3 pre-existing network-blocked round-trip tests, present
 since M0 and unrelated to any of this work), `apps/web` 34/34. Full repo
 lint/typecheck/build clean throughout.
+
+### SLA-breached work orders: real attention-queue data, not a stub; unverified payments removed outright (2026-08-24)
+
+Client-flagged staleness in the Command Center's attention queue:
+"SLA-breached work orders" still read "Coming in M3," even though M3
+(work orders) was fully built and confirmed working days earlier. Asked
+to check whether the underlying detection logic already existed
+somewhere, or whether the label was simply wrong.
+
+It genuinely didn't exist — grepped `dueAt`/`slaBreached`/`SLA` across
+the whole work orders module and found only the raw, optional `dueAt`
+field set at ticket creation, with zero breach-computation logic
+anywhere. But the label wasn't just wrong either: spec §7.2 already
+defines the exact formula (`dueAt < now && status not in (DONE,
+VERIFIED, CANCELLED)`), and the data it needs (`dueAt`, `status`) has
+existed since M3 shipped. So the fix was to build the real feature, not
+relabel the stub:
+
+- `listSlaBreachedWorkOrders()` (new, `workorders/service.ts`) queries
+  exactly that formula. `REOPENED` is deliberately not excluded — a
+  reopened ticket past its due date is still breached per spec's literal
+  wording, and `WORK_ORDER_STATUS_KEYS` confirms it's the only status
+  outside the three-value exclusion set.
+- Wired into `getUnitsDashboard()` (`units/service.ts`) as a new
+  `slaBreachedWorkOrders` field on `UnitsDashboard`, alongside the
+  existing `dirtyRooms` — the same units->workorders cross-module
+  import this codebase already uses for the post-checkout housekeeping
+  auto-ticket, extended with one more function rather than a new
+  pattern. `GET /units/dashboard` stays gated on `unit:read`, not
+  `workorder:read` — not a permission leak in practice, since
+  `workorder:read` is the floor every role holds (see
+  `rolePermissions.ts`'s own comment on why).
+- `DashboardPage.tsx`'s attention queue now renders real breached-ticket
+  rows (reference no., title, unit, overdue duration) exactly like the
+  existing dirty-room rows, including an explicit empty-state message
+  rather than just omitting the section when nothing's breached.
+
+While in there, also addressed the client's second flag: "Unverified
+payments >24h" still said "Coming in M4," but M4's payment tracking was
+already ruled entirely out of scope in an earlier session decision
+("if a feature is about tracking or moving money, it's out of scope" —
+handled by the external website/POS, not this app). "Coming in M4"
+implies it's still on the way; it isn't, permanently. Removed the row
+outright rather than relabeling it. "Overdue amenities" (M5) is
+untouched — that one actually is still a later milestone.
+
+Flagged but deliberately not touched (out of scope for this fix, same
+staleness pattern, left for the client to prioritize): the KPI strip
+still has stub cards reading "Open urgent work orders" (M3, now
+inaccurate the same way the attention-queue row was), "Pending payment
+verifications" (M4, now permanently out of scope like the row just
+removed), and "Arrivals / departures today" (M4, unclear given the
+Check-in/Check-out redesign's departure from tracking arrivals the old
+way).
+
+Verified with a new `listSlaBreachedWorkOrders()` unit test (where-clause
+shape and response mapping, since the function has no HTTP route of its
+own) plus two new `GET /units/dashboard` router tests (a breached ticket
+included, an empty list when nothing's breached), and a real
+headless-browser run against a mocked `/units/dashboard` response
+confirming the row renders correctly and the payments stub is gone from
+the DOM. `packages/shared` 55/55, `apps/api` 230/233 (same 3
+pre-existing network-blocked round-trip tests), `apps/web` 34/34. Full
+repo lint/typecheck/build clean.

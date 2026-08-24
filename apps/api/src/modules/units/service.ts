@@ -18,7 +18,7 @@ import { prisma } from '../../lib/prisma.js';
 // realtime workorder.created broadcast, department notification) is
 // owned by the work orders module, so this reuses it rather than
 // duplicating a second, parallel ticket-creation path here.
-import { createWorkOrder } from '../workorders/service.js';
+import { createWorkOrder, listSlaBreachedWorkOrders, type SlaBreachedWorkOrder } from '../workorders/service.js';
 import type {
   ChangeUnitStatusInput,
   CreateUnitInput,
@@ -247,13 +247,19 @@ export async function updateUnit(id: string, input: UpdateUnitInput) {
   return prisma.unit.update({ where: { id }, data: input });
 }
 
-// Spec §8.2 attention queue: "rooms dirty >3h." SLA-breached work orders,
-// overdue amenities, and unverified payments >24h are the other three
-// items that section lists, but all three depend on modules that don't
-// exist yet (work orders M3, amenities M5, payments M4) — this constant
-// and the query below are only for the one item this milestone can
-// actually compute, from `UnitStatusEvent` timestamps already in the
-// database.
+// Spec §8.2 attention queue: "rooms dirty >3h." SLA-breached work orders
+// (work orders module, M3) are also real now — see listSlaBreachedWorkOrders
+// in the work orders module, combined into getUnitsDashboard below. This
+// route stays gated on unit:read rather than workorder:read; that's not a
+// leak in practice because workorder:read is the floor every role holds
+// (see rolePermissions.ts's own comment on why) — anyone who can see the
+// Command Center already effectively holds it too. Overdue amenities and
+// unverified payments >24h are the remaining two items that section lists;
+// amenities depend on a module that doesn't exist yet (M5), and payment
+// tracking is out of scope for this app entirely (client decision,
+// 2026-08-24 — handled by the external website/POS, not this system).
+// This constant and the query below are for the dirty-room item, computed
+// from `UnitStatusEvent` timestamps already in the database.
 export const DIRTY_ATTENTION_THRESHOLD_MINUTES = 180;
 
 export interface DirtyRoom {
@@ -279,6 +285,7 @@ export interface UnitsDashboard {
     outOfOrder: number;
   };
   dirtyRooms: DirtyRoom[];
+  slaBreachedWorkOrders: SlaBreachedWorkOrder[];
 }
 
 export async function getUnitsDashboard(): Promise<UnitsDashboard> {
@@ -331,7 +338,9 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
     .filter((room) => room.dirtyMinutes >= DIRTY_ATTENTION_THRESHOLD_MINUTES)
     .sort((a, b) => b.dirtyMinutes - a.dirtyMinutes);
 
-  return { kpi, dirtyRooms };
+  const slaBreachedWorkOrders = await listSlaBreachedWorkOrders();
+
+  return { kpi, dirtyRooms, slaBreachedWorkOrders };
 }
 
 export interface UnitActivityEvent {

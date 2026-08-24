@@ -17,6 +17,13 @@ const MAX_FEED_ITEMS = 30;
 interface DashboardData {
   kpi: { occupied: number; ready: number; dirty: number; outOfOrder: number };
   dirtyRooms: { id: string; code: string; name: string; dirtyMinutes: number }[];
+  slaBreachedWorkOrders: {
+    id: string;
+    referenceNo: string;
+    title: string;
+    unitCode: string | null;
+    overdueMinutes: number;
+  }[];
 }
 
 interface RawActivityEvent {
@@ -88,8 +95,12 @@ function StubKpiCard({ label, comingIn }: { label: string; comingIn: string }) {
 }
 
 // A stub attention-queue row, same "coming in M#" treatment as the KPI
-// stub cards above, for the three §8.2 items that depend on work orders
-// (M3) or amenities (M5).
+// stub cards above, for the one remaining §8.2 attention-queue item that
+// still depends on a module that doesn't exist yet (amenities, M5).
+// SLA-breached work orders got their own real row below as of 2026-08-24;
+// unverified payments >24h was removed outright the same day — payment
+// tracking is permanently out of scope for this app (handled by the
+// external website/POS), not merely a later milestone.
 function StubAttentionRow({ label, comingIn }: { label: string; comingIn: string }) {
   return (
     <li className="flex items-center justify-between rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-gray-400">
@@ -206,9 +217,23 @@ export function CommandCenter() {
           {typeof dashboard === 'object' && dashboard.dirtyRooms.length === 0 && (
             <li className="text-sm text-gray-500">No rooms dirty past the 3-hour threshold.</li>
           )}
-          <StubAttentionRow label="SLA-breached work orders" comingIn="M3" />
+          {typeof dashboard === 'object' &&
+            dashboard.slaBreachedWorkOrders.map((wo) => (
+              <li
+                key={wo.id}
+                className="flex items-center justify-between rounded border border-red-300 bg-red-50 px-3 py-2"
+              >
+                <span className="text-sm font-medium text-red-900">
+                  {wo.referenceNo} — {wo.title}
+                  {wo.unitCode ? ` (${wo.unitCode})` : ''} past due
+                </span>
+                <span className="text-xs font-semibold text-red-800">{formatDuration(wo.overdueMinutes)}</span>
+              </li>
+            ))}
+          {typeof dashboard === 'object' && dashboard.slaBreachedWorkOrders.length === 0 && (
+            <li className="text-sm text-gray-500">No work orders past their SLA due date.</li>
+          )}
           <StubAttentionRow label="Overdue amenities" comingIn="M5" />
-          <StubAttentionRow label="Unverified payments >24h" comingIn="M4" />
         </ul>
       </section>
 

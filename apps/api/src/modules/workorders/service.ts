@@ -190,6 +190,50 @@ export async function listWorkOrders(query: ListWorkOrdersQuery, actor: WorkOrde
   });
 }
 
+export interface SlaBreachedWorkOrder {
+  id: string;
+  referenceNo: string;
+  title: string;
+  department: DepartmentKey;
+  unitId: string | null;
+  unitCode: string | null;
+  unitName: string | null;
+  dueAt: string;
+  overdueMinutes: number;
+}
+
+// Spec §7.2's own computed-field definition: `dueAt < now && status not in
+// (DONE, VERIFIED, CANCELLED)`. Deliberately property-wide (no actor/visibility
+// scoping like listWorkOrders/getWorkOrder above) — this powers the Command
+// Center attention queue at GET /units/dashboard, which is gated on
+// unit:read, not workorder:read; see units/service.ts's getUnitsDashboard
+// for how the two are combined. REOPENED is intentionally NOT excluded: a
+// reopened ticket past its dueAt is still breached per spec's exact wording.
+export async function listSlaBreachedWorkOrders(): Promise<SlaBreachedWorkOrder[]> {
+  const now = Date.now();
+  const workOrders = await prisma.workOrder.findMany({
+    where: {
+      deletedAt: null,
+      dueAt: { lt: new Date(now) },
+      status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] as WorkOrderStatusKey[] },
+    },
+    include: { unit: { select: { id: true, code: true, name: true } } },
+    orderBy: [{ dueAt: 'asc' }],
+  });
+
+  return workOrders.map((wo) => ({
+    id: wo.id,
+    referenceNo: wo.referenceNo,
+    title: wo.title,
+    department: wo.department as DepartmentKey,
+    unitId: wo.unit?.id ?? null,
+    unitCode: wo.unit?.code ?? null,
+    unitName: wo.unit?.name ?? null,
+    dueAt: wo.dueAt!.toISOString(),
+    overdueMinutes: Math.floor((now - wo.dueAt!.getTime()) / 60_000),
+  }));
+}
+
 export async function getWorkOrder(id: string, actor: WorkOrderActor) {
   const workOrder = await prisma.workOrder.findFirst({
     where: { id, deletedAt: null },

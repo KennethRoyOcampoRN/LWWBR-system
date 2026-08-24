@@ -1,0 +1,81 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockPrisma = {
+  workOrder: { findMany: vi.fn() },
+};
+
+vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
+
+const { listSlaBreachedWorkOrders } = await import('../../../src/modules/workorders/service.js');
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// Spec §7.2's own computed-field definition: `dueAt < now && status not in
+// (DONE, VERIFIED, CANCELLED)`. This function has no HTTP route of its
+// own — it's called internally from units/service.ts's getUnitsDashboard
+// (see that module's router test for the end-to-end response shape) — so
+// this test asserts directly against the Prisma where-clause it builds,
+// which a mocked findMany can't otherwise exercise.
+describe('listSlaBreachedWorkOrders', () => {
+  it('queries for dueAt in the past and excludes DONE/VERIFIED/CANCELLED (but not REOPENED)', async () => {
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    await listSlaBreachedWorkOrders();
+
+    expect(mockPrisma.workOrder.findMany).toHaveBeenCalledTimes(1);
+    const call = mockPrisma.workOrder.findMany.mock.calls[0]![0];
+    expect(call.where.deletedAt).toBeNull();
+    expect(call.where.dueAt.lt).toBeInstanceOf(Date);
+    expect(call.where.status.notIn).toEqual(['DONE', 'VERIFIED', 'CANCELLED']);
+    expect(call.where.status.notIn).not.toContain('REOPENED');
+  });
+
+  it('maps a breached work order to overdueMinutes and unit fields', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_1',
+        referenceNo: 'WO-260824-0001',
+        title: 'Broken AC unit',
+        department: 'MAINTENANCE',
+        dueAt: twoHoursAgo,
+        unit: { id: 'unit_5', code: '105', name: 'Room 105' },
+      },
+    ]);
+
+    const result = await listSlaBreachedWorkOrders();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: 'wo_1',
+      referenceNo: 'WO-260824-0001',
+      title: 'Broken AC unit',
+      department: 'MAINTENANCE',
+      unitId: 'unit_5',
+      unitCode: '105',
+      unitName: 'Room 105',
+    });
+    expect(result[0]!.overdueMinutes).toBeGreaterThanOrEqual(119);
+  });
+
+  it('maps a breached work order with no unit to null unit fields', async () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_2',
+        referenceNo: 'WO-260824-0002',
+        title: 'Restock front desk supplies',
+        department: 'FRONT_DESK',
+        dueAt: oneHourAgo,
+        unit: null,
+      },
+    ]);
+
+    const result = await listSlaBreachedWorkOrders();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!).toMatchObject({ unitId: null, unitCode: null, unitName: null });
+  });
+});

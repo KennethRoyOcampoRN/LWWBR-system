@@ -642,6 +642,9 @@ describe('App', () => {
         return jsonResponse(200, {
           kpi: { occupied: 3, ready: 2, dirty: 1, outOfOrder: 1 },
           dirtyRooms: [{ id: 'unit_9', code: 'R09', name: 'Room 9', dirtyMinutes: 200 }],
+          slaBreachedWorkOrders: [
+            { id: 'wo_1', referenceNo: 'LWW-WO-0007', title: 'Leaking faucet', unitCode: 'R03', overdueMinutes: 90 },
+          ],
         });
       }
       if (url.includes('/units/activity')) {
@@ -676,10 +679,16 @@ describe('App', () => {
     expect(screen.getByText('Open urgent work orders')).toBeInTheDocument();
     expect(screen.getAllByText('Coming in M3').length).toBeGreaterThan(0);
 
-    // Attention queue: the one real item (a room dirty past 3h) plus the
-    // three stubbed items for later milestones.
+    // Attention queue: two real items (a room dirty past 3h, a work order
+    // past its SLA due date) plus the one remaining stub for a later
+    // milestone (amenities, M5). Unverified payments >24h was removed
+    // outright — payment tracking is permanently out of scope, not a later
+    // milestone.
     expect(screen.getByText(/R09 — Room 9 still dirty/i)).toBeInTheDocument();
-    expect(screen.getByText('SLA-breached work orders')).toBeInTheDocument();
+    expect(screen.getByText(/LWW-WO-0007 — Leaking faucet \(R03\) past due/i)).toBeInTheDocument();
+    expect(screen.getByText('1h 30m')).toBeInTheDocument();
+    expect(screen.getByText('Overdue amenities')).toBeInTheDocument();
+    expect(screen.queryByText('Unverified payments >24h')).not.toBeInTheDocument();
 
     // Live activity feed, backfilled from GET /units/activity.
     await waitFor(() => expect(screen.getByText(/R05 — Room 5: Cleaning → Cleaned/i)).toBeInTheDocument());

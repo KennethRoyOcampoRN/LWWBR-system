@@ -6,6 +6,7 @@ const mockPrisma = {
   unitType: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   unitStatusEvent: { findMany: vi.fn(), create: vi.fn() },
+  workOrder: { findMany: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -62,6 +63,7 @@ beforeEach(() => {
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
+  mockPrisma.workOrder.findMany.mockResolvedValue([]);
   mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
@@ -524,6 +526,47 @@ describe('GET /api/v1/units/dashboard', () => {
     expect(res.status).toBe(200);
     expect(res.body.dirtyRooms).toHaveLength(1);
     expect(res.body.dirtyRooms[0].id).toBe('unit_never_touched');
+  });
+
+  // This test pins the end-to-end response shape (overdueMinutes, unit
+  // info, merged into GET /units/dashboard). The where-clause itself
+  // (dueAt < now && status not in DONE/VERIFIED/CANCELLED, per spec
+  // §7.2) is exercised directly against the mocked findMany call in
+  // workorders/service.test.ts.
+  it('includes SLA-breached work orders in the attention queue', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_breached',
+        referenceNo: 'LWW-WO-0009',
+        title: 'Broken AC unit',
+        department: 'MAINTENANCE',
+        dueAt: twoHoursAgo,
+        unit: { id: 'unit_5', code: '105', name: 'Room 105' },
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.slaBreachedWorkOrders).toHaveLength(1);
+    expect(res.body.slaBreachedWorkOrders[0]).toMatchObject({
+      id: 'wo_breached',
+      referenceNo: 'LWW-WO-0009',
+      unitCode: '105',
+    });
+    expect(res.body.slaBreachedWorkOrders[0].overdueMinutes).toBeGreaterThanOrEqual(119);
+  });
+
+  it('returns an empty SLA-breach list when no work orders are past due', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.slaBreachedWorkOrders).toEqual([]);
   });
 });
 
