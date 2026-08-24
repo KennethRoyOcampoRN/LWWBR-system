@@ -2847,3 +2847,109 @@ Re-verified in a real headless browser reproducing the exact reported
 case (C01, ref `LWW-260823-0002`, guest "test 2", `PENDING` status,
 Occupied unit): the Bookings section shows the guest, and the Check-out
 button now renders. No schema change, no `npx prisma db push` needed.
+
+### Session summary: the Check-in/Check-out redesign, start to finish, client-verified (2026-08-24)
+
+Client confirmed live: C01's Check-out button works, the room flips to
+Dirty, and a housekeeping ticket auto-creates. The full arc below is
+verified end to end, including the legacy-data edge case.
+
+**The pivot.** Live-testing surfaced a mismatch between how this app was
+built (M4's original design: an internal reservation system with its
+own availability engine) and how the resort actually operates: every
+guest already has a real booking on the resort's separate external
+booking website before arriving — this app was never meant to create or
+manage reservations, only to monitor and coordinate the property's live
+state. That correction reshaped the rest of the night.
+
+**Check-in, built as a new standalone feature.** A quick-action panel on
+the Units page (gated on `booking:checkin`), not a wizard: guest name,
+free-text external Booking ID, check-in date, and a live-status-aware
+room checklist. Confirming creates the `Booking` row directly (already
+`CHECKED_IN` — there's no more "PENDING awaiting arrival" step) and
+moves the selected room(s) to `OCCUPIED` via the existing automatic
+transition, logged through the same `UnitStatusEvent` audit trail as
+every other status change. The not-Ready warning/acknowledge pattern
+carried over unchanged. Refined twice after live-testing: `OCCUPIED`
+rooms were fixed to disable in the picker alongside `OUT_OF_ORDER`/
+`BLOCKED` (a real double-booking risk), and the panel was compacted to
+roughly 1/3 page width with the room checklist collapsed behind a
+`<details>`, matching the "Report an issue" pattern already established
+on Work Orders.
+
+**The Bookings page removed, with its dependencies walked deliberately
+rather than assumed.** Both "New booking" and "Find a booking," plus the
+nav item, plus the entire availability/overlap engine that backed
+creation (`windowsConflict`, the turnaround buffer, the four `booking.*`
+Settings that fed it) — all confirmed dead and removed.
+`booking:create`/`booking:read`/`booking:update` dropped from the
+permission set once their only routes were gone (`booking:update`
+turned out to have never been wired to anything, even before this
+redesign). But `Booking`/`BookingUnit` themselves were kept and reused,
+not replaced with a separate model — they're the join point
+`FolioCharge`/`Payment`/`WorkOrder`/`AmenityRequest`/`FnbOrder`/
+`Incident` already hang off via `bookingId` for future milestones, and
+`BookingUnit` already modeled the room-grouping the new checklist
+checkout needed. Two real client decisions were confirmed before
+building rather than assumed: several now-uncollected fields
+(`pax`/`departureDate`/`endAt`/`totalAmount`/`BookingUnit.rate`) went
+nullable rather than holding fabricated placeholders, and `referenceNo`
+(now the free-text external Booking ID) dropped its uniqueness
+constraint so a group can check in across more than one submission
+under the same external ID.
+
+**Multi-room checkout as a checklist.** Replaced last session's binary
+"just this room / all rooms" prompt — a real gap for bookings spanning
+3+ rooms where the guest is leaving some but not all. `GET
+/bookings/group` returns every currently-Occupied unit sharing a
+booking's external ID (which can span more than one `Booking` row once
+referenceNo stopped being unique), pre-checks the room the front desk
+opened it from, and lets them adjust before confirming. `POST
+/bookings/checkout` takes the confirmed `unitIds` directly; each
+Booking row finalizes to `CHECKED_OUT` independently once every one of
+its own units has cleared.
+
+**Two real bugs found live-testing, both fixed:**
+
+1. **The spec §7.1 auto-ticket was never actually wired up.** Checkout's
+   `OCCUPIED -> VACANT_DIRTY` transition worked, but nothing called
+   `createWorkOrder` — a room going Dirty with nothing alerting
+   housekeeping defeated the point of the automatic change. Fixed inside
+   `applyAutomaticUnitStatusChange`, firing on every `VACANT_DIRTY`
+   transition regardless of caller: an untitled `HOUSEKEEPING` ticket,
+   `NORMAL` priority, no photo required, best-effort like the realtime
+   broadcast beside it.
+
+2. **Checkout was keyed off the booking's bookkeeping status instead of
+   the room's live status — the deeper, more consequential bug.** A
+   booking created and checked in through the old, now-removed "New
+   booking" flow could be stuck at a legacy `PENDING`/`CONFIRMED` status
+   forever if its own transition to `CHECKED_IN` never completed before
+   that flow was deleted — nothing in the redesigned codebase can move a
+   booking out of those two states anymore. Two attempts were needed:
+   the first (`status: 'CHECKED_IN'` added to the drawer query's
+   `endAt`-bypass) still failed for a booking genuinely stuck at
+   `PENDING`, since it only bypassed the filter for the one status it
+   named. The real fix reworked the entire checkout path — the drawer
+   query, the checklist query, the server-side checkout validation, and
+   the frontend button logic — to key off `Unit.status === 'OCCUPIED'`
+   as the primary signal everywhere, with only `CANCELLED`/`CHECKED_OUT`
+   bookings excluded. This wasn't a narrow patch for one row: it fixes
+   the same class of problem for *any* booking a future redesign leaves
+   in an inconsistent bookkeeping state, since the room's own live
+   status — not a field three different flows have written to over the
+   life of this codebase — is now the thing that actually decides
+   whether a room can be checked out.
+
+Root-caused entirely from the code and this session's own history, not
+guesswork — this sandbox has no network path to the client's live
+Supabase project (confirmed directly: the Postgres pooler times out,
+and the outbound proxy denies the REST API host by policy), so every
+fix here was verified against real backend/frontend tests and a real
+headless-browser reproduction of the exact reported case, then confirmed
+correct by the client against the actual live data.
+
+Final tallies across the whole arc: `packages/shared` 55/55, `apps/api`
+225/228 (same 3 pre-existing network-blocked round-trip tests, present
+since M0 and unrelated to any of this work), `apps/web` 34/34. Full repo
+lint/typecheck/build clean throughout.
