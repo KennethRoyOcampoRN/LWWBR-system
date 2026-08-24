@@ -102,6 +102,27 @@ const COMMON_AREA_UNIT_SEEDS = [
   { code: 'RESTO', name: 'Restaurant' },
 ].map((seed) => ({ ...seed, unitTypeKey: 'common-area' as const, type: 'COMMON_AREA' as const }));
 
+// Spec §10: "~12 amenity items: PS4/PS5 console, videoke unit ×2, 6 board
+// games, beach volleyball set, kayak, billiard table." depositAmount is
+// seeded as a plain informational figure (how much staff should
+// physically collect) — this app doesn't track payments, so it's never
+// posted anywhere or reconciled against a Payment row.
+const AMENITY_ITEM_SEEDS = [
+  { name: 'PS4 Console', category: 'CONSOLE' as const, totalQty: 1, requiresDeposit: true, depositAmount: 500 },
+  { name: 'PS5 Console', category: 'CONSOLE' as const, totalQty: 1, requiresDeposit: true, depositAmount: 500 },
+  { name: 'Videoke Unit 1', category: 'VIDEOKE' as const, totalQty: 1, requiresDeposit: true, depositAmount: 300 },
+  { name: 'Videoke Unit 2', category: 'VIDEOKE' as const, totalQty: 1, requiresDeposit: true, depositAmount: 300 },
+  { name: 'Monopoly', category: 'BOARD_GAME' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Uno', category: 'BOARD_GAME' as const, totalQty: 2, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Scrabble', category: 'BOARD_GAME' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Chess Set', category: 'BOARD_GAME' as const, totalQty: 2, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Jenga', category: 'BOARD_GAME' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Connect Four', category: 'BOARD_GAME' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Beach Volleyball Set', category: 'OUTDOOR' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+  { name: 'Kayak', category: 'OUTDOOR' as const, totalQty: 2, requiresDeposit: true, depositAmount: 1000 },
+  { name: 'Billiard Table', category: 'OTHER' as const, totalQty: 1, requiresDeposit: false, depositAmount: 0 },
+];
+
 async function main() {
   console.warn(`Seeding ${PERMISSION_KEYS.length} permissions...`);
   for (const key of PERMISSION_KEYS) {
@@ -227,6 +248,28 @@ async function main() {
 
     await prisma.unit.create({
       data: { code: seed.code, name: seed.name, unitTypeId, type: seed.type, capacity },
+    });
+  }
+
+  console.warn(`Seeding ${AMENITY_ITEM_SEEDS.length} amenity items...`);
+  // Create-if-missing, same reasoning as unit types/units above: once
+  // SYSTEM_ADMIN/RESORT_MANAGER edit the real catalogue through the
+  // Amenities admin page, a re-run of this seed must not clobber that
+  // back to the placeholder condition/qty. `name` is this seed's
+  // idempotency key, same as UnitType — AmenityItem has no other natural
+  // unique column.
+  for (const seed of AMENITY_ITEM_SEEDS) {
+    const existing = await prisma.amenityItem.findFirst({ where: { name: seed.name } });
+    if (existing) continue;
+    await prisma.amenityItem.create({
+      data: {
+        name: seed.name,
+        category: seed.category,
+        totalQty: seed.totalQty,
+        condition: 'Good',
+        requiresDeposit: seed.requiresDeposit,
+        depositAmount: seed.depositAmount,
+      },
     });
   }
 

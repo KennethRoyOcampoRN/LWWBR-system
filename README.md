@@ -3074,3 +3074,75 @@ now-real attention queue, and a real headless-browser run confirming all
 DOM. `packages/shared` 55/55, `apps/api` 233/236 (same 3 pre-existing
 network-blocked round-trip tests), `apps/web` 34/34. Full repo
 lint/typecheck/build clean.
+
+### M5, slice 1: amenity catalogue (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** The client is phone-only for
+a while and asked me to keep building M5 (restaurant & amenities) in
+small, coherent slices, reporting after each one, with everything
+double-checked once they're back at a PC. This report is exactly that:
+what I verified myself (typecheck/lint/build, real unit/integration
+tests against a mocked Prisma client, a real headless-browser Playwright
+run against a mocked API) versus what still needs a real pass against
+live data.
+
+First M5 slice: the amenity catalogue only (spec §6 `AmenityItem`) —
+`GET/POST /amenity-items` (list, create) and `PATCH /amenity-items/:id`
+(update, including deactivate/reactivate). The request → approve → issue
+→ return workflow (§7.4) is a deliberately separate, later slice — this
+one just gets the catalogue itself onto the board so that workflow has
+something real to point at.
+
+**Scope decision, not a guess:** the client's own instruction for this
+work extended M4's "monitoring, not transactions" principle to F&B/
+amenities explicitly — F&B order status and kitchen coordination are in
+scope, any payment/charge tracking is out of scope or informational-only.
+`AmenityItem.requiresDeposit`/`depositAmount` are exactly that kind of
+field (spec: "items with `requiresDeposit` cannot move to `ISSUED`
+without a recorded deposit amount") — this slice surfaces `depositAmount`
+as plain informational text on the catalogue table and the add-item form
+("Deposit amount (₱, informational only)"), never wired to `Payment` or
+`FolioCharge`, both of which stay unbuilt/unused, same as every other
+M4/M5 payment-adjacent field so far.
+
+Backend: `apps/api/src/modules/amenities/` (schema/service/router,
+mirroring the existing `units`/`workorders` module shape), registered in
+`app.ts`. `GET /amenity-items` gated on `amenity:read`; `POST`/`PATCH` on
+`amenity:manage` — both permission keys already existed in the seeded
+matrix from M1, unused until now. `packages/shared/src/amenity.ts` adds
+`AMENITY_CATEGORY_KEYS` (mirrors spec's `AmenityCategory` enum — closed
+set, unlike `MenuItem.category` which spec leaves as free text).
+
+Frontend: new `/amenities` page + nav item (`AppShell.tsx`, gated on
+`amenity:read`, invisible to Restaurant Manager/Staff — per the role
+matrix they hold no `amenity:*` key at all, amenities being a front-desk/
+ops responsibility here, not a kitchen one). Read-only table for
+`amenity:read`-only holders (e.g. Admin Staff); an add-item form and a
+per-row deactivate/reactivate toggle appear only for `amenity:manage`
+holders (Resort Manager, System Admin).
+
+Seed data: added spec §10's ~12 amenity items (PS4/PS5, 2 videoke units,
+6 board games, beach volleyball set, kayak, billiard table) to
+`seed.ts`, create-if-missing by `name` (same idempotency pattern as
+`UnitType` — `AmenityItem` has no other natural unique column), so a
+re-run never clobbers real catalogue edits made through the new admin UI.
+**This part is unverified beyond typecheck** — the sandbox has no network
+path to run it against a real database; the client running `npm run
+seed` once back at a PC is the actual test.
+
+Verified: 8 new backend router tests (permission gates on both routes,
+category validation, 404 on an unknown item, the Decimal→number
+conversion for `depositAmount`), 2 new frontend tests (manage-permission
+holder can list/add an item with the deposit shown as plain text;
+read-only holder sees the table but no add-item form or deactivate
+button), and a real headless-browser Playwright run against a mocked API
+confirming the catalogue renders, an item can be added, and the
+deactivate toggle flips a row's status. `packages/shared` 55/55, `apps/api`
+241/244 (same 3 pre-existing network-blocked round-trip tests), `apps/web`
+36/36. Full repo lint/typecheck/build clean.
+
+**Not yet built, next slices:** amenity request → approve → issue →
+return workflow + the overdue sweep job (§7.4); the F&B menu, order
+creation, and kitchen kanban (§7.3). No design ambiguity hit yet in this
+slice worth flagging — the payments-scope question was already resolved
+by the client's own instruction before I started.

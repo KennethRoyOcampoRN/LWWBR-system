@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.js';
+import { AmenitiesPage } from './routes/AmenitiesPage.js';
 import { AppShell } from './routes/AppShell.js';
 import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
@@ -53,6 +54,14 @@ export function App() {
                   element={
                     <RequirePermission permission="role:manage">
                       <RolesPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/amenities"
+                  element={
+                    <RequirePermission permission="amenity:read">
+                      <AmenitiesPage />
                     </RequirePermission>
                   }
                 />

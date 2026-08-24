@@ -9,7 +9,7 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read';
+  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -22,6 +22,11 @@ const NAV_ITEMS: {
   // this app no longer creates or manages reservations — check-in is now
   // a quick-action on the Units page itself (see UnitsPage.tsx's
   // CheckInPanel), not a separate screen.
+  // M5, first slice (2026-08-24): the amenity catalogue only —
+  // request/issue/return is a later slice. Per the role matrix, Restaurant
+  // Manager/Staff hold no amenity:* key at all, so this item is invisible
+  // to them, same as every permission-gated nav item.
+  { to: '/amenities', label: 'Amenities', permission: 'amenity:read' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

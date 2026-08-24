@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import { ApiError } from './lib/apiError.js';
 import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
+import { amenitiesRouter } from './modules/amenities/router.js';
 import { authRouter } from './modules/auth/router.js';
 import { bookingsRouter } from './modules/bookings/router.js';
 import { filesRouter } from './modules/files/router.js';
@@ -63,6 +64,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', workOrdersRouter);
   app.use('/api/v1', notificationsRouter);
   app.use('/api/v1', bookingsRouter);
+  app.use('/api/v1', amenitiesRouter);
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);
