@@ -5,8 +5,8 @@ const mockPrisma = {
   user: { findFirst: vi.fn() },
   unitType: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  unitStatusEvent: { findMany: vi.fn(), create: vi.fn() },
-  workOrder: { findMany: vi.fn() },
+  unitStatusEvent: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
+  workOrder: { findMany: vi.fn(), count: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -64,6 +64,8 @@ beforeEach(() => {
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
   mockPrisma.workOrder.findMany.mockResolvedValue([]);
+  mockPrisma.workOrder.count.mockResolvedValue(0);
+  mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
   mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
@@ -509,7 +511,15 @@ describe('GET /api/v1/units/dashboard', () => {
 
     const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
     expect(res.status).toBe(200);
-    expect(res.body.kpi).toEqual({ occupied: 1, ready: 1, dirty: 2, outOfOrder: 1 });
+    expect(res.body.kpi).toEqual({
+      occupied: 1,
+      ready: 1,
+      dirty: 2,
+      outOfOrder: 1,
+      urgentOpenWorkOrders: 0,
+      checkinsToday: 0,
+      checkoutsToday: 0,
+    });
     expect(res.body.dirtyRooms).toHaveLength(1);
     expect(res.body.dirtyRooms[0]).toMatchObject({ id: 'unit_dirty_long', code: '102' });
   });
@@ -567,6 +577,40 @@ describe('GET /api/v1/units/dashboard', () => {
     const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
     expect(res.status).toBe(200);
     expect(res.body.slaBreachedWorkOrders).toEqual([]);
+  });
+
+  it('counts open urgent work orders via workOrder.count, not the SLA-breach findMany', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.workOrder.count.mockResolvedValue(3);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.urgentOpenWorkOrders).toBe(3);
+    expect(mockPrisma.workOrder.count).toHaveBeenCalledWith({
+      where: { deletedAt: null, priority: 'URGENT', status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] } },
+    });
+  });
+
+  // Replaces spec's original "arrivals/departures today" concept, which
+  // assumed a date-based internal reservation system this app no longer
+  // has (see the Check-in/Check-out redesign) — counts real
+  // UnitStatusEvent rows created today instead.
+  it('counts check-ins and check-outs logged today from UnitStatusEvent, scoped to midnight', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.unitStatusEvent.count.mockResolvedValueOnce(5).mockResolvedValueOnce(4);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.checkinsToday).toBe(5);
+    expect(res.body.kpi.checkoutsToday).toBe(4);
+
+    const calls = mockPrisma.unitStatusEvent.count.mock.calls;
+    expect(calls[0]![0]).toMatchObject({ where: { fromStatus: 'READY', toStatus: 'OCCUPIED' } });
+    expect(calls[0]![0].where.createdAt.gte.getHours()).toBe(0);
+    expect(calls[1]![0]).toMatchObject({ where: { fromStatus: 'OCCUPIED', toStatus: 'VACANT_DIRTY' } });
+    expect(calls[1]![0].where.createdAt.gte.getHours()).toBe(0);
   });
 });
 

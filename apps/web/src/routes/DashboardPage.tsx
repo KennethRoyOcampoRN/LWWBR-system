@@ -15,7 +15,15 @@ const FEED_LIMIT = 20;
 const MAX_FEED_ITEMS = 30;
 
 interface DashboardData {
-  kpi: { occupied: number; ready: number; dirty: number; outOfOrder: number };
+  kpi: {
+    occupied: number;
+    ready: number;
+    dirty: number;
+    outOfOrder: number;
+    urgentOpenWorkOrders: number;
+    checkinsToday: number;
+    checkoutsToday: number;
+  };
   dirtyRooms: { id: string; code: string; name: string; dirtyMinutes: number }[];
   slaBreachedWorkOrders: {
     id: string;
@@ -79,11 +87,10 @@ function KpiCard({ label, value, accentClass }: { label: string; value: number; 
   );
 }
 
-// A stub KPI card for the three-quarters of spec §8.2's strip that depend
-// on modules that don't exist yet (bookings/M4, work orders/M3,
-// payments/M4, F&B/M5). Deliberately styled to look like a placeholder —
-// dashed border, muted text, an explicit "coming in" note — so it can
-// never be mistaken for a real zero.
+// A stub KPI card for the one remaining §8.2 KPI that depends on a module
+// that doesn't exist yet (F&B/M5). Deliberately styled to look like a
+// placeholder — dashed border, muted text, an explicit "coming in" note —
+// so it can never be mistaken for a real zero.
 function StubKpiCard({ label, comingIn }: { label: string; comingIn: string }) {
   return (
     <div className="rounded border border-dashed border-gray-300 bg-gray-50 p-3 text-gray-400">
@@ -176,8 +183,8 @@ export function CommandCenter() {
       <div>
         <h1 className="text-lg font-semibold">Command Center</h1>
         <p className="text-sm text-gray-500">
-          Occupied/ready/dirty/out-of-order are live from real unit data. Everything marked
-          "coming in" below depends on a module not built yet.
+          All but one card here is live from real data. "Coming in M5" is the one exception —
+          it depends on the F&amp;B module, which isn't built yet.
         </p>
       </div>
 
@@ -191,9 +198,21 @@ export function CommandCenter() {
             <KpiCard label="Ready" value={dashboard.kpi.ready} accentClass="border-green-300 bg-green-50 text-green-900" />
             <KpiCard label="Dirty" value={dashboard.kpi.dirty} accentClass="border-amber-300 bg-amber-50 text-amber-900" />
             <KpiCard label="Out of order" value={dashboard.kpi.outOfOrder} accentClass="border-red-300 bg-red-50 text-red-900" />
-            <StubKpiCard label="Arrivals / departures today" comingIn="M4" />
-            <StubKpiCard label="Open urgent work orders" comingIn="M3" />
-            <StubKpiCard label="Pending payment verifications" comingIn="M4" />
+            <KpiCard
+              label="Open urgent work orders"
+              value={dashboard.kpi.urgentOpenWorkOrders}
+              accentClass="border-red-300 bg-red-50 text-red-900"
+            />
+            <KpiCard
+              label="Check-ins today"
+              value={dashboard.kpi.checkinsToday}
+              accentClass="border-blue-300 bg-blue-50 text-blue-900"
+            />
+            <KpiCard
+              label="Check-outs today"
+              value={dashboard.kpi.checkoutsToday}
+              accentClass="border-blue-300 bg-blue-50 text-blue-900"
+            />
             <StubKpiCard label="Open F&B tickets" comingIn="M5" />
           </div>
         )}

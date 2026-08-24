@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrisma = {
-  workOrder: { findMany: vi.fn() },
+  workOrder: { findMany: vi.fn(), count: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
-const { listSlaBreachedWorkOrders } = await import('../../../src/modules/workorders/service.js');
+const { countUrgentOpenWorkOrders, listSlaBreachedWorkOrders } = await import('../../../src/modules/workorders/service.js');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,5 +77,25 @@ describe('listSlaBreachedWorkOrders', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]!).toMatchObject({ unitId: null, unitCode: null, unitName: null });
+  });
+});
+
+// Spec §8.2 KPI strip: "Open urgent work orders." Same "open" definition
+// as listSlaBreachedWorkOrders above (status not in DONE/VERIFIED/
+// CANCELLED, so REOPENED still counts), filtered to URGENT priority.
+describe('countUrgentOpenWorkOrders', () => {
+  it('queries for URGENT priority and excludes DONE/VERIFIED/CANCELLED', async () => {
+    mockPrisma.workOrder.count.mockResolvedValue(2);
+
+    const result = await countUrgentOpenWorkOrders();
+
+    expect(result).toBe(2);
+    expect(mockPrisma.workOrder.count).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        priority: 'URGENT',
+        status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] },
+      },
+    });
   });
 });

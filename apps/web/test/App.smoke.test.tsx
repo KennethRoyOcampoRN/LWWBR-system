@@ -629,7 +629,7 @@ describe('App', () => {
     expect(screen.getByText('Someone Else', { exact: false })).toBeInTheDocument();
   });
 
-  it('renders the Command Center: real KPI counts, an explicitly-stubbed KPI/attention item, a dirty-room alert, and the activity feed', async () => {
+  it('renders the Command Center: real KPI counts, one remaining stubbed KPI, a dirty-room alert, and the activity feed', async () => {
     const managerUser = {
       ...currentUser,
       roles: ['RESORT_MANAGER'],
@@ -640,7 +640,15 @@ describe('App', () => {
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.includes('/units/dashboard')) {
         return jsonResponse(200, {
-          kpi: { occupied: 3, ready: 2, dirty: 1, outOfOrder: 1 },
+          kpi: {
+            occupied: 3,
+            ready: 2,
+            dirty: 1,
+            outOfOrder: 1,
+            urgentOpenWorkOrders: 2,
+            checkinsToday: 5,
+            checkoutsToday: 4,
+          },
           dirtyRooms: [{ id: 'unit_9', code: 'R09', name: 'Room 9', dirtyMinutes: 200 }],
           slaBreachedWorkOrders: [
             { id: 'wo_1', referenceNo: 'LWW-WO-0007', title: 'Leaking faucet', unitCode: 'R03', overdueMinutes: 90 },
@@ -671,13 +679,22 @@ describe('App', () => {
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
 
-    // Real KPI counts, computed from actual unit data.
+    // Real KPI counts, computed from actual unit/work-order data. Values
+    // are read from within each labelled card, not by bare digit text —
+    // several cards can share the same value (e.g. Ready and Out of order
+    // both being small integers) so a bare `getByText('2')` is ambiguous.
     await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
     expect(screen.getByText('Occupied')).toBeInTheDocument();
+    expect(screen.getByText('Open urgent work orders').parentElement).toHaveTextContent('2');
+    expect(screen.getByText('Check-ins today').parentElement).toHaveTextContent('5');
+    expect(screen.getByText('Check-outs today').parentElement).toHaveTextContent('4');
 
-    // Stubbed KPI cards are explicitly labelled, not shown as a bare "0".
-    expect(screen.getByText('Open urgent work orders')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming in M3').length).toBeGreaterThan(0);
+    // The one remaining stubbed KPI card is explicitly labelled, not
+    // shown as a bare "0" — the rest of the strip is real now.
+    expect(screen.getByText('Open F&B tickets')).toBeInTheDocument();
+    expect(screen.getAllByText('Coming in M5').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Arrivals / departures today')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pending payment verifications')).not.toBeInTheDocument();
 
     // Attention queue: two real items (a room dirty past 3h, a work order
     // past its SLA due date) plus the one remaining stub for a later

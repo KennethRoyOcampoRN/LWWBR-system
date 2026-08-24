@@ -234,6 +234,23 @@ export async function listSlaBreachedWorkOrders(): Promise<SlaBreachedWorkOrder[
   }));
 }
 
+// Spec §8.2 KPI strip: "Open urgent work orders." Same "open" definition
+// as listSlaBreachedWorkOrders above (status not in DONE/VERIFIED/
+// CANCELLED — REOPENED counts as open, same reasoning) filtered to
+// URGENT priority. Deliberately property-wide, not actor-scoped: this is
+// a KPI count for the Command Center, not a personal queue, and it's
+// combined into the same unit:read-gated GET /units/dashboard response
+// as everything else there.
+export async function countUrgentOpenWorkOrders(): Promise<number> {
+  return prisma.workOrder.count({
+    where: {
+      deletedAt: null,
+      priority: 'URGENT',
+      status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] as WorkOrderStatusKey[] },
+    },
+  });
+}
+
 export async function getWorkOrder(id: string, actor: WorkOrderActor) {
   const workOrder = await prisma.workOrder.findFirst({
     where: { id, deletedAt: null },

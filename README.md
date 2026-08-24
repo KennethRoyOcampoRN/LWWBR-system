@@ -3017,3 +3017,60 @@ confirming the row renders correctly and the payments stub is gone from
 the DOM. `packages/shared` 55/55, `apps/api` 230/233 (same 3
 pre-existing network-blocked round-trip tests), `apps/web` 34/34. Full
 repo lint/typecheck/build clean.
+
+### KPI strip: the last three stale placeholders, closed out (2026-08-24)
+
+Follow-up to the SLA-breach fix above, closing out the three KPI-strip
+placeholders flagged but deliberately left untouched at the end of that
+pass. All three followed the same pattern as "SLA-breached work orders":
+a "coming in M#" label that had gone stale because the milestone it
+pointed to either shipped or was ruled out of scope since the label was
+written.
+
+1. **"Open urgent work orders" (M3) → real data.** M3 shipped days ago.
+   New `countUrgentOpenWorkOrders()` (`workorders/service.ts`) counts
+   `priority: URGENT` tickets with `status not in (DONE, VERIFIED,
+   CANCELLED)` — the same "open" definition `listSlaBreachedWorkOrders`
+   already uses, so `REOPENED` counts as open here too, for the same
+   reason. Wired into `getUnitsDashboard()`'s `kpi` object as
+   `urgentOpenWorkOrders`.
+
+2. **"Pending payment verifications" (M4) → removed outright.** Identical
+   reasoning to last pass's "Unverified payments >24h": payment tracking
+   is permanently out of scope for this app (handled by the external
+   website/POS), so "Coming in M4" was actively misleading, not merely
+   stale. No replacement card — the KPI strip just has one fewer item
+   now, same as the attention queue does.
+
+3. **"Arrivals / departures today" (M4) → replaced, not just relabeled.**
+   This one needed a real design decision, not a straight swap: the
+   original concept assumed a date-based internal reservation system,
+   and the Check-in/Check-out redesign deleted that system entirely — a
+   booking now only exists once someone has actually checked a guest in,
+   with no forward-looking arrivals list to count "today's arrivals"
+   against. So the replacement isn't "arrivals/departures" at all, it's
+   the closest real question this data can actually answer: how much
+   guest turnover happened today. Two new KPI fields, `checkinsToday`
+   and `checkoutsToday`, count `UnitStatusEvent` rows created since local
+   midnight where the transition was `READY -> OCCUPIED` (check-in) or
+   `OCCUPIED -> VACANT_DIRTY` (check-out) respectively — both are the
+   exact transitions `applyAutomaticUnitStatusChange` already writes on
+   every real check-in/check-out, so this required no new instrumentation,
+   just a new read.
+
+The KPI strip is now 7 real cards and exactly 1 stub ("Open F&B tickets,"
+M5 — the only spec §8.2 KPI that still has no underlying module) instead
+of the previous 4 real / 4 stub split. The attention queue (from the
+prior pass) is 2 real items plus 1 stub ("Overdue amenities," also M5).
+Zero remaining stale or out-of-scope placeholders anywhere in the Command
+Center.
+
+Verified with new `countUrgentOpenWorkOrders()` and dashboard-level tests
+(open-urgent count via `workOrder.count`, not the SLA-breach `findMany`;
+check-in/check-out counts scoped to midnight via `unitStatusEvent.count`)
+plus updated smoke-test coverage for the full 8-card KPI strip and the
+now-real attention queue, and a real headless-browser run confirming all
+8 cards render correctly and both removed placeholders are gone from the
+DOM. `packages/shared` 55/55, `apps/api` 233/236 (same 3 pre-existing
+network-blocked round-trip tests), `apps/web` 34/34. Full repo
+lint/typecheck/build clean.

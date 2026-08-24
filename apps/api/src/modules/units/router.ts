@@ -83,11 +83,13 @@ unitsRouter.patch(
 );
 
 // Spec §8.2 Command Center: KPI strip counts, the "rooms dirty >3h" item,
-// and (as of 2026-08-24) real SLA-breached work orders, computed live from
+// SLA-breached work orders, open urgent work orders, and today's guest
+// turnover (check-ins/check-outs) — all computed live from
 // Unit/UnitStatusEvent/WorkOrder data. Deliberately unit:read-gated, not
 // workorder:read — see getUnitsDashboard's own doc comment for why that's
 // not a permission leak in practice, and for what's still deliberately NOT
-// here (arrivals/departures, amenities, payments) and why.
+// here (amenities — M5 — is the only remaining un-built item; payments is
+// permanently out of scope, not deferred) and why.
 unitsRouter.get(
   '/units/dashboard',
   requirePermission('unit:read'),

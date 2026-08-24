@@ -18,7 +18,12 @@ import { prisma } from '../../lib/prisma.js';
 // realtime workorder.created broadcast, department notification) is
 // owned by the work orders module, so this reuses it rather than
 // duplicating a second, parallel ticket-creation path here.
-import { createWorkOrder, listSlaBreachedWorkOrders, type SlaBreachedWorkOrder } from '../workorders/service.js';
+import {
+  countUrgentOpenWorkOrders,
+  createWorkOrder,
+  listSlaBreachedWorkOrders,
+  type SlaBreachedWorkOrder,
+} from '../workorders/service.js';
 import type {
   ChangeUnitStatusInput,
   CreateUnitInput,
@@ -253,13 +258,14 @@ export async function updateUnit(id: string, input: UpdateUnitInput) {
 // route stays gated on unit:read rather than workorder:read; that's not a
 // leak in practice because workorder:read is the floor every role holds
 // (see rolePermissions.ts's own comment on why) — anyone who can see the
-// Command Center already effectively holds it too. Overdue amenities and
-// unverified payments >24h are the remaining two items that section lists;
-// amenities depend on a module that doesn't exist yet (M5), and payment
-// tracking is out of scope for this app entirely (client decision,
-// 2026-08-24 — handled by the external website/POS, not this system).
-// This constant and the query below are for the dirty-room item, computed
-// from `UnitStatusEvent` timestamps already in the database.
+// Command Center already effectively holds it too. Overdue amenities is
+// the one remaining item that section lists still un-built — it depends
+// on a module that doesn't exist yet (M5). Unverified payments >24h was
+// removed outright, not deferred: payment tracking is out of scope for
+// this app entirely (client decision, 2026-08-24 — handled by the
+// external website/POS, not this system). This constant and the query
+// below are for the dirty-room item, computed from `UnitStatusEvent`
+// timestamps already in the database.
 export const DIRTY_ATTENTION_THRESHOLD_MINUTES = 180;
 
 export interface DirtyRoom {
@@ -270,19 +276,31 @@ export interface DirtyRoom {
   dirtyMinutes: number;
 }
 
-// Spec §8.2 KPI strip: "Occupied / Ready / Dirty / Out-of-order counts."
-// Arrivals/departures, urgent work orders, pending payment verifications,
-// and open F&B tickets are the other four KPIs that section lists, but
-// all four depend on modules that don't exist yet (bookings M4, work
-// orders M3, payments M4, F&B M5) — the frontend renders those as
-// explicit "coming in a later milestone" placeholders rather than faking
-// a plausible-looking zero. Only the four status counts below are real.
+// Spec §8.2 KPI strip: "Occupied / Ready / Dirty / Out-of-order counts,"
+// plus (as of 2026-08-24) two more real ones: open urgent work orders
+// (work orders module, M3, done) and today's guest turnover. The turnover
+// pair replaces spec's original "arrivals/departures today" concept,
+// which assumed a date-based internal reservation system this app no
+// longer has (see the Check-in/Check-out redesign) — checkinsToday/
+// checkoutsToday instead count actual READY->OCCUPIED / OCCUPIED->
+// VACANT_DIRTY UnitStatusEvent rows created today, which answers the
+// same real question ("how much guest turnover happened today") from
+// data that's genuinely available. Open F&B tickets is the one KPI
+// spec's list still can't be computed — F&B doesn't exist yet (M5) — so
+// the frontend still renders that one as an explicit "coming in a later
+// milestone" placeholder. Pending payment verifications was removed
+// outright (not a placeholder): payment tracking is out of scope for
+// this app entirely (client decision, 2026-08-24), not a later
+// milestone.
 export interface UnitsDashboard {
   kpi: {
     occupied: number;
     ready: number;
     dirty: number;
     outOfOrder: number;
+    urgentOpenWorkOrders: number;
+    checkinsToday: number;
+    checkoutsToday: number;
   };
   dirtyRooms: DirtyRoom[];
   slaBreachedWorkOrders: SlaBreachedWorkOrder[];
@@ -294,7 +312,7 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
     select: { id: true, code: true, name: true, status: true, createdAt: true },
   });
 
-  const kpi = { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0 };
+  const kpi = { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 0, checkinsToday: 0, checkoutsToday: 0 };
   const dirtyUnits: typeof units = [];
   for (const unit of units) {
     switch (unit.status) {
@@ -339,6 +357,20 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
     .sort((a, b) => b.dirtyMinutes - a.dirtyMinutes);
 
   const slaBreachedWorkOrders = await listSlaBreachedWorkOrders();
+  kpi.urgentOpenWorkOrders = await countUrgentOpenWorkOrders();
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const [checkinsToday, checkoutsToday] = await Promise.all([
+    prisma.unitStatusEvent.count({
+      where: { fromStatus: 'READY', toStatus: 'OCCUPIED', createdAt: { gte: startOfToday } },
+    }),
+    prisma.unitStatusEvent.count({
+      where: { fromStatus: 'OCCUPIED', toStatus: 'VACANT_DIRTY', createdAt: { gte: startOfToday } },
+    }),
+  ]);
+  kpi.checkinsToday = checkinsToday;
+  kpi.checkoutsToday = checkoutsToday;
 
   return { kpi, dirtyRooms, slaBreachedWorkOrders };
 }
