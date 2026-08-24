@@ -10,3 +10,4 @@ export * from './workOrder.js';
 export * from './booking.js';
 export * from './amenity.js';
 export * from './amenityRequest.js';
+export * from './fnbOrder.js';

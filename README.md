@@ -3344,3 +3344,59 @@ an item can be added, and the availability toggle flips a row.
 slice), `apps/api` 265/268 (same 3 pre-existing network-blocked
 round-trip tests), `apps/web` 40/40. Full repo lint/typecheck/build
 clean.
+
+### M5, restaurant slice 2: order creation + status backend (2026-08-24)
+
+**Sandbox-verified only — not live-tested.** Same working agreement.
+Backend-only slice, deliberately: the kitchen kanban UI (frontend for
+this backend) is next, same two-slice split as the amenity workflow
+(backend then frontend) last session.
+
+**New transition table**, `packages/shared/src/fnbOrder.ts`:
+`RECEIVED -> PREPARING -> READY -> SERVED`, `CANCELLED` off both
+`RECEIVED` and `PREPARING`. No judgment call needed here, unlike the
+amenity-request and work-order tables — spec's own diagram already draws
+every cancel path this table needs, nothing to fix by analogy this time.
+
+**The client-confirmed scope call from last session's report, now
+built:** `settlement` (`PAY_NOW`/`CHARGE_TO_ROOM`) is a pure
+informational classification on the order — same treatment as the
+amenity deposit checkbox. No `Payment` row, no `FolioCharge`, no balance
+tracking, and `SERVED` never auto-posts anything. Spec §7.6's original
+gate — `CHARGE_TO_ROOM` refused at creation with `422 NO_ACTIVE_FOLIO`
+unless linked to a booking currently `CHECKED_IN` — doesn't survive with
+no folio to validate against, so it's dropped. Per the client's own
+instruction, a lighter replacement stays: `CHARGE_TO_ROOM` still requires
+a `unitId`, and still refuses (`422 UNIT_NOT_OCCUPIED`) unless that
+unit's live status is `OCCUPIED` — cheap (one row already needed for the
+FK) and keeps "which room does this charge belong to" as real, useful
+monitoring information without any balance math behind it.
+
+**New endpoints** (`apps/api/src/modules/fnb/`): `POST /fnb-orders`,
+`GET /fnb-orders` (with a `boardOnly` query flag), `GET
+/fnb-orders/:id`, `POST /fnb-orders/:id/status` (same `requireAuth` +
+`getMe` + transition-table-decides-the-permission pattern as every other
+polymorphic status route in this codebase). Order lines snapshot the
+menu item's price at creation — never re-derived from `MenuItem` later —
+same "amount is stored, never recomputed from the source" principle
+spec gives `FolioCharge`, applied here even though there's no folio: a
+menu price change next week must not rewrite last week's order.
+Broadcasts `fnb.order.created`/`fnb.order.status.changed` on the
+existing `property` realtime channel (spec §9.1).
+
+**Advance-order visibility** (spec §7.3: "surfaces in the kitchen board
+90 minutes before the scheduled time, make the lead time a Setting"):
+`boardOnly=true` filters to `RECEIVED`/`PREPARING`/`READY` and hides an
+`ADVANCE_ORDER` until `now >= scheduledFor - leadMinutes`, reading a live
+`fnb.advanceOrderLeadMinutes` Setting with the same fallback-to-shared-
+default pattern as `workOrder.photoRequirements`.
+
+Verified: 7 new transition-table tests (`packages/shared`), 12 new
+backend tests (`apps/api`) covering the menu-item validation, both
+`ADVANCE_ORDER`/`CHARGE_TO_ROOM` creation gates, the subtotal/price-
+snapshot computation, the board query's actual where-clause (asserted
+directly, since a mocked `findMany` can't otherwise exercise the
+advance-order filter), and every status transition's permission gate.
+`packages/shared` 70/70, `apps/api` 277/280 (same 3 pre-existing
+network-blocked round-trip tests), `apps/web` 40/40 (unchanged — no
+frontend work this slice). Full repo lint/typecheck/build clean.

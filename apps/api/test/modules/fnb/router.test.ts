@@ -3,11 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrisma = {
   user: { findFirst: vi.fn() },
+  unit: { findFirst: vi.fn() },
   menuItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  fnbOrder: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  setting: { findUnique: vi.fn() },
+  referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
+
+const mockRealtimeEmit = vi.fn();
+vi.mock('../../../src/adapters/realtime/index.js', () => ({
+  getRealtimeAdapter: () => ({ emit: mockRealtimeEmit }),
+}));
 
 const { createApp } = await import('../../../src/app.js');
 const { signAccessToken } = await import('../../../src/modules/auth/tokens.js');
@@ -47,11 +56,44 @@ function fakeMenuItem(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function fakeFnbOrder(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'order_1',
+    referenceNo: 'FB-260824-0001',
+    unitId: null,
+    bookingId: null,
+    guestName: null,
+    type: 'DINE_IN',
+    scheduledFor: null,
+    settlement: 'PAY_NOW',
+    status: 'RECEIVED',
+    version: 0,
+    subtotal: 250,
+    notes: null,
+    createdById: 'user_1',
+    acknowledgedById: null,
+    acknowledgedAt: null,
+    preparingAt: null,
+    readyAt: null,
+    servedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    deletedAt: null,
+    unit: null,
+    createdBy: { id: 'user_1', fullName: 'Restaurant Manager (Demo)' },
+    lines: [{ id: 'line_1', fnbOrderId: 'order_1', menuItemId: 'menu_1', qty: 1, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } }],
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
+  mockPrisma.referenceSequence.upsert.mockResolvedValue({ scope: 'FB-260824', seq: 1 });
+  mockPrisma.setting.findUnique.mockResolvedValue(null);
+  mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
 describe('GET /api/v1/menu-items', () => {
@@ -155,5 +197,195 @@ describe('PATCH /api/v1/menu-items/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.menuItem.isAvailable).toBe(false);
+  });
+});
+
+describe('POST /api/v1/fnb-orders', () => {
+  it('requires fnb:create', async () => {
+    // HOUSEKEEPING_STAFF holds no fnb:* key at all.
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'DINE_IN', settlement: 'PAY_NOW', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects an unknown or unavailable menu item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.menuItem.findMany.mockResolvedValue([]);
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'DINE_IN', settlement: 'PAY_NOW', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+    expect(res.status).toBe(422);
+  });
+
+  it('requires scheduledFor for an ADVANCE_ORDER', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'ADVANCE_ORDER', settlement: 'PAY_NOW', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+    expect(res.status).toBe(422);
+  });
+
+  // Spec §7.6's original NO_ACTIVE_FOLIO gate doesn't survive with no
+  // folio to validate against, but the client asked to keep a lighter
+  // version: CHARGE_TO_ROOM still requires a real, currently-occupied
+  // unit — cheap and still useful monitoring information, no balance
+  // math behind it.
+  it('rejects CHARGE_TO_ROOM with no unitId', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'DINE_IN', settlement: 'CHARGE_TO_ROOM', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects CHARGE_TO_ROOM against a unit that is not OCCUPIED', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue({ id: 'unit_1', status: 'VACANT_DIRTY' });
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'ROOM_SERVICE', settlement: 'CHARGE_TO_ROOM', unitId: 'unit_1', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('UNIT_NOT_OCCUPIED');
+  });
+
+  it('creates an order, snapshotting menu prices and computing the subtotal', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue({ id: 'unit_1', status: 'OCCUPIED' });
+    mockPrisma.menuItem.findMany.mockResolvedValue([
+      fakeMenuItem({ id: 'menu_1', price: 250 }),
+      fakeMenuItem({ id: 'menu_2', name: 'Halo-Halo', price: 120 }),
+    ]);
+    mockPrisma.fnbOrder.create.mockResolvedValue(
+      fakeFnbOrder({
+        settlement: 'CHARGE_TO_ROOM',
+        unitId: 'unit_1',
+        subtotal: 620,
+        lines: [
+          { id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } },
+          { id: 'line_2', menuItemId: 'menu_2', qty: 1, unitPrice: 120, notes: null, menuItem: { id: 'menu_2', name: 'Halo-Halo' } },
+        ],
+      }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({
+        type: 'ROOM_SERVICE',
+        settlement: 'CHARGE_TO_ROOM',
+        unitId: 'unit_1',
+        lines: [
+          { menuItemId: 'menu_1', qty: 2 },
+          { menuItemId: 'menu_2', qty: 1 },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.fnbOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          subtotal: 620,
+          lines: { create: [{ menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: undefined }, { menuItemId: 'menu_2', qty: 1, unitPrice: 120, notes: undefined }] },
+        }),
+      }),
+    );
+    expect(res.body.fnbOrder.subtotal).toBe(620);
+    expect(res.body.fnbOrder.lines[0].unitPrice).toBe(250);
+    expect(mockRealtimeEmit).toHaveBeenCalledWith('property', 'fnb.order.created', expect.objectContaining({ entityId: 'order_1' }));
+  });
+});
+
+describe('GET /api/v1/fnb-orders', () => {
+  it('requires fnb:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp()).get('/api/v1/fnb-orders').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('lists orders', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([fakeFnbOrder()]);
+    const res = await request(createApp()).get('/api/v1/fnb-orders').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.fnbOrders).toHaveLength(1);
+  });
+
+  // The board query hides RECEIVED/PREPARING/READY orders of type
+  // ADVANCE_ORDER until the lead-time window opens (spec §7.3) —
+  // asserted against the actual where-clause built, since a mocked
+  // findMany can't otherwise exercise it.
+  it('boardOnly applies the active-status and advance-order lead-time filter', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([]);
+    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'fnb.advanceOrderLeadMinutes', value: 90 });
+
+    const res = await request(createApp()).get('/api/v1/fnb-orders?boardOnly=true').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(mockPrisma.fnbOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: { in: ['RECEIVED', 'PREPARING', 'READY'] },
+          OR: [{ type: { not: 'ADVANCE_ORDER' } }, { scheduledFor: { lte: expect.any(Date) } }],
+        }),
+      }),
+    );
+  });
+});
+
+describe('POST /api/v1/fnb-orders/:id/status', () => {
+  it('rejects an invalid transition', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    mockPrisma.fnbOrder.findFirst.mockResolvedValue(fakeFnbOrder({ status: 'RECEIVED' }));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders/order_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'SERVED' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_TRANSITION');
+  });
+
+  // RESORT_MANAGER holds fnb:read/fnb:create but not fnb:update_status
+  // (see rolePermissions.ts's own header comment: those roles see the
+  // kitchen board but don't drag tickets through it — that's Restaurant
+  // Manager/Staff's job).
+  it('rejects a status change for a caller without fnb:update_status', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fnbOrder.findFirst.mockResolvedValue(fakeFnbOrder({ status: 'RECEIVED' }));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders/order_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'PREPARING' });
+    expect(res.status).toBe(403);
+  });
+
+  it('moves RECEIVED -> PREPARING, recording who acknowledged it', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    mockPrisma.fnbOrder.findFirst.mockResolvedValue(fakeFnbOrder({ status: 'RECEIVED' }));
+    mockPrisma.fnbOrder.update.mockResolvedValue(fakeFnbOrder({ status: 'PREPARING' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders/order_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'PREPARING' });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.fnbOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'PREPARING', acknowledgedById: 'user_1' }),
+      }),
+    );
+    expect(mockRealtimeEmit).toHaveBeenCalledWith(
+      'property',
+      'fnb.order.status.changed',
+      expect.objectContaining({ entityId: 'order_1' }),
+    );
   });
 });
