@@ -2695,3 +2695,38 @@ losing `@unique`, and `pax`/`departureDate`/`endAt`/`totalAmount`/
 `BookingUnit.rate` going nullable — run `npx prisma db push` before the
 client's live test. **Not yet live-tested against the real Supabase
 database.**
+
+### Check-in fixes: Occupied rooms selectable in the picker, panel too wide (2026-08-24)
+
+Two live-testing reports on the Check-in panel from the previous slice.
+
+**Real bug:** `isBookable` (the same filter gating the room checklist)
+disabled `OUT_OF_ORDER`/`BLOCKED` but not `OCCUPIED` — an already-
+occupied room was fully clickable, risking a double-booking of a room
+that already has a guest in it. The server's own hard block
+(`409 UNIT_UNAVAILABLE`) already rejected this, but the picker itself
+should never offer it in the first place, same as the other two
+statuses. Added `OCCUPIED` to the same disabled-selection check in
+`apps/web/src/routes/UnitsPage.tsx`.
+
+**Layout refinement, no functional change.** The panel was full-width
+with a 3-column field row and an always-expanded ~23-room checklist —
+now roughly 1/3 page width (`md:w-1/3`), fields stacked top to bottom in
+the requested order (Booking ID, Guest name, Check-in date), and the
+room checklist collapsed behind a `<details>`/`<summary>` — the same
+pattern the "Report an issue" form already uses to collapse on Work
+Orders — rather than shown open by default. The summary also shows a
+live "(N selected)" count so a collapsed checklist doesn't hide whether
+anything's actually been picked. Live per-room status badges, the
+disabled states, and the not-Ready warning/acknowledge flow are all
+unchanged — this was sizing and field order only.
+
+1 new frontend test (`R01` selectable, `R02` Occupied and `R03` Blocked
+both disabled in the same checklist) plus the existing check-in/checkout
+tests re-verified unchanged. `apps/web` 33/33 (+1). Full repo
+lint/typecheck/build clean. Re-verified live in a real headless browser:
+the panel renders at ~26% of the page width (roughly 1/3 of the content
+area net of the nav sidebar), the room checklist stays collapsed until
+clicked, and Occupied/Blocked checkboxes are both disabled while Ready
+stays selectable. No schema change, no `npx prisma db push` needed for
+this slice.

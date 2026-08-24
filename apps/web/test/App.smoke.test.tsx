@@ -748,6 +748,43 @@ describe('App', () => {
       expect(screen.queryByRole('button', { name: 'Check out' })).not.toBeInTheDocument();
     });
 
+    // Real bug found live-testing, 2026-08-24: the room checklist
+    // disabled BLOCKED/OUT_OF_ORDER but left an already-Occupied room
+    // fully clickable — selecting it risked double-booking a room that
+    // already has a guest in it.
+    it('disables an already-Occupied room in the check-in checklist, same as Blocked/Out of order', async () => {
+      const user = userEvent.setup();
+      const adminStaffUser = {
+        ...currentUser,
+        roles: ['ADMIN_STAFF'],
+        permissions: { 'unit:read': 'ALL', 'booking:checkin': 'ALL' },
+      };
+      const units = [
+        readyUnit,
+        { ...readyUnit, id: 'unit_2', code: 'R02', status: 'OCCUPIED' },
+        { ...readyUnit, id: 'unit_3', code: 'R03', status: 'BLOCKED' },
+      ];
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+        if (url.endsWith('/units')) return jsonResponse(200, { units });
+        if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 'type_1', name: 'Standard' }] });
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('link', { name: 'Units' })).toBeInTheDocument());
+      await user.click(screen.getByRole('link', { name: 'Units' }));
+      await waitFor(() => expect(screen.getByText('Check-in')).toBeInTheDocument());
+      await user.click(screen.getByText('Rooms'));
+
+      expect(screen.getByLabelText('R01 — Room 1')).not.toBeDisabled();
+      expect(screen.getByLabelText('R02 — Room 1')).toBeDisabled();
+      expect(screen.getByLabelText('R03 — Room 1')).toBeDisabled();
+    });
+
     it('checks in a guest directly from the Check-in panel below the grid', async () => {
       const user = userEvent.setup();
       const adminStaffUser = {

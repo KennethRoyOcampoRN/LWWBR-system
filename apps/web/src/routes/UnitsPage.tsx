@@ -542,8 +542,15 @@ function UnitDetailDrawer({
 // to pick one, though the server enforces the same rule regardless.
 // Reused from the old "New booking" form's own picker — same live-
 // status-aware checklist, just without the rate/pricing fields.
+//
+// OCCUPIED added 2026-08-24 — real bug found live-testing: the picker
+// disabled BLOCKED/OUT_OF_ORDER but left an already-Occupied room fully
+// selectable, risking a double-booking of a room that already has a
+// guest in it. The server's own hard block (409 UNIT_UNAVAILABLE)
+// already rejects this regardless — this is the same "never even try"
+// UX treatment as the other two, not a new rule.
 function isBookable(unit: UnitRow): boolean {
-  return unit.isActive && unit.status !== 'OUT_OF_ORDER' && unit.status !== 'BLOCKED';
+  return unit.isActive && unit.status !== 'OUT_OF_ORDER' && unit.status !== 'BLOCKED' && unit.status !== 'OCCUPIED';
 }
 
 // "YYYY-MM-DD" for today in Asia/Manila, as a default for the date
@@ -620,50 +627,59 @@ function CheckInPanel({ units, onCheckedIn }: { units: UnitRow[]; onCheckedIn: (
     await submit(false);
   }
 
+  const selectedCount = selectedUnitIds.length;
+
   return (
-    <div className="flex flex-col gap-3 rounded border border-blue-300 bg-blue-50 p-4">
+    // Compact/vertical layout, 2026-08-24 (UI refinement) — roughly 1/3
+    // page width rather than full-width, fields stacked top to bottom
+    // (Booking ID, Guest name, Check-in date, then Rooms collapsed behind
+    // a <details> the way "Report an issue" already collapses on Work
+    // Orders) instead of the previous 3-column spread with an always-open
+    // ~23-room checklist. Layout/sizing only — every behavior below
+    // (live status per room, disabled states, not-ready warning) is
+    // unchanged.
+    <div className="flex w-full flex-col gap-3 rounded border border-blue-300 bg-blue-50 p-4 md:w-1/3">
       <h2 className="text-sm font-semibold">Check-in</h2>
       <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <label className="flex flex-col gap-1 text-sm">
-            Guest name
-            <input
-              required
-              className="rounded border border-gray-300 px-2 py-1"
-              value={guestName}
-              onChange={(e) => setGuestName(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Booking ID
-            <input
-              required
-              className="rounded border border-gray-300 px-2 py-1"
-              value={externalBookingId}
-              onChange={(e) => setExternalBookingId(e.target.value)}
-              placeholder="from the resort's booking website"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Check-in date
-            <input
-              required
-              type="date"
-              className="rounded border border-gray-300 px-2 py-1"
-              value={checkInDate}
-              onChange={(e) => setCheckInDate(e.target.value)}
-            />
-          </label>
-        </div>
+        <label className="flex flex-col gap-1 text-sm">
+          Booking ID
+          <input
+            required
+            className="rounded border border-gray-300 px-2 py-1"
+            value={externalBookingId}
+            onChange={(e) => setExternalBookingId(e.target.value)}
+            placeholder="from the resort's booking website"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Guest name
+          <input
+            required
+            className="rounded border border-gray-300 px-2 py-1"
+            value={guestName}
+            onChange={(e) => setGuestName(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Check-in date
+          <input
+            required
+            type="date"
+            className="rounded border border-gray-300 px-2 py-1"
+            value={checkInDate}
+            onChange={(e) => setCheckInDate(e.target.value)}
+          />
+        </label>
 
-        <div className="flex flex-col gap-2 rounded border border-gray-200 bg-white p-3">
-          <p className="text-sm font-medium">
+        <details className="rounded border border-gray-200 bg-white p-3">
+          <summary className="cursor-pointer text-sm font-medium">
             Rooms
+            {selectedCount > 0 ? ` (${selectedCount} selected)` : ''}
             <span className="ml-1 text-xs font-normal text-gray-500">
-              (out-of-order/blocked rooms are shown but cannot be selected)
+              (out-of-order/blocked/occupied rooms are shown but cannot be selected)
             </span>
-          </p>
-          <ul className="flex flex-col gap-1">
+          </summary>
+          <ul className="mt-2 flex flex-col gap-1">
             {units.map((unit) => {
               const bookable = isBookable(unit);
               const checked = selectedUnitIds.includes(unit.id);
@@ -680,7 +696,7 @@ function CheckInPanel({ units, onCheckedIn }: { units: UnitRow[]; onCheckedIn: (
               );
             })}
           </ul>
-        </div>
+        </details>
 
         {notReadyWarning && (
           <div role="alert" className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
