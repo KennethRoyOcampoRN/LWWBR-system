@@ -3714,3 +3714,90 @@ the list correctly. `packages/shared` unchanged, `apps/api` 287/290
 (same 3 pre-existing network-blocked round-trip tests), `apps/web`
 44/44. Full repo lint/typecheck/build clean. No schema change this time
 — `db push` from the previous entry still covers everything needed.
+
+### Option B: real menu/amenity item deletion, backed by order/request snapshots (2026-08-25)
+
+Client decision: rather than keep `FnbOrderLine.menuItem`/`AmenityRequest.amenityItem`
+as required FKs forever (the reason hard-delete was refused earlier
+today), snapshot each item's **name** on the order line / request at
+creation time — `unitPrice` was already snapshotted this way since the
+very first commit — and make the FK optional with `onDelete: SetNull`.
+This makes a genuine `MenuItem.delete()` / `AmenityItem.delete()` safe:
+no historical row depends on the live catalogue row surviving.
+
+**Genuine schema change — run `npx prisma db push`, then
+`npm run backfill:order-item-snapshots` (from `apps/api`), before your
+next live test.**
+
+- `FnbOrderLine.menuItemId` and `AmenityRequest.amenityItemId` are now
+  nullable, with `onDelete: SetNull` on both relations.
+- `FnbOrderLine` gains `menuItemName String?`; `AmenityRequest` gains
+  `amenityItemName String?` — both populated going forward at
+  order/request creation (`createFnbOrder`/`createAmenityRequest`), null
+  on every row that already existed before this change.
+- Both `fnbOrderToJson` and `amenityRequestToJson` now expose a derived
+  `itemName`: the snapshot if present, else the live relation (for a
+  pre-snapshot row whose item hasn't been deleted), else the placeholder
+  `"(deleted item)"`. The frontend reads this field, not
+  `menuItem.name`/`amenityItem.name`, directly.
+
+**Backfill decision — reasoning, not a default:** existing rows get their
+`menuItemName`/`amenityItemName` backfilled from the *current* live
+catalogue row, not left null. Two things make this the right call here,
+specifically at this moment, rather than "backfilling old data is
+inherently risky":
+
+1. `unitPrice` needs no backfill at all — it was already snapshotted at
+   order time since the very first commit, so the field most likely to
+   have actually drifted (price) is already correct on every historical
+   row. Only the name — much less likely to have changed (renaming a
+   menu item is rare; repricing it is routine) — needs backfilling.
+2. This runs *before* any item has ever been hard-deleted (that
+   capability doesn't exist until this same commit), so every
+   `menuItemId`/`amenityItemId` on every existing row is still
+   resolvable via its live relation right now — this is as accurate as
+   this backfill will ever be. Waiting means some of those items may
+   later be deleted and the name becomes unrecoverable.
+
+The script (`apps/api/scripts/backfillOrderItemSnapshots.ts`, mirroring
+`fixStaleInspectedUnits.ts`'s style) is idempotent — only touches rows
+where the snapshot is still null — so it's safe to re-run.
+
+**Delete UI**, gated the same as the existing manage permissions
+(`fnb:manage_menu`, `amenity:manage`): a "Delete" action now appears next
+to each menu/amenity item, but only once it's already
+unavailable/inactive — a deliberate two-step (deactivate, then delete)
+so a currently-live item can't be removed in one click. The server
+enforces the same rule independently (`409 ITEM_STILL_AVAILABLE` /
+`409 ITEM_STILL_ACTIVE`) — the UI gate is a courtesy, not the real guard.
+Amenity items get one more guard the menu doesn't need: deposit/stock
+checks are still read live during an amenity request's active lifecycle
+(see `changeAmenityRequestStatus`'s ISSUED branch), so
+`deleteAmenityItem` also refuses (`409 ITEM_HAS_ACTIVE_REQUESTS`) while
+any request on that item is still `REQUESTED`/`APPROVED`/`ISSUED`/
+`OVERDUE` — menu items need no equivalent, since nothing reads a live
+`MenuItem` after the order line's own snapshot is taken.
+
+This is a deliberate, informed deviation from this schema's own stated
+convention ("soft delete — nothing is hard-deleted from the UI," per
+spec §4.5, restated in schema.prisma's header comment) — flagging it
+here rather than letting it look like an oversight. Every other delete
+action in this codebase (users, roles, units, bookings, work orders,
+...) still only ever sets `deletedAt`; this is the first and only real
+`DELETE`, scoped specifically to menu/amenity catalogue items per this
+client decision.
+
+**Layout**: also moved Order history to sit between "Place an order" and
+the Menu section on `/restaurant`, per client request — Kitchen board →
+Place an order → Order history → Menu items.
+
+Verified: `npx prisma validate`/`generate` clean; 8 new backend tests
+(menu-item delete: 403/404/409-still-available/204-success; amenity-item
+delete: 403/404/409-still-active/409-has-active-requests/204-success)
+plus 2 new `itemName` fallback-chain tests (snapshot → live relation →
+placeholder, one per module); 2 new frontend tests (delete flow on each
+page, gated behind the confirm dialog); full headless-browser Playwright
+run confirming the new section order and a live delete round-trip.
+`packages/shared` unchanged, `apps/api` 298/301 (same 3 pre-existing
+network-blocked round-trip tests), `apps/web` 46/46. Full repo
+lint/typecheck/build clean.

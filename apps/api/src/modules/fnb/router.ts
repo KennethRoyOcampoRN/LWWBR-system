@@ -14,6 +14,7 @@ import {
   changeFnbOrderStatus,
   createFnbOrder,
   createMenuItem,
+  deleteMenuItem,
   getFnbOrder,
   listFnbOrders,
   listMenuItems,
@@ -45,6 +46,18 @@ fnbRouter.patch(
   asyncHandler(async (req, res) => {
     const body = updateMenuItemSchema.parse(req.body);
     res.status(200).json({ menuItem: await updateMenuItem(req.params.id as string, body) });
+  }),
+);
+
+// Client decision, 2026-08-25 (Option B): genuine hard delete, now that
+// FnbOrderLine snapshots the item's name/price at order time. Not a
+// deletedAt soft-hide — the row is actually removed.
+fnbRouter.delete(
+  '/menu-items/:id',
+  requirePermission('fnb:manage_menu'),
+  asyncHandler(async (req, res) => {
+    await deleteMenuItem(req.params.id as string);
+    res.status(204).end();
   }),
 );
 

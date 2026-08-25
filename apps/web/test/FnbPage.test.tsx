@@ -166,7 +166,7 @@ describe('FnbPage', () => {
           notes: null,
           createdAt: new Date().toISOString(),
           createdBy: { fullName: 'Restaurant Manager (Demo)' },
-          lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } }],
+          lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, itemName: 'Sisig', menuItem: { id: 'menu_1', name: 'Sisig' } }],
         };
         fnbOrders = [created];
         return jsonResponse(201, { fnbOrder: created });
@@ -229,7 +229,7 @@ describe('FnbPage', () => {
       cancelReason: null,
       cancelledBy: null,
       cancelledAt: null,
-      lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } }],
+      lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, itemName: 'Sisig', menuItem: { id: 'menu_1', name: 'Sisig' } }],
     };
     let fnbOrders: Record<string, unknown>[] = [receivedOrder];
     let historyOrders: Record<string, unknown>[] = [];
@@ -272,5 +272,39 @@ describe('FnbPage', () => {
 
     await waitFor(() => expect(screen.getByText('Order history')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/Guest left early/)).toBeInTheDocument());
+  });
+
+  // Client decision, 2026-08-25 (Option B): Delete is only offered once
+  // a menu item is unavailable, and confirms before actually deleting.
+  it('deletes an unavailable menu item after confirmation', async () => {
+    const user = userEvent.setup();
+    let items = [{ ...sisig, isAvailable: false }];
+    let deleteCalled = false;
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: restaurantManagerUser });
+      if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: items });
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
+      if (url.endsWith('/menu-items/menu_1') && init?.method === 'DELETE') {
+        deleteCalled = true;
+        items = [];
+        return jsonResponse(204, undefined);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Sisig')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Sisig')).not.toBeInTheDocument());
   });
 });

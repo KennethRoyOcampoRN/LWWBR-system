@@ -67,11 +67,51 @@ export async function updateAmenityItem(id: string, input: UpdateAmenityItemInpu
   return amenityItemToJson(item);
 }
 
+// Client decision, 2026-08-25 (Option B): a real AmenityItem.delete() is
+// now safe once nothing still depends on the live row. amenityItemId is
+// a nullable, onDelete: SetNull FK, and AmenityRequest snapshots the
+// item's name at request time — but unlike MenuItem, an amenity item's
+// deposit/stock fields are still read live during the request lifecycle
+// (see changeAmenityRequestStatus's ISSUED branch), so this also refuses
+// while any request referencing it is still mid-flow (REQUESTED /
+// APPROVED / ISSUED / OVERDUE), not just while the item is active.
+export async function deleteAmenityItem(id: string) {
+  const existing = await prisma.amenityItem.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Amenity item not found');
+  }
+  if (existing.isActive) {
+    throw new ApiError(409, 'ITEM_STILL_ACTIVE', 'Deactivate the item before deleting it.');
+  }
+  const activeRequests = await prisma.amenityRequest.count({
+    where: { amenityItemId: id, status: { in: ['REQUESTED', 'APPROVED', 'ISSUED', 'OVERDUE'] }, deletedAt: null },
+  });
+  if (activeRequests > 0) {
+    throw new ApiError(
+      409,
+      'ITEM_HAS_ACTIVE_REQUESTS',
+      'This item has requests still in progress; it cannot be deleted until they are returned or cancelled.',
+    );
+  }
+  await prisma.amenityItem.delete({ where: { id } });
+}
+
 // Same Decimal->number reasoning as amenityItemToJson above, applied to
 // the nested amenityItem the request/issue/return views need to show
-// (e.g. "this item requires a ₱500 deposit") without a second round trip.
-function amenityRequestToJson<T extends { amenityItem: { depositAmount: unknown } }>(request: T) {
-  return { ...request, amenityItem: { ...request.amenityItem, depositAmount: Number(request.amenityItem.depositAmount) } };
+// (e.g. "this item requires a ₱500 deposit") without a second round
+// trip. `itemName` prefers the snapshot taken at request time
+// (amenityItemName); falls back to the live relation for any
+// pre-snapshot historical row (see
+// scripts/backfillOrderItemSnapshots.ts), and finally to a placeholder
+// if the item was deleted before that backfill ever ran on this row.
+function amenityRequestToJson<T extends { amenityItemName: string | null; amenityItem: { depositAmount: unknown; name: string } | null }>(
+  request: T,
+) {
+  return {
+    ...request,
+    itemName: request.amenityItemName ?? request.amenityItem?.name ?? '(deleted item)',
+    amenityItem: request.amenityItem ? { ...request.amenityItem, depositAmount: Number(request.amenityItem.depositAmount) } : null,
+  };
 }
 
 // Spec §7.4/§9.1: amenity.request.changed on the same 'property' channel
@@ -109,6 +149,11 @@ export async function createAmenityRequest(input: CreateAmenityRequestInput, act
     data: {
       referenceNo,
       amenityItemId: input.amenityItemId,
+      // Client decision, 2026-08-25 (Option B): snapshot the item's name
+      // at request time, never re-derived from AmenityItem later — this
+      // is what makes a real AmenityItem.delete() safe for closed
+      // requests once nothing else still depends on the live row.
+      amenityItemName: item.name,
       bookingId: input.bookingId,
       unitId: input.unitId,
       qty: input.qty,
@@ -184,6 +229,15 @@ export async function changeAmenityRequestStatus(id: string, input: ChangeAmenit
   }
 
   if (input.toStatus === 'ISSUED') {
+    // amenityItem can only be null here if the item was hard-deleted out
+    // from under a request that's still mid-flow — deleteAmenityItem
+    // refuses to delete while any request is REQUESTED/APPROVED/ISSUED/
+    // OVERDUE specifically to prevent this, so this is a belt-and-braces
+    // check, not an expected path.
+    if (!request.amenityItem) {
+      throw new ApiError(409, 'ITEM_DELETED', 'This request\'s amenity item no longer exists.');
+    }
+
     // Real gap found live-testing, 2026-08-25: an item could be issued
     // past its totalQty with no warning at all — the system had no way
     // of knowing it was actually out of stock. "Currently out" is the

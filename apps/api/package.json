@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "tsx prisma/seed.ts",
-    "fix:stale-inspected-units": "tsx scripts/fixStaleInspectedUnits.ts"
+    "fix:stale-inspected-units": "tsx scripts/fixStaleInspectedUnits.ts",
+    "backfill:order-item-snapshots": "tsx scripts/backfillOrderItemSnapshots.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

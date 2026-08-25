@@ -737,7 +737,15 @@ model AmenityItem {
 model AmenityRequest {
   id                String               @id @default(cuid())
   referenceNo       String               @unique
-  amenityItemId     String
+  amenityItemId     String?
+  // Client decision, 2026-08-25 (Option B): snapshot the item's name at
+  // request time so a genuinely-deleted AmenityItem doesn't blank out a
+  // closed request's history. Deposit/stock fields stay live-only reads
+  // (see changeAmenityRequestStatus below) — by the time an item is
+  // actually deletable, no request referencing it can still be mid-flow
+  // (see deleteAmenityItem's active-request guard), so those fields are
+  // never read again after this snapshot would matter.
+  amenityItemName   String?
   bookingId         String?
   unitId            String?
   qty               Int
@@ -755,13 +763,13 @@ model AmenityRequest {
   updatedAt         DateTime             @updatedAt
   deletedAt         DateTime?
 
-  amenityItem AmenityItem @relation(fields: [amenityItemId], references: [id])
-  booking     Booking?    @relation(fields: [bookingId], references: [id])
-  unit        Unit?       @relation(fields: [unitId], references: [id])
-  requestedBy User        @relation("AmenityRequestedBy", fields: [requestedById], references: [id])
-  approvedBy  User?       @relation("AmenityApprovedBy", fields: [approvedById], references: [id])
-  issuedBy    User?       @relation("AmenityIssuedBy", fields: [issuedById], references: [id])
-  returnedBy  User?       @relation("AmenityReturnedBy", fields: [returnedById], references: [id])
+  amenityItem AmenityItem? @relation(fields: [amenityItemId], references: [id], onDelete: SetNull)
+  booking     Booking?     @relation(fields: [bookingId], references: [id])
+  unit        Unit?        @relation(fields: [unitId], references: [id])
+  requestedBy User         @relation("AmenityRequestedBy", fields: [requestedById], references: [id])
+  approvedBy  User?        @relation("AmenityApprovedBy", fields: [approvedById], references: [id])
+  issuedBy    User?        @relation("AmenityIssuedBy", fields: [issuedById], references: [id])
+  returnedBy  User?        @relation("AmenityReturnedBy", fields: [returnedById], references: [id])
 
   @@index([status])
   @@index([dueBackAt])
@@ -848,18 +856,24 @@ model FnbOrder {
 }
 
 model FnbOrderLine {
-  id         String    @id @default(cuid())
-  fnbOrderId String
-  menuItemId String
-  qty        Int
-  unitPrice  Decimal   @db.Decimal(12, 2)
-  notes      String?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  deletedAt  DateTime?
+  id           String    @id @default(cuid())
+  fnbOrderId   String
+  menuItemId   String?
+  // Client decision, 2026-08-25 (Option B): snapshot the item's name at
+  // order time, same reasoning as unitPrice below (already snapshotted
+  // since the very first commit) — this is what makes a real
+  // MenuItem.delete() safe. No order line depends on the live row
+  // surviving; both display fields are captured once, at creation.
+  menuItemName String?
+  qty          Int
+  unitPrice    Decimal   @db.Decimal(12, 2)
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 
-  fnbOrder FnbOrder @relation(fields: [fnbOrderId], references: [id])
-  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+  fnbOrder FnbOrder  @relation(fields: [fnbOrderId], references: [id])
+  menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
 
   @@index([fnbOrderId])
 }
@@ -1223,7 +1237,7 @@ model Setting {
 // AmenityRequest/StockRequest/Incident reuse the same service as their
 // own milestones land.
 model ReferenceSequence {
-  id  String @id @default(cuid())
+  id    String @id @default(cuid())
   // "<prefix>-<YYMMDD>", e.g. "WO-260823".
   scope String @unique
   seq   Int    @default(0)

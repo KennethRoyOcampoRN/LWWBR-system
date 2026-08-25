@@ -3,8 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrisma = {
   user: { findFirst: vi.fn() },
-  amenityItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-  amenityRequest: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), aggregate: vi.fn() },
+  amenityItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  amenityRequest: {
+    findMany: vi.fn(),
+    findFirst: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    aggregate: vi.fn(),
+    count: vi.fn(),
+  },
   referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
@@ -205,6 +213,62 @@ describe('PATCH /api/v1/amenity-items/:id', () => {
   });
 });
 
+// Client decision, 2026-08-25 (Option B): a real AmenityItem.delete() is
+// now safe once nothing still depends on the live row — see
+// deleteAmenityItem's two guards (still active; requests still mid-flow).
+describe('DELETE /api/v1/amenity-items/:id', () => {
+  it('requires amenity:manage', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const res = await request(createApp()).delete('/api/v1/amenity-items/amenity_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+    expect(mockPrisma.amenityItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityItem.findFirst.mockResolvedValue(null);
+    const res = await request(createApp()).delete('/api/v1/amenity-items/does_not_exist').set('Cookie', authCookie());
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses to delete a still-active item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityItem.findFirst.mockResolvedValue(fakeAmenityItem({ isActive: true }));
+    const res = await request(createApp()).delete('/api/v1/amenity-items/amenity_1').set('Cookie', authCookie());
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ITEM_STILL_ACTIVE');
+    expect(mockPrisma.amenityItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete an inactive item that still has requests in progress', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityItem.findFirst.mockResolvedValue(fakeAmenityItem({ isActive: false }));
+    mockPrisma.amenityRequest.count.mockResolvedValue(1);
+    const res = await request(createApp()).delete('/api/v1/amenity-items/amenity_1').set('Cookie', authCookie());
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ITEM_HAS_ACTIVE_REQUESTS');
+    expect(mockPrisma.amenityItem.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.amenityRequest.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          amenityItemId: 'amenity_1',
+          status: { in: ['REQUESTED', 'APPROVED', 'ISSUED', 'OVERDUE'] },
+        }),
+      }),
+    );
+  });
+
+  it('deletes an inactive item with no requests in progress', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityItem.findFirst.mockResolvedValue(fakeAmenityItem({ isActive: false }));
+    mockPrisma.amenityRequest.count.mockResolvedValue(0);
+    mockPrisma.amenityItem.delete.mockResolvedValue(fakeAmenityItem({ isActive: false }));
+    const res = await request(createApp()).delete('/api/v1/amenity-items/amenity_1').set('Cookie', authCookie());
+    expect(res.status).toBe(204);
+    expect(mockPrisma.amenityItem.delete).toHaveBeenCalledWith({ where: { id: 'amenity_1' } });
+  });
+});
+
 describe('POST /api/v1/amenity-requests', () => {
   it('requires amenity:request', async () => {
     // HOUSEKEEPING_STAFF holds amenity:approve/issue/return but not
@@ -269,6 +333,26 @@ describe('GET /api/v1/amenity-requests and /:id', () => {
     mockPrisma.amenityRequest.findFirst.mockResolvedValue(null);
     const res = await request(createApp()).get('/api/v1/amenity-requests/does_not_exist').set('Cookie', authCookie());
     expect(res.status).toBe(404);
+  });
+
+  // Client decision, 2026-08-25 (Option B): itemName prefers the
+  // snapshot taken at request time, falls back to the live AmenityItem
+  // relation for a pre-snapshot historical row, and finally to a
+  // placeholder once the item is genuinely deleted (amenityItem: null).
+  it('itemName prefers the snapshot, then the live relation, then a placeholder', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([
+      fakeAmenityRequest({ amenityItemName: 'PS4 (snapshot)', amenityItem: fakeAmenityItem({ name: 'PS4 (live)' }) }),
+      fakeAmenityRequest({ id: 'request_2', amenityItemName: null, amenityItem: fakeAmenityItem({ name: 'PS5 (live)' }) }),
+      fakeAmenityRequest({ id: 'request_3', amenityItemName: null, amenityItem: null }),
+    ]);
+    const res = await request(createApp()).get('/api/v1/amenity-requests').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    const [snap, legacy, gone] = res.body.amenityRequests;
+    expect(snap.itemName).toBe('PS4 (snapshot)');
+    expect(legacy.itemName).toBe('PS5 (live)');
+    expect(gone.itemName).toBe('(deleted item)');
+    expect(gone.amenityItem).toBeNull();
   });
 });
 

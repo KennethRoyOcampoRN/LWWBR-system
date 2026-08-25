@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   unit: { findFirst: vi.fn() },
-  menuItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  menuItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
   fnbOrder: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   setting: { findUnique: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
@@ -293,7 +293,12 @@ describe('POST /api/v1/fnb-orders', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           subtotal: 620,
-          lines: { create: [{ menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: undefined }, { menuItemId: 'menu_2', qty: 1, unitPrice: 120, notes: undefined }] },
+          lines: {
+            create: [
+              { menuItemId: 'menu_1', menuItemName: 'Sisig', qty: 2, unitPrice: 250, notes: undefined },
+              { menuItemId: 'menu_2', menuItemName: 'Halo-Halo', qty: 1, unitPrice: 120, notes: undefined },
+            ],
+          },
         }),
       }),
     );
@@ -316,6 +321,30 @@ describe('GET /api/v1/fnb-orders', () => {
     const res = await request(createApp()).get('/api/v1/fnb-orders').set('Cookie', authCookie());
     expect(res.status).toBe(200);
     expect(res.body.fnbOrders).toHaveLength(1);
+  });
+
+  // Client decision, 2026-08-25 (Option B): itemName prefers the
+  // snapshot taken at order time, falls back to the live MenuItem
+  // relation for a pre-snapshot historical row, and finally to a
+  // placeholder once the item is genuinely deleted (menuItem: null).
+  it('itemName prefers the snapshot, then the live relation, then a placeholder', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([
+      fakeFnbOrder({
+        id: 'order_snap',
+        lines: [
+          { id: 'l_snap', menuItemId: 'menu_1', menuItemName: 'Sisig (snapshot)', qty: 1, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig (live)' } },
+          { id: 'l_legacy', menuItemId: 'menu_2', menuItemName: null, qty: 1, unitPrice: 60, notes: null, menuItem: { id: 'menu_2', name: 'Iced Tea (live)' } },
+          { id: 'l_gone', menuItemId: null, menuItemName: null, qty: 1, unitPrice: 60, notes: null, menuItem: null },
+        ],
+      }),
+    ]);
+    const res = await request(createApp()).get('/api/v1/fnb-orders').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    const [snap, legacy, gone] = res.body.fnbOrders[0].lines;
+    expect(snap.itemName).toBe('Sisig (snapshot)');
+    expect(legacy.itemName).toBe('Iced Tea (live)');
+    expect(gone.itemName).toBe('(deleted item)');
   });
 
   // The board query hides RECEIVED/PREPARING/READY orders of type
@@ -457,5 +486,41 @@ describe('POST /api/v1/fnb-orders/:id/status', () => {
       }),
     );
     expect(res.body.fnbOrder.cancelReason).toBe('Guest changed their mind');
+  });
+});
+
+// Client decision, 2026-08-25 (Option B): a real MenuItem.delete() is
+// now safe since FnbOrderLine snapshots name/price at order time.
+describe('DELETE /api/v1/menu-items/:id', () => {
+  it('requires fnb:manage_menu', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const res = await request(createApp()).delete('/api/v1/menu-items/menu_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+    expect(mockPrisma.menuItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.menuItem.findFirst.mockResolvedValue(null);
+    const res = await request(createApp()).delete('/api/v1/menu-items/does_not_exist').set('Cookie', authCookie());
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses to delete a still-available item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.menuItem.findFirst.mockResolvedValue(fakeMenuItem({ isAvailable: true }));
+    const res = await request(createApp()).delete('/api/v1/menu-items/menu_1').set('Cookie', authCookie());
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ITEM_STILL_AVAILABLE');
+    expect(mockPrisma.menuItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('deletes an already-unavailable item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.menuItem.findFirst.mockResolvedValue(fakeMenuItem({ isAvailable: false }));
+    mockPrisma.menuItem.delete.mockResolvedValue(fakeMenuItem({ isAvailable: false }));
+    const res = await request(createApp()).delete('/api/v1/menu-items/menu_1').set('Cookie', authCookie());
+    expect(res.status).toBe(204);
+    expect(mockPrisma.menuItem.delete).toHaveBeenCalledWith({ where: { id: 'menu_1' } });
   });
 });

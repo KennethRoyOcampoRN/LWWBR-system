@@ -23,7 +23,13 @@ interface AmenityRequestRow {
   status: AmenityRequestStatusKey;
   dueBackAt: string | null;
   notes: string | null;
-  amenityItem: { id: string; name: string; requiresDeposit: boolean; depositAmount: number };
+  // Server-derived: the item's name snapshotted at request time, falling
+  // back to the live AmenityItem (pre-snapshot historical rows) and
+  // finally to a placeholder once the item is genuinely deleted — see
+  // itemName in apps/api/src/modules/amenities/service.ts's
+  // amenityRequestToJson.
+  itemName: string;
+  amenityItem: { id: string; name: string; requiresDeposit: boolean; depositAmount: number } | null;
   requestedBy: { fullName: string };
 }
 
@@ -200,6 +206,23 @@ export function AmenitiesPage() {
     await fetchItems();
   };
 
+  // Client decision, 2026-08-25 (Option B): a real delete, now that
+  // AmenityRequest snapshots the item's name at request time. The server
+  // still refuses (409) unless the item is already inactive and has no
+  // requests still in progress — this confirm dialog is a second,
+  // client-side guard on top of that.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteItem = async (item: AmenityItemRow) => {
+    if (!window.confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+    setDeleteError(null);
+    try {
+      await api.delete(`/amenity-items/${item.id}`);
+      await fetchItems();
+    } catch (err) {
+      setDeleteError(err instanceof ApiRequestError ? err.message : 'Could not delete the amenity item.');
+    }
+  };
+
   const handleCreateRequest = async (event: FormEvent) => {
     event.preventDefault();
     setRequestFormError(null);
@@ -245,7 +268,7 @@ export function AmenitiesPage() {
       setActionError('Set a due-back date/time before issuing.');
       return;
     }
-    if (request.amenityItem.requiresDeposit && !depositCollected) {
+    if (request.amenityItem?.requiresDeposit && !depositCollected) {
       setActionError('Confirm the deposit was collected before issuing this item.');
       return;
     }
@@ -270,6 +293,7 @@ export function AmenitiesPage() {
         </p>
       </div>
 
+      {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
       {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
       {items === 'error' && <p role="alert">Could not load the amenity catalogue.</p>}
       {Array.isArray(items) && items.length === 0 && (
@@ -318,6 +342,25 @@ export function AmenitiesPage() {
                           >
                             {item.isActive ? 'Deactivate' : 'Reactivate'}
                           </button>
+                          {/*
+                            Client decision, 2026-08-25 (Option B): only
+                            offered once the item is already inactive —
+                            matches the server's own 409
+                            ITEM_STILL_ACTIVE guard, so this never fires
+                            a request that's certain to be refused (the
+                            server's separate 409
+                            ITEM_HAS_ACTIVE_REQUESTS guard still applies
+                            underneath and surfaces via deleteError).
+                          */}
+                          {!item.isActive && (
+                            <button
+                              type="button"
+                              onClick={() => void deleteItem(item)}
+                              className="text-xs font-medium text-red-700 hover:underline"
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     )}
@@ -530,7 +573,7 @@ export function AmenitiesPage() {
               <li key={req.id} className="rounded border border-gray-200 p-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <span className="font-medium">{req.referenceNo}</span> — {req.amenityItem.name} x{req.qty}
+                    <span className="font-medium">{req.referenceNo}</span> — {req.itemName} x{req.qty}
                     <span className="ml-2 text-xs text-gray-500">requested by {req.requestedBy.fullName}</span>
                   </div>
                   <span
@@ -604,7 +647,7 @@ export function AmenitiesPage() {
                         className="rounded border border-gray-300 px-2 py-1 text-sm"
                       />
                     </label>
-                    {req.amenityItem.requiresDeposit && (
+                    {req.amenityItem?.requiresDeposit && (
                       <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
                         <input
                           type="checkbox"

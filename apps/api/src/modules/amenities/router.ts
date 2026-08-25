@@ -14,6 +14,7 @@ import {
   changeAmenityRequestStatus,
   createAmenityItem,
   createAmenityRequest,
+  deleteAmenityItem,
   getAmenityRequest,
   listAmenityItems,
   listAmenityRequests,
@@ -45,6 +46,18 @@ amenitiesRouter.patch(
   asyncHandler(async (req, res) => {
     const body = updateAmenityItemSchema.parse(req.body);
     res.status(200).json({ amenityItem: await updateAmenityItem(req.params.id as string, body) });
+  }),
+);
+
+// Client decision, 2026-08-25 (Option B): genuine hard delete, now that
+// AmenityRequest snapshots the item's name at request time. Not a
+// deletedAt soft-hide — the row is actually removed.
+amenitiesRouter.delete(
+  '/amenity-items/:id',
+  requirePermission('amenity:manage'),
+  asyncHandler(async (req, res) => {
+    await deleteAmenityItem(req.params.id as string);
+    res.status(204).end();
   }),
 );
 

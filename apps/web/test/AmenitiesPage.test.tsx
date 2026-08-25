@@ -145,6 +145,7 @@ describe('AmenitiesPage', () => {
           status: 'REQUESTED',
           dueBackAt: null,
           notes: null,
+          itemName: 'Kayak',
           amenityItem: { id: 'amenity_1', name: 'Kayak', requiresDeposit: true, depositAmount: 1000 },
           requestedBy: { fullName: 'Resort Manager (Demo)' },
         };
@@ -218,6 +219,7 @@ describe('AmenitiesPage', () => {
       status: 'APPROVED',
       dueBackAt: null,
       notes: null,
+      itemName: 'Kayak',
       amenityItem: { id: 'amenity_1', name: 'Kayak', requiresDeposit: false, depositAmount: 0 },
       requestedBy: { fullName: 'Resort Manager (Demo)' },
     };
@@ -294,5 +296,41 @@ describe('AmenitiesPage', () => {
 
     await waitFor(() => expect(screen.getByRole('cell', { name: '5' })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+  });
+
+  // Client decision, 2026-08-25 (Option B): Delete is only offered once
+  // an item is inactive, and confirms before actually deleting.
+  it('deletes an inactive item after confirmation', async () => {
+    const user = userEvent.setup();
+    let items = [{ ...kayak, isActive: false }];
+    let deleteCalled = false;
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/amenity-items') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityItems: items });
+      }
+      if (url.endsWith('/amenity-requests')) return jsonResponse(200, { amenityRequests: [] });
+      if (url.endsWith('/amenity-items/amenity_1') && init?.method === 'DELETE') {
+        deleteCalled = true;
+        items = [];
+        return jsonResponse(204, undefined);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Kayak')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Kayak')).not.toBeInTheDocument());
   });
 });

@@ -25,11 +25,16 @@ interface MenuItemRow {
 
 interface OrderLineRow {
   id: string;
-  menuItemId: string;
+  menuItemId: string | null;
   qty: number;
   unitPrice: number;
   notes: string | null;
-  menuItem: { id: string; name: string };
+  // Server-derived: the item's name snapshotted at order time, falling
+  // back to the live MenuItem (pre-snapshot historical rows) and finally
+  // to a placeholder once the item is genuinely deleted — see itemName
+  // in apps/api/src/modules/fnb/service.ts's fnbOrderToJson.
+  itemName: string;
+  menuItem: { id: string; name: string } | null;
 }
 
 interface FnbOrderRow {
@@ -243,6 +248,22 @@ export function FnbPage() {
     await fetchItems();
   };
 
+  // Client decision, 2026-08-25 (Option B): a real delete, now that
+  // FnbOrderLine snapshots the item's name/price at order time. The
+  // server still refuses (409) unless the item is already unavailable —
+  // this confirm dialog is a second, client-side guard on top of that.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteItem = async (item: MenuItemRow) => {
+    if (!window.confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+    setDeleteError(null);
+    try {
+      await api.delete(`/menu-items/${item.id}`);
+      await fetchItems();
+    } catch (err) {
+      setDeleteError(err instanceof ApiRequestError ? err.message : 'Could not delete the menu item.');
+    }
+  };
+
   const addLine = () => setLines((prev) => [...prev, { menuItemId: '', qty: '1' }]);
   const removeLine = (index: number) => setLines((prev) => prev.filter((_, i) => i !== index));
   const updateLine = (index: number, patch: Partial<DraftLine>) =>
@@ -379,7 +400,7 @@ export function FnbPage() {
                         <ul className="mt-1 text-xs">
                           {order.lines.map((line) => (
                             <li key={line.id}>
-                              {line.qty}x {line.menuItem.name}
+                              {line.qty}x {line.itemName}
                             </li>
                           ))}
                         </ul>
@@ -618,114 +639,6 @@ export function FnbPage() {
       </div>
 
       <div className="border-t border-gray-200 pt-6">
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Menu</h2>
-
-        {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-        {items === 'error' && <p role="alert">Could not load the menu.</p>}
-        {Array.isArray(items) && items.length === 0 && <p className="text-sm text-gray-500">No menu items yet.</p>}
-        {Array.isArray(items) && items.length > 0 && (
-          <div className="flex flex-col gap-6">
-            {menuCategories.map((cat) => (
-              <div key={cat} className="overflow-x-auto">
-                <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">{cat}</h3>
-                <table className="min-w-full divide-y divide-gray-200 text-sm">
-                  <thead>
-                    <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                      <th className="py-2 pr-4">Name</th>
-                      <th className="py-2 pr-4">Price</th>
-                      <th className="py-2 pr-4">Prep time</th>
-                      <th className="py-2 pr-4">Status</th>
-                      {canManageMenu && <th className="py-2 pr-4" />}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {(items as MenuItemRow[])
-                      .filter((item) => item.category === cat)
-                      .map((item) => (
-                        <tr key={item.id} className={item.isAvailable ? '' : 'text-gray-400'}>
-                          <td className="py-2 pr-4 font-medium">{item.name}</td>
-                          <td className="py-2 pr-4">{formatPeso(item.price)}</td>
-                          <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
-                          <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
-                          {canManageMenu && (
-                            <td className="py-2 pr-4">
-                              <button
-                                type="button"
-                                onClick={() => void toggleAvailable(item)}
-                                className="text-xs font-medium text-blue-700 hover:underline"
-                              >
-                                {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {canManageMenu && (
-          <form onSubmit={(e) => void handleCreate(e)} className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4">
-            <h3 className="text-sm font-semibold text-gray-700">Add a menu item</h3>
-            {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-                Name
-                <input
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-                Category
-                <input
-                  required
-                  placeholder="e.g. Rice Meals, Silog, Grilled, Pulutan, Drinks, Desserts"
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-                Price (₱)
-                <input
-                  required
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={price}
-                  onChange={(e) => setPrice(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-                Prep time in minutes (optional)
-                <input
-                  type="number"
-                  min={1}
-                  value={prepMinutes}
-                  onChange={(e) => setPrepMinutes(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                />
-              </label>
-            </div>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
-              {submitting ? 'Adding…' : 'Add menu item'}
-            </button>
-          </form>
-        )}
-      </div>
-
-      <div className="border-t border-gray-200 pt-6">
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Order history</h2>
         <p className="mb-2 text-xs text-gray-500">
           Every completed or cancelled order's full detail — items, room, guest, cancellation reason, timestamps. Once an
@@ -796,7 +709,7 @@ export function FnbPage() {
                       <ul>
                         {order.lines.map((line) => (
                           <li key={line.id}>
-                            {line.qty}x {line.menuItem.name}
+                            {line.qty}x {line.itemName}
                           </li>
                         ))}
                       </ul>
@@ -817,6 +730,136 @@ export function FnbPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+
+      <div className="border-t border-gray-200 pt-6">
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Menu</h2>
+        {deleteError && <p role="alert" className="mb-2 text-sm text-red-700">{deleteError}</p>}
+
+        {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {items === 'error' && <p role="alert">Could not load the menu.</p>}
+        {Array.isArray(items) && items.length === 0 && <p className="text-sm text-gray-500">No menu items yet.</p>}
+        {Array.isArray(items) && items.length > 0 && (
+          <div className="flex flex-col gap-6">
+            {menuCategories.map((cat) => (
+              <div key={cat} className="overflow-x-auto">
+                <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">{cat}</h3>
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead>
+                    <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                      <th className="py-2 pr-4">Name</th>
+                      <th className="py-2 pr-4">Price</th>
+                      <th className="py-2 pr-4">Prep time</th>
+                      <th className="py-2 pr-4">Status</th>
+                      {canManageMenu && <th className="py-2 pr-4" colSpan={2} />}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {(items as MenuItemRow[])
+                      .filter((item) => item.category === cat)
+                      .map((item) => (
+                        <tr key={item.id} className={item.isAvailable ? '' : 'text-gray-400'}>
+                          <td className="py-2 pr-4 font-medium">{item.name}</td>
+                          <td className="py-2 pr-4">{formatPeso(item.price)}</td>
+                          <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
+                          <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
+                          {canManageMenu && (
+                            <>
+                              <td className="py-2 pr-4">
+                                <button
+                                  type="button"
+                                  onClick={() => void toggleAvailable(item)}
+                                  className="text-xs font-medium text-blue-700 hover:underline"
+                                >
+                                  {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
+                                </button>
+                              </td>
+                              <td className="py-2 pr-4">
+                                {/*
+                                  Client decision, 2026-08-25 (Option B):
+                                  only offered once the item is already
+                                  unavailable — matches the server's own
+                                  409 ITEM_STILL_AVAILABLE guard, so this
+                                  never fires a request that's certain to
+                                  be refused.
+                                */}
+                                {!item.isAvailable && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void deleteItem(item)}
+                                    className="text-xs font-medium text-red-700 hover:underline"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {canManageMenu && (
+          <form onSubmit={(e) => void handleCreate(e)} className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4">
+            <h3 className="text-sm font-semibold text-gray-700">Add a menu item</h3>
+            {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Name
+                <input
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Category
+                <input
+                  required
+                  placeholder="e.g. Rice Meals, Silog, Grilled, Pulutan, Drinks, Desserts"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Price (₱)
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Prep time in minutes (optional)
+                <input
+                  type="number"
+                  min={1}
+                  value={prepMinutes}
+                  onChange={(e) => setPrepMinutes(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+            </div>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {submitting ? 'Adding…' : 'Add menu item'}
+            </button>
+          </form>
         )}
       </div>
     </div>

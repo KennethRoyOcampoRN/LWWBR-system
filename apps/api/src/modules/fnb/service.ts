@@ -67,6 +67,24 @@ export async function updateMenuItem(id: string, input: UpdateMenuItemInput) {
   return menuItemToJson(item);
 }
 
+// Client decision, 2026-08-25 (Option B): a real MenuItem.delete() is
+// now safe — every FnbOrderLine snapshots the item's name and price at
+// order time (see createFnbOrder), and menuItemId is a nullable,
+// onDelete: SetNull FK, so no historical order line depends on this row
+// surviving. Still requires the item be marked unavailable first — a
+// deliberate two-step (deactivate, then delete) so a currently-live menu
+// item can't be removed in one click.
+export async function deleteMenuItem(id: string) {
+  const existing = await prisma.menuItem.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
+  }
+  if (existing.isAvailable) {
+    throw new ApiError(409, 'ITEM_STILL_AVAILABLE', 'Mark the item unavailable before deleting it.');
+  }
+  await prisma.menuItem.delete({ where: { id } });
+}
+
 // Spec §7.3: "make the lead time a Setting" — same read-live-row,
 // fall-back-to-shared-default pattern as workorders/service.ts's
 // getPhotoRequirements, so the gate never goes silently unconfigured
@@ -80,12 +98,25 @@ async function getAdvanceOrderLeadMinutes(): Promise<number> {
 }
 
 // Same Decimal->number reasoning as menuItemToJson above, applied to the
-// order's own subtotal and each line's snapshotted unitPrice.
-function fnbOrderToJson<T extends { subtotal: unknown; lines: { unitPrice: unknown }[] }>(order: T) {
+// order's own subtotal and each line's snapshotted unitPrice. `itemName`
+// prefers the snapshot taken at order time (menuItemName); falls back to
+// the live relation for any pre-snapshot historical row (see
+// scripts/backfillOrderItemSnapshots.ts), and finally to a placeholder
+// if the item was deleted before that backfill ever ran on this row.
+function fnbOrderToJson<
+  T extends {
+    subtotal: unknown;
+    lines: { unitPrice: unknown; menuItemName: string | null; menuItem: { name: string } | null }[];
+  },
+>(order: T) {
   return {
     ...order,
     subtotal: Number(order.subtotal),
-    lines: order.lines.map((line) => ({ ...line, unitPrice: Number(line.unitPrice) })),
+    lines: order.lines.map((line) => ({
+      ...line,
+      unitPrice: Number(line.unitPrice),
+      itemName: line.menuItemName ?? line.menuItem?.name ?? '(deleted item)',
+    })),
   };
 }
 
@@ -139,13 +170,21 @@ export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrder
   }
   const menuItemById = new Map(menuItems.map((item) => [item.id, item]));
 
-  // Snapshot the price at order time, never re-derived from MenuItem
-  // later — same "amount is stored, never recomputed from the source"
-  // reasoning spec gives FolioCharge, applied here even without a folio:
-  // a menu price change next week must not rewrite last week's order.
+  // Snapshot the price (and, as of the 2026-08-25 Option B decision, the
+  // name) at order time, never re-derived from MenuItem later — same
+  // "amount is stored, never recomputed from the source" reasoning spec
+  // gives FolioCharge, applied here even without a folio: a menu price
+  // or name change next week must not rewrite last week's order. The
+  // name snapshot is also what makes a real MenuItem.delete() safe.
   const lines = input.lines.map((line) => {
     const menuItem = menuItemById.get(line.menuItemId)!;
-    return { menuItemId: line.menuItemId, qty: line.qty, unitPrice: menuItem.price, notes: line.notes };
+    return {
+      menuItemId: line.menuItemId,
+      menuItemName: menuItem.name,
+      qty: line.qty,
+      unitPrice: menuItem.price,
+      notes: line.notes,
+    };
   });
   const subtotal = lines.reduce((sum, line) => sum + Number(line.unitPrice) * line.qty, 0);
 
