@@ -204,6 +204,56 @@ describe('AmenitiesPage', () => {
     await waitFor(() => expect(screen.getByText('Returned')).toBeInTheDocument());
   });
 
+  // Real bug found live-testing, 2026-08-25: an item could be issued past
+  // its totalQty with no warning. The server-side gate (409
+  // INSUFFICIENT_STOCK) is the real fix; this confirms the frontend's
+  // existing generic error handling surfaces it correctly rather than
+  // silently swallowing it or needing new plumbing.
+  it('surfaces the server\'s out-of-stock error when issuing would exceed totalQty', async () => {
+    const user = userEvent.setup();
+    const approvedRequest = {
+      id: 'request_1',
+      referenceNo: 'AR-260824-0002',
+      qty: 1,
+      status: 'APPROVED',
+      dueBackAt: null,
+      notes: null,
+      amenityItem: { id: 'amenity_1', name: 'Kayak', requiresDeposit: false, depositAmount: 0 },
+      requestedBy: { fullName: 'Resort Manager (Demo)' },
+    };
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: fullAccessUser });
+      if (url.endsWith('/amenity-items')) return jsonResponse(200, { amenityItems: [kayak] });
+      if (url.endsWith('/amenity-requests') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityRequests: [approvedRequest] });
+      }
+      if (url.match(/\/amenity-requests\/request_1\/status$/) && init?.method === 'POST') {
+        return jsonResponse(409, {
+          error: {
+            code: 'INSUFFICIENT_STOCK',
+            message: 'Only 0 of 1 Kayak available right now.',
+            details: { available: 0, totalQty: 1, requestedQty: 1 },
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('AR-260824-0002')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Issue' }));
+    await user.type(screen.getByLabelText('Due back'), '2026-09-01T10:00');
+    await user.click(screen.getByRole('button', { name: 'Confirm issue' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Only 0 of 1 Kayak available right now.'));
+    // Still APPROVED — the request must not have been left half-updated.
+    expect(screen.getByText('Approved')).toBeInTheDocument();
+  });
+
   // Real gap found live-testing, 2026-08-25: totalQty was captured on
   // creation but an existing item had no way to edit it at all — only
   // Deactivate/Reactivate existed. This drives the new inline edit form.

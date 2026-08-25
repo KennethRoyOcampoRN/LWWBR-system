@@ -184,6 +184,29 @@ export async function changeAmenityRequestStatus(id: string, input: ChangeAmenit
   }
 
   if (input.toStatus === 'ISSUED') {
+    // Real gap found live-testing, 2026-08-25: an item could be issued
+    // past its totalQty with no warning at all — the system had no way
+    // of knowing it was actually out of stock. "Currently out" is the
+    // sum of qty across every other request on this same item still in
+    // ISSUED or OVERDUE — OVERDUE is included deliberately: a unit that's
+    // overdue hasn't come back yet, so it must still count as unavailable
+    // (excluding it would make stock look like it "reappeared" the
+    // moment a borrower fails to return on time, which is backwards).
+    const outstanding = await prisma.amenityRequest.aggregate({
+      where: { amenityItemId: request.amenityItemId, status: { in: ['ISSUED', 'OVERDUE'] }, deletedAt: null },
+      _sum: { qty: true },
+    });
+    const currentlyOut = outstanding._sum.qty ?? 0;
+    const available = request.amenityItem.totalQty - currentlyOut;
+    if (request.qty > available) {
+      throw new ApiError(
+        409,
+        'INSUFFICIENT_STOCK',
+        `Only ${Math.max(available, 0)} of ${request.amenityItem.totalQty} ${request.amenityItem.name} available right now.`,
+        { available: Math.max(available, 0), totalQty: request.amenityItem.totalQty, requestedQty: request.qty },
+      );
+    }
+
     if (request.amenityItem.requiresDeposit && !input.depositCollected) {
       throw new ApiError(
         422,

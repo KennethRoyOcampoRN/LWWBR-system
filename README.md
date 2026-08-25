@@ -3501,3 +3501,67 @@ mocked API. `packages/shared` 70/70, `apps/api` 279/282 (same 3
 pre-existing network-blocked round-trip tests, untouched — no backend
 change this fix), `apps/web` 42/42. Full repo lint/typecheck/build
 clean.
+
+### Two findings from the client's live PC pass on M5 (2026-08-25)
+
+**1. Real bug, confirmed with real self-created data: amenities had no
+stock check.** The client added a real `AmenityItem` ("console",
+`totalQty: 1`) through the `/amenities` form and was able to issue it
+three separate times with no warning — the system had no way of knowing
+an item was actually out of stock.
+
+Fixed in `changeAmenityRequestStatus` (`amenities/service.ts`): before an
+`APPROVED -> ISSUED` transition, sum `qty` across every other request on
+the same `AmenityItem` currently `ISSUED` **or** `OVERDUE`, and refuse
+(`409 INSUFFICIENT_STOCK`) if this request's own `qty` would push that
+total past the item's `totalQty`. `OVERDUE` is deliberately included,
+not just `ISSUED` — an overdue item hasn't come back yet, so excluding
+it would make stock look like it "reappeared" the moment a borrower
+missed their due-back time, which is backwards. The frontend needed no
+new plumbing: `AmenitiesPage.tsx`'s existing generic
+`ApiRequestError`-to-`actionError` handling already surfaces the
+server's message in the Issue panel.
+
+Verified: 4 new backend tests (out of stock refuses and leaves the
+request untouched; `OVERDUE` counts toward the total, not just `ISSUED`;
+issuing succeeds when stock remains; a multi-unit request that alone
+would exceed what's left is refused), 1 new frontend test confirming the
+server's exact error message renders and the request stays `APPROVED`
+rather than being left half-updated, and a real headless-browser
+Playwright run doing the same. `packages/shared` 70/70 (unchanged),
+`apps/api` 283/286 (same 3 pre-existing network-blocked round-trip
+tests), `apps/web` 43/43. Full repo lint/typecheck/build clean.
+
+**2. Investigated, not a code bug: the restaurant menu seed data.** The
+client confirmed two ways — the `/restaurant` page showed no menu items,
+and Supabase's own Table Editor showed `MenuItem` genuinely empty — and
+asked me to check whether the seeding code from the earlier "M5
+restaurant slice 1" report actually exists in the committed `seed.ts`,
+since the table's emptiness suggested it might never have been wired in.
+
+Checked directly rather than guessing: `MENU_ITEM_SEEDS` (26 items
+across Rice Meals/Silog/Grilled/Pulutan/Drinks/Desserts) and its
+seeding loop are both present in `seed.ts` at the current commit, and
+have been since commit `df6ef9c` ("M5 restaurant slice 1: menu
+catalogue"), confirmed via `git log`/`git show` against the actual
+committed history, not just the working tree. The loop does print
+`console.warn('Seeding 26 menu items...')`, same as every other seed
+block, immediately before it runs — so a run that reached this point
+would show that line. The code is straight-line (no early return
+between the amenity-item block above it and this one), create-if-missing
+same as the rest of the script, and safe to re-run.
+
+**This means the seeding code itself isn't the bug** — the far more
+likely explanation is that `npm run seed` simply hasn't been (re-)run
+against the live Supabase project since this feature landed. Every
+milestone's seed data only appears after the next time the script is
+actually invoked; pulling the commit alone doesn't touch the database.
+**Recommended next step for the client's PC pass:** run `npm run seed`
+again (idempotent, safe against existing data) and watch the console for
+the `Seeding 26 menu items...` line and whatever immediately follows it
+(`Seeding workOrder.photoRequirements setting...`) — if the first line
+prints but the second doesn't, something threw in between and the actual
+error text is the next thing to look at. This wasn't something I could
+verify by running it myself: this sandbox has no network path to the
+client's live Supabase project, confirmed repeatedly across this
+session.
