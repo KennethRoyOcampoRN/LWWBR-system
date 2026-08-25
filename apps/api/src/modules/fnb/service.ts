@@ -21,6 +21,7 @@ interface FnbOrderActor {
 const FNB_ORDER_INCLUDE = {
   unit: { select: { id: true, code: true, name: true } },
   createdBy: { select: { id: true, fullName: true } },
+  cancelledBy: { select: { id: true, fullName: true } },
   lines: { include: { menuItem: { select: { id: true, name: true } } } },
 } as const;
 
@@ -234,6 +235,11 @@ export async function changeFnbOrderStatus(id: string, input: ChangeFnbOrderStat
   }
   if (input.toStatus === 'SERVED') {
     data.servedAt = new Date();
+  }
+  if (input.toStatus === 'CANCELLED') {
+    data.cancelledById = actor.id;
+    data.cancelledAt = new Date();
+    data.cancelReason = input.cancelReason;
   }
 
   const updated = await prisma.fnbOrder.update({ where: { id }, data, include: FNB_ORDER_INCLUDE });

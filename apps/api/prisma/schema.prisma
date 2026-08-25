@@ -87,6 +87,7 @@ model User {
   returnedAmenities     AmenityRequest[]  @relation("AmenityReturnedBy")
   createdFnbOrders      FnbOrder[]        @relation("FnbCreatedBy")
   acknowledgedFnbOrders FnbOrder[]        @relation("FnbAcknowledgedBy")
+  cancelledFnbOrders    FnbOrder[]        @relation("FnbCancelledBy")
   stockRequests         StockRequest[]    @relation("StockRequestedBy")
   decidedStockRequests  StockRequest[]    @relation("StockDecidedBy")
   stockMovements        StockMovement[]
@@ -823,6 +824,14 @@ model FnbOrder {
   preparingAt      DateTime?
   readyAt          DateTime?
   servedAt         DateTime?
+  // Client decision, 2026-08-25: cancelling an order must require a
+  // reason, same as forceUnitStatus's mandatory note for a forced status
+  // correction — captured here rather than silently marking CANCELLED,
+  // so it's visible on the order itself, not just inferable from the
+  // generic AuditLog UPDATE row the audit extension already writes.
+  cancelReason     String?
+  cancelledById    String?
+  cancelledAt      DateTime?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
   deletedAt        DateTime?
@@ -831,6 +840,7 @@ model FnbOrder {
   unit           Unit?          @relation(fields: [unitId], references: [id])
   createdBy      User           @relation("FnbCreatedBy", fields: [createdById], references: [id])
   acknowledgedBy User?          @relation("FnbAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  cancelledBy    User?          @relation("FnbCancelledBy", fields: [cancelledById], references: [id])
   lines          FnbOrderLine[]
 
   @@index([status])

@@ -388,4 +388,43 @@ describe('POST /api/v1/fnb-orders/:id/status', () => {
       expect.objectContaining({ entityId: 'order_1' }),
     );
   });
+
+  // Client decision, 2026-08-25: cancelling an order must require and
+  // record a reason, same as forceUnitStatus's mandatory note for a
+  // forced status correction.
+  it('rejects cancelling without a cancelReason', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    mockPrisma.fnbOrder.findFirst.mockResolvedValue(fakeFnbOrder({ status: 'RECEIVED' }));
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders/order_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'CANCELLED' });
+    expect(res.status).toBe(422);
+    expect(mockPrisma.fnbOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('cancels an order with a reason, recording who cancelled it and why', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_STAFF'));
+    mockPrisma.fnbOrder.findFirst.mockResolvedValue(fakeFnbOrder({ status: 'RECEIVED' }));
+    mockPrisma.fnbOrder.update.mockResolvedValue(
+      fakeFnbOrder({ status: 'CANCELLED', cancelledById: 'user_1', cancelReason: 'Guest changed their mind' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/fnb-orders/order_1/status')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'CANCELLED', cancelReason: 'Guest changed their mind' });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.fnbOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'CANCELLED',
+          cancelledById: 'user_1',
+          cancelReason: 'Guest changed their mind',
+        }),
+      }),
+    );
+    expect(res.body.fnbOrder.cancelReason).toBe('Guest changed their mind');
+  });
 });

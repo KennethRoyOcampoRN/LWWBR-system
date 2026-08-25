@@ -54,9 +54,20 @@ export const listFnbOrdersQuerySchema = z.object({
     .transform((v) => v === 'true'),
 });
 
-export const changeFnbOrderStatusSchema = z.object({
-  toStatus: z.enum(FNB_ORDER_STATUS_KEYS),
-});
+// Client decision, 2026-08-25: cancelling an order requires a reason,
+// same as forceUnitStatus's mandatory note for a forced status
+// correction — enforced here as a conditional-required field rather than
+// left to the service layer, same pattern as createFnbOrderSchema's own
+// scheduledFor-for-ADVANCE_ORDER refine above.
+export const changeFnbOrderStatusSchema = z
+  .object({
+    toStatus: z.enum(FNB_ORDER_STATUS_KEYS),
+    cancelReason: z.string().trim().min(1).max(500).optional(),
+  })
+  .refine((data) => data.toStatus !== 'CANCELLED' || data.cancelReason !== undefined, {
+    message: 'cancelReason is required to cancel an order',
+    path: ['cancelReason'],
+  });
 
 export type CreateFnbOrderInput = z.infer<typeof createFnbOrderSchema>;
 export type ListFnbOrdersQuery = z.infer<typeof listFnbOrdersQuerySchema>;

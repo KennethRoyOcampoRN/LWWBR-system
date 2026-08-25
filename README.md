@@ -3565,3 +3565,93 @@ error text is the next thing to look at. This wasn't something I could
 verify by running it myself: this sandbox has no network path to the
 client's live Supabase project, confirmed repeatedly across this
 session.
+
+### Seven findings from live-testing the restaurant/kitchen system (2026-08-25)
+
+**Genuine schema change — run `npx prisma db push` before your next live
+test.** `FnbOrder` gained `cancelReason`/`cancelledById`/`cancelledAt`
+columns for finding #4 below.
+
+**1. Confirmed intentional, not a gap: menu items can't be hard-deleted.**
+`FnbOrderLine.menuItem` is a required (non-nullable) FK, so deleting a
+`MenuItem` still referenced by historical order lines would either break
+referential integrity or destroy that history — same reasoning as
+`AmenityItem.isActive` and `FolioCharge`'s voided-not-deleted pattern.
+Soft-disable (`isAvailable`) is the correct, intentional design here; no
+code change made.
+
+**2. Real gap, fixed: kitchen board moved to the top of the page.**
+Restaurant staff need it on load, not after scrolling past the menu.
+`FnbPage.tsx` now renders Kitchen board → Place an order first, Menu →
+Add a menu item second.
+
+**3. Real bug, fixed: unoccupied/blocked rooms were selectable in the
+order-placement room picker.** The `disabled` condition on each `<option>`
+was gated on `settlement === 'CHARGE_TO_ROOM'`, but `settlement` defaults
+to `PAY_NOW` — so by default every room, including `BLOCKED`/
+`OUT_OF_ORDER`, was clickable, even though the backend's own `422
+UNIT_NOT_OCCUPIED` gate only fires for `CHARGE_TO_ROOM`. Fixed to be
+unconditional (`disabled={unit.status !== 'OCCUPIED'}`) — an F&B order
+should only ever attach to a room with a guest actually present,
+regardless of how it's being paid for. Mirrors the same never-even-try
+disabled-option treatment already used by `UnitsPage`'s `CheckInPanel`.
+
+**4. Real gap, fixed: cancelling an order now requires a reason, logged.**
+Same pattern as `forceUnitStatus`'s mandatory note for a forced status
+correction. Schema: `FnbOrder.cancelReason`/`cancelledById`/`cancelledAt`
++ a `cancelledBy` relation to `User`. `changeFnbOrderStatusSchema`
+requires `cancelReason` (via a zod `.refine()`) whenever `toStatus ===
+'CANCELLED'`; `changeFnbOrderStatus` persists all three fields on that
+transition. `FnbPage.tsx`'s Cancel button now opens an inline
+reason-capture sub-form (mirroring `AmenitiesPage.tsx`'s Issue/Return
+pattern) instead of cancelling immediately, and a new "Recently
+cancelled" section (fetching `GET /fnb-orders?status=CANCELLED`) keeps the
+reason visible once the order drops off the active board.
+
+**5. Corrected, not a straight implementation: menu categories.** The
+requested four groupings ("Menu, Extras, Beverage, Specials") don't match
+what's actually seeded — `MenuItem.category` is free text (per spec's
+data model) and the real seed data uses six categories: Rice Meals,
+Silog, Grilled, Pulutan, Drinks, Desserts. Rather than hardcoding either
+list, the Menu table now groups dynamically by whatever distinct
+`category` values exist in the live data, so it stays correct regardless
+of how categories are named or added later.
+
+**6 & 7. Real bugs, fixed together: the timing badge only had two states,
+and it never visibly progressed.** Root cause of #7: `minutesSince` was
+recomputed correctly from `order.createdAt` (the timestamp basis was
+already right), but only as a side effect of `fetchOrders()` re-rendering
+— there was no clock driving the *display* on its own, so a ticket sitting
+untouched between polls/realtime events showed a frozen badge. Fixed with
+a dedicated `now` state ticking on its own 15s `setInterval`, decoupled
+from the 30s data-fetch cadence.
+
+That fix exposed #6 clearly: once the badge could actually move, "only
+two states, and overdue shows nothing" was confirmed as a real gap, not
+just a symptom of #7. Redesigned around three explicit urgency tiers, all
+still keyed off the existing spec §7.3 thresholds
+(`FNB_ORDER_AMBER_MINUTES`/`FNB_ORDER_RED_MINUTES`) — reinterpreted as
+"time budget consumed" rather than "still fine until stale": a
+freshly-placed ticket needs attention right away (**red**), one nearing
+its allocation **blinks** to demand a look, and one that has actually
+blown past its allocation gets the strongest, unmistakable **OVERDUE**
+treatment (solid red, pulsing, explicit "OVERDUE" label) — it no longer
+silently reverts to a neutral badge the way the old red-only-at-35min
+tier effectively did while frozen. This is a design interpretation of an
+ambiguous request ("time allocation" appears nowhere else in spec.md);
+flagged here rather than guessed silently, though implemented directly
+since it reuses the existing, already-agreed thresholds rather than
+inventing new ones.
+
+Verified: 2 new backend tests (cancelling without a reason returns 422
+and leaves the order untouched; cancelling with a reason persists
+`cancelledById`/`cancelledAt`/`cancelReason` and returns them), 1 new
+frontend test driving the full cancel-with-reason flow through the UI to
+the "Recently cancelled" section, and a real headless-browser Playwright
+run confirming: kitchen board renders above the menu; the room picker
+disables `VACANT_DIRTY`/`BLOCKED` rooms while leaving `OCCUPIED` enabled;
+the menu groups under real category headings (Grilled, Drinks, …); and
+all three urgency tiers render with the expected classes and the
+"OVERDUE" label. `packages/shared` unchanged, `apps/api` 285/288 (same 3
+pre-existing network-blocked round-trip tests), `apps/web` 44/44. Full
+repo lint/typecheck/build clean.

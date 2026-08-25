@@ -45,6 +45,9 @@ interface FnbOrderRow {
   notes: string | null;
   createdAt: string;
   createdBy: { fullName: string };
+  cancelReason: string | null;
+  cancelledBy: { fullName: string } | null;
+  cancelledAt: string | null;
   lines: OrderLineRow[];
 }
 
@@ -66,14 +69,34 @@ function formatPeso(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function minutesSince(dateStr: string): number {
-  return Math.max(0, Math.floor((Date.now() - new Date(dateStr).getTime()) / 60_000));
+function minutesSince(dateStr: string, now: number): number {
+  return Math.max(0, Math.floor((now - new Date(dateStr).getTime()) / 60_000));
 }
 
-function timerClass(minutes: number): string {
-  if (minutes >= FNB_ORDER_RED_MINUTES) return 'border-red-400 bg-red-50 text-red-900';
-  if (minutes >= FNB_ORDER_AMBER_MINUTES) return 'border-amber-400 bg-amber-50 text-amber-900';
-  return 'border-gray-200 bg-white text-gray-900';
+// Client decision, 2026-08-25: live-testing found the board's timer badge
+// had only two visible states (amber/red) and neither ever registered as
+// "urgent" until 20+ minutes had passed — a freshly-placed ticket looked
+// identical to a resolved concern. Redesigned as three explicit urgency
+// tiers, all keyed off the same spec §7.3 thresholds (AMBER/RED minutes),
+// just reinterpreted as "time budget consumed" rather than "still fine
+// until stale": a brand-new ticket needs the kitchen's attention right
+// away (red), a ticket nearing its allocation blinks to demand a look,
+// and one that has actually blown past its allocation gets the strongest,
+// unmistakable "OVERDUE" treatment — never disappearing back to a neutral
+// badge the way the old red-only-at-35min state effectively did while the
+// display sat frozen (see the ticking-clock fix below).
+type OrderUrgency = 'new' | 'approaching' | 'overdue';
+
+function orderUrgency(minutes: number): OrderUrgency {
+  if (minutes >= FNB_ORDER_RED_MINUTES) return 'overdue';
+  if (minutes >= FNB_ORDER_AMBER_MINUTES) return 'approaching';
+  return 'new';
+}
+
+function urgencyClass(urgency: OrderUrgency): string {
+  if (urgency === 'overdue') return 'border-red-600 bg-red-600 text-white animate-pulse';
+  if (urgency === 'approaching') return 'border-amber-400 bg-amber-50 text-amber-900 animate-pulse';
+  return 'border-red-300 bg-red-50 text-red-900';
 }
 
 // Restaurant menu + order/kitchen board — spec §6/§7.3, §8.2's F&B
@@ -106,6 +129,7 @@ export function FnbPage() {
   };
 
   const [orders, setOrders] = useState<FnbOrderRow[] | 'loading' | 'error'>('loading');
+  const [cancelledOrders, setCancelledOrders] = useState<FnbOrderRow[]>([]);
   const [units, setUnits] = useState<OrderableUnit[]>([]);
   const [orderType, setOrderType] = useState<FnbOrderTypeKey>('DINE_IN');
   const [settlement, setSettlement] = useState<FnbSettlementKey>('PAY_NOW');
@@ -115,6 +139,21 @@ export function FnbPage() {
   const [lines, setLines] = useState<DraftLine[]>([{ menuItemId: '', qty: '1' }]);
   const [orderFormError, setOrderFormError] = useState<string | null>(null);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
+  const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
+  const [cancelReasonDraft, setCancelReasonDraft] = useState('');
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  // Ticking clock for the board's elapsed-time badges, decoupled from
+  // fetchOrders's 30s poll/realtime cadence. Real bug found live-testing:
+  // without this, minutesSince was only ever recomputed as a side effect
+  // of a fresh fetch — an order sitting untouched in RECEIVED between
+  // fetches (or between realtime events) showed the exact same badge for
+  // however long the gap happened to be, rather than visibly advancing.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchOrders = () => {
     setOrders('loading');
@@ -124,9 +163,21 @@ export function FnbPage() {
       .catch(() => setOrders('error'));
   };
 
+  // Cancelling now requires and stores a reason (client decision,
+  // 2026-08-25) — since CANCELLED drops off the active board, this keeps
+  // that reason visible somewhere rather than only inferable from the
+  // generic audit log.
+  const fetchCancelledOrders = () => {
+    return api
+      .get<{ fnbOrders: FnbOrderRow[] }>('/fnb-orders?status=CANCELLED')
+      .then((res) => setCancelledOrders(res.fnbOrders.slice(-10).reverse()))
+      .catch(() => setCancelledOrders([]));
+  };
+
   useEffect(() => {
     void fetchItems();
     void fetchOrders();
+    void fetchCancelledOrders();
     if (canCreateOrder) {
       api
         .get<{ units: OrderableUnit[] }>('/units/orderable')
@@ -139,12 +190,21 @@ export function FnbPage() {
   // here since a stale kitchen board is more operationally costly than a
   // stale KPI strip.
   useEffect(() => {
-    const interval = setInterval(() => void fetchOrders(), 30_000);
+    const interval = setInterval(() => {
+      void fetchOrders();
+      void fetchCancelledOrders();
+    }, 30_000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    const unsubscribe = subscribeToFnbOrderChanges(() => void fetchOrders(), () => {});
+    const unsubscribe = subscribeToFnbOrderChanges(
+      () => {
+        void fetchOrders();
+        void fetchCancelledOrders();
+      },
+      () => {},
+    );
     return unsubscribe;
   }, []);
 
@@ -219,6 +279,35 @@ export function FnbPage() {
     await fetchOrders();
   };
 
+  const startCancel = (order: FnbOrderRow) => {
+    setCancellingOrderId(order.id);
+    setCancelReasonDraft('');
+    setCancelError(null);
+  };
+
+  const confirmCancel = async (order: FnbOrderRow) => {
+    if (!cancelReasonDraft.trim()) {
+      setCancelError('A cancellation reason is required.');
+      return;
+    }
+    setCancelError(null);
+    try {
+      await api.post(`/fnb-orders/${order.id}/status`, { toStatus: 'CANCELLED', cancelReason: cancelReasonDraft.trim() });
+      setCancellingOrderId(null);
+      setCancelReasonDraft('');
+      await fetchOrders();
+      await fetchCancelledOrders();
+    } catch (err) {
+      setCancelError(err instanceof ApiRequestError ? err.message : 'Could not cancel the order.');
+    }
+  };
+
+  // Groups the menu (and the order-line picker) by whatever `category`
+  // values actually exist in the live data — MenuItem.category is free
+  // text, not a fixed enum, so this stays correct however the seeded/real
+  // categories are named rather than assuming any particular set.
+  const menuCategories = Array.isArray(items) ? [...new Set(items.map((item) => item.category))].sort() : [];
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -226,106 +315,7 @@ export function FnbPage() {
         <p className="text-sm text-gray-500">The menu, order placement, and the kitchen board.</p>
       </div>
 
-      {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-      {items === 'error' && <p role="alert">Could not load the menu.</p>}
-      {Array.isArray(items) && items.length === 0 && <p className="text-sm text-gray-500">No menu items yet.</p>}
-      {Array.isArray(items) && items.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead>
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Category</th>
-                <th className="py-2 pr-4">Price</th>
-                <th className="py-2 pr-4">Prep time</th>
-                <th className="py-2 pr-4">Status</th>
-                {canManageMenu && <th className="py-2 pr-4" />}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {items.map((item) => (
-                <tr key={item.id} className={item.isAvailable ? '' : 'text-gray-400'}>
-                  <td className="py-2 pr-4 font-medium">{item.name}</td>
-                  <td className="py-2 pr-4">{item.category}</td>
-                  <td className="py-2 pr-4">{formatPeso(item.price)}</td>
-                  <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
-                  <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
-                  {canManageMenu && (
-                    <td className="py-2 pr-4">
-                      <button
-                        type="button"
-                        onClick={() => void toggleAvailable(item)}
-                        className="text-xs font-medium text-blue-700 hover:underline"
-                      >
-                        {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {canManageMenu && (
-        <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-          <h2 className="text-sm font-semibold text-gray-700">Add a menu item</h2>
-          {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-              Name
-              <input
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-sm"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-              Category
-              <input
-                required
-                placeholder="e.g. Main, Snack, Drinks"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-sm"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-              Price (₱)
-              <input
-                required
-                type="number"
-                min={0}
-                step="0.01"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-sm"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-              Prep time in minutes (optional)
-              <input
-                type="number"
-                min={1}
-                value={prepMinutes}
-                onChange={(e) => setPrepMinutes(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-sm"
-              />
-            </label>
-          </div>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {submitting ? 'Adding…' : 'Add menu item'}
-          </button>
-        </form>
-      )}
-
-      <div className="border-t border-gray-200 pt-6">
+      <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Kitchen board</h2>
 
         {orders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
@@ -343,20 +333,25 @@ export function FnbPage() {
                   </h3>
                   {columnOrders.length === 0 && <p className="text-xs text-gray-400">No tickets.</p>}
                   {columnOrders.map((order) => {
-                    const minutes = minutesSince(order.createdAt);
+                    const minutes = minutesSince(order.createdAt, now);
+                    const urgency = orderUrgency(minutes);
                     return (
-                      <div key={order.id} className={`rounded border p-3 text-sm ${timerClass(minutes)}`}>
+                      <div key={order.id} className={`rounded border p-3 text-sm ${urgencyClass(urgency)}`}>
                         <div className="flex items-center justify-between">
                           <span className="font-medium">{order.referenceNo}</span>
-                          <span className="text-xs font-semibold">{minutes}m</span>
+                          <span className="text-xs font-semibold">
+                            {urgency === 'overdue' ? `OVERDUE · ${minutes}m` : `${minutes}m`}
+                          </span>
                         </div>
-                        <p className="text-xs text-gray-600">
+                        <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-gray-600'}`}>
                           {FNB_ORDER_TYPE_LABELS[order.type]}
                           {order.unit ? ` · ${order.unit.code}` : ''}
                           {order.guestName ? ` · ${order.guestName}` : ''}
                         </p>
                         {order.type === 'ADVANCE_ORDER' && order.scheduledFor && (
-                          <p className="text-xs text-gray-600">Scheduled {new Date(order.scheduledFor).toLocaleString()}</p>
+                          <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-gray-600'}`}>
+                            Scheduled {new Date(order.scheduledFor).toLocaleString()}
+                          </p>
                         )}
                         <ul className="mt-1 text-xs">
                           {order.lines.map((line) => (
@@ -379,8 +374,8 @@ export function FnbPage() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => void changeOrderStatus(order, 'CANCELLED')}
-                                  className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+                                  onClick={() => startCancel(order)}
+                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
                                 >
                                   Cancel
                                 </button>
@@ -397,8 +392,8 @@ export function FnbPage() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => void changeOrderStatus(order, 'CANCELLED')}
-                                  className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+                                  onClick={() => startCancel(order)}
+                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
                                 >
                                   Cancel
                                 </button>
@@ -415,12 +410,60 @@ export function FnbPage() {
                             )}
                           </div>
                         )}
+                        {cancellingOrderId === order.id && (
+                          <div className="mt-2 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 text-gray-900">
+                            {cancelError && <p role="alert" className="text-xs text-red-700">{cancelError}</p>}
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Cancellation reason (required)
+                              <input
+                                required
+                                autoFocus
+                                value={cancelReasonDraft}
+                                onChange={(e) => setCancelReasonDraft(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-xs"
+                              />
+                            </label>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void confirmCancel(order)}
+                                className="rounded bg-red-700 px-2 py-1 text-xs font-medium text-white"
+                              >
+                                Confirm cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setCancellingOrderId(null)}
+                                className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+                              >
+                                Keep order
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {cancelledOrders.length > 0 && (
+          <div className="mt-4">
+            <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">Recently cancelled</h3>
+            <ul className="flex flex-col gap-1 text-xs text-gray-600">
+              {cancelledOrders.map((order) => (
+                <li key={order.id} className="rounded border border-gray-200 p-2">
+                  <span className="font-medium text-gray-800">{order.referenceNo}</span>
+                  {' — '}
+                  {order.cancelReason ?? 'No reason recorded'}
+                  {order.cancelledBy ? ` (${order.cancelledBy.fullName}` : ''}
+                  {order.cancelledAt ? `, ${new Date(order.cancelledAt).toLocaleString()})` : order.cancelledBy ? ')' : ''}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -469,12 +512,26 @@ export function FnbPage() {
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 >
                   <option value="">No room</option>
+                  {/*
+                    Real bug found live-testing, 2026-08-25: this was only
+                    disabled when settlement === 'CHARGE_TO_ROOM', but
+                    settlement defaults to PAY_NOW, so every room —
+                    including BLOCKED/OUT_OF_ORDER — was clickable by
+                    default. An F&B order should only ever attach to a room
+                    with a guest actually present, regardless of how it's
+                    paid for, so this is unconditional now — same
+                    never-even-try disabled-option treatment as
+                    UnitsPage's CheckInPanel isBookable().
+                  */}
                   {units.map((unit) => (
-                    <option key={unit.id} value={unit.id} disabled={settlement === 'CHARGE_TO_ROOM' && unit.status !== 'OCCUPIED'}>
+                    <option key={unit.id} value={unit.id} disabled={unit.status !== 'OCCUPIED'}>
                       {unit.code} — {unit.name} ({unit.status})
                     </option>
                   ))}
                 </select>
+                <span className="text-xs font-normal text-gray-400">
+                  (only occupied rooms can be selected; other rooms are shown but disabled)
+                </span>
               </label>
               <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
                 Guest name (optional)
@@ -549,6 +606,114 @@ export function FnbPage() {
               className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               {orderSubmitting ? 'Placing…' : 'Place order'}
+            </button>
+          </form>
+        )}
+      </div>
+
+      <div className="border-t border-gray-200 pt-6">
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Menu</h2>
+
+        {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {items === 'error' && <p role="alert">Could not load the menu.</p>}
+        {Array.isArray(items) && items.length === 0 && <p className="text-sm text-gray-500">No menu items yet.</p>}
+        {Array.isArray(items) && items.length > 0 && (
+          <div className="flex flex-col gap-6">
+            {menuCategories.map((cat) => (
+              <div key={cat} className="overflow-x-auto">
+                <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">{cat}</h3>
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead>
+                    <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                      <th className="py-2 pr-4">Name</th>
+                      <th className="py-2 pr-4">Price</th>
+                      <th className="py-2 pr-4">Prep time</th>
+                      <th className="py-2 pr-4">Status</th>
+                      {canManageMenu && <th className="py-2 pr-4" />}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {(items as MenuItemRow[])
+                      .filter((item) => item.category === cat)
+                      .map((item) => (
+                        <tr key={item.id} className={item.isAvailable ? '' : 'text-gray-400'}>
+                          <td className="py-2 pr-4 font-medium">{item.name}</td>
+                          <td className="py-2 pr-4">{formatPeso(item.price)}</td>
+                          <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
+                          <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
+                          {canManageMenu && (
+                            <td className="py-2 pr-4">
+                              <button
+                                type="button"
+                                onClick={() => void toggleAvailable(item)}
+                                className="text-xs font-medium text-blue-700 hover:underline"
+                              >
+                                {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {canManageMenu && (
+          <form onSubmit={(e) => void handleCreate(e)} className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4">
+            <h3 className="text-sm font-semibold text-gray-700">Add a menu item</h3>
+            {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Name
+                <input
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Category
+                <input
+                  required
+                  placeholder="e.g. Rice Meals, Silog, Grilled, Pulutan, Drinks, Desserts"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Price (₱)
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Prep time in minutes (optional)
+                <input
+                  type="number"
+                  min={1}
+                  value={prepMinutes}
+                  onChange={(e) => setPrepMinutes(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+              </label>
+            </div>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {submitting ? 'Adding…' : 'Add menu item'}
             </button>
           </form>
         )}
