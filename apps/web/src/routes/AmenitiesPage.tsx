@@ -1,5 +1,5 @@
 import { AMENITY_CATEGORY_KEYS, type AmenityCategoryKey, type AmenityRequestStatusKey } from '@lwwbr/shared';
-import { useEffect, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useState, type FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { AMENITY_REQUEST_STATUS_CLASSES, AMENITY_REQUEST_STATUS_LABELS } from '../lib/amenityRequestStyle.js';
 import { api, ApiRequestError } from '../lib/api.js';
@@ -71,6 +71,63 @@ export function AmenitiesPage() {
       .get<{ amenityItems: AmenityItemRow[] }>('/amenity-items')
       .then((res) => setItems(res.amenityItems))
       .catch(() => setItems('error'));
+  };
+
+  // Real gap found live-testing, 2026-08-25: totalQty was captured on
+  // creation (the "Add an item" form below always had it) but an
+  // existing item had no way to edit it — "Deactivate/Reactivate" was
+  // the only per-row control. The API already accepted a partial update
+  // of every field via PATCH; only the UI was missing. Same inline-panel
+  // pattern as the request workflow's Issue/Return sub-forms below,
+  // rather than a totalQty-only control, since the backend supports
+  // editing every field and a one-field-only edit UI would be an odd
+  // half-measure.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState<AmenityCategoryKey>('OTHER');
+  const [editAssetTag, setEditAssetTag] = useState('');
+  const [editTotalQty, setEditTotalQty] = useState('1');
+  const [editCondition, setEditCondition] = useState('Good');
+  const [editRequiresDeposit, setEditRequiresDeposit] = useState(false);
+  const [editDepositAmount, setEditDepositAmount] = useState('0');
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
+  const startEdit = (item: AmenityItemRow) => {
+    setEditingId(item.id);
+    setEditError(null);
+    setEditName(item.name);
+    setEditCategory(item.category);
+    setEditAssetTag(item.assetTag ?? '');
+    setEditTotalQty(String(item.totalQty));
+    setEditCondition(item.condition);
+    setEditRequiresDeposit(item.requiresDeposit);
+    setEditDepositAmount(String(item.depositAmount));
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const submitEdit = async (event: FormEvent, id: string) => {
+    event.preventDefault();
+    setEditError(null);
+    setEditSubmitting(true);
+    try {
+      await api.patch(`/amenity-items/${id}`, {
+        name: editName,
+        category: editCategory,
+        assetTag: editAssetTag.trim() || undefined,
+        totalQty: Number(editTotalQty),
+        condition: editCondition,
+        requiresDeposit: editRequiresDeposit,
+        depositAmount: editRequiresDeposit ? Number(editDepositAmount) : 0,
+      });
+      setEditingId(null);
+      await fetchItems();
+    } catch (err) {
+      setEditError(err instanceof ApiRequestError ? err.message : 'Could not save the changes.');
+    } finally {
+      setEditSubmitting(false);
+    }
   };
 
   const [requests, setRequests] = useState<AmenityRequestRow[] | 'loading' | 'error'>('loading');
@@ -235,26 +292,136 @@ export function AmenitiesPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.id} className={item.isActive ? '' : 'text-gray-400'}>
-                  <td className="py-2 pr-4 font-medium">{item.name}</td>
-                  <td className="py-2 pr-4">{CATEGORY_LABELS[item.category]}</td>
-                  <td className="py-2 pr-4">{item.assetTag ?? '—'}</td>
-                  <td className="py-2 pr-4">{item.totalQty}</td>
-                  <td className="py-2 pr-4">{item.condition}</td>
-                  <td className="py-2 pr-4">{item.requiresDeposit ? formatPeso(item.depositAmount) : '—'}</td>
-                  <td className="py-2 pr-4">{item.isActive ? 'Active' : 'Inactive'}</td>
-                  {canManage && (
-                    <td className="py-2 pr-4">
-                      <button
-                        type="button"
-                        onClick={() => void toggleActive(item)}
-                        className="text-xs font-medium text-blue-700 hover:underline"
-                      >
-                        {item.isActive ? 'Deactivate' : 'Reactivate'}
-                      </button>
-                    </td>
+                <Fragment key={item.id}>
+                  <tr className={item.isActive ? '' : 'text-gray-400'}>
+                    <td className="py-2 pr-4 font-medium">{item.name}</td>
+                    <td className="py-2 pr-4">{CATEGORY_LABELS[item.category]}</td>
+                    <td className="py-2 pr-4">{item.assetTag ?? '—'}</td>
+                    <td className="py-2 pr-4">{item.totalQty}</td>
+                    <td className="py-2 pr-4">{item.condition}</td>
+                    <td className="py-2 pr-4">{item.requiresDeposit ? formatPeso(item.depositAmount) : '—'}</td>
+                    <td className="py-2 pr-4">{item.isActive ? 'Active' : 'Inactive'}</td>
+                    {canManage && (
+                      <td className="py-2 pr-4">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => (editingId === item.id ? cancelEdit() : startEdit(item))}
+                            className="text-xs font-medium text-blue-700 hover:underline"
+                          >
+                            {editingId === item.id ? 'Close' : 'Edit'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void toggleActive(item)}
+                            className="text-xs font-medium text-blue-700 hover:underline"
+                          >
+                            {item.isActive ? 'Deactivate' : 'Reactivate'}
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                  {editingId === item.id && (
+                    <tr>
+                      <td colSpan={canManage ? 8 : 7} className="bg-gray-50 p-3">
+                        <form onSubmit={(e) => void submitEdit(e, item.id)} className="flex flex-col gap-3">
+                          {editError && <p role="alert" className="text-sm text-red-700">{editError}</p>}
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Name
+                              <input
+                                required
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Category
+                              <select
+                                value={editCategory}
+                                onChange={(e) => setEditCategory(e.target.value as AmenityCategoryKey)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              >
+                                {AMENITY_CATEGORY_KEYS.map((key) => (
+                                  <option key={key} value={key}>
+                                    {CATEGORY_LABELS[key]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Asset tag (optional)
+                              <input
+                                value={editAssetTag}
+                                onChange={(e) => setEditAssetTag(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Total quantity
+                              <input
+                                required
+                                type="number"
+                                min={1}
+                                value={editTotalQty}
+                                onChange={(e) => setEditTotalQty(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Condition
+                              <input
+                                required
+                                value={editCondition}
+                                onChange={(e) => setEditCondition(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              />
+                            </label>
+                            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+                              <input
+                                type="checkbox"
+                                checked={editRequiresDeposit}
+                                onChange={(e) => setEditRequiresDeposit(e.target.checked)}
+                              />
+                              Requires a deposit
+                            </label>
+                            {editRequiresDeposit && (
+                              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                                Deposit amount (₱, informational only)
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={editDepositAmount}
+                                  onChange={(e) => setEditDepositAmount(e.target.value)}
+                                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                                />
+                              </label>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="submit"
+                              disabled={editSubmitting}
+                              className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                            >
+                              {editSubmitting ? 'Saving…' : 'Save changes'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEdit}
+                              className="w-fit rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      </td>
+                    </tr>
                   )}
-                </tr>
+                </Fragment>
               ))}
             </tbody>
           </table>

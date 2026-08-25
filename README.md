@@ -3464,3 +3464,40 @@ folio/payment machinery (the `CHARGE_TO_ROOM` auto-post, the `NO_ACTIVE_FOLIO`
 gate) were deliberately not built per the client's monitoring-not-
 transactions scope call — that's a documented scope decision, not
 something left undone.
+
+### Real gap, found live-testing: no way to edit an existing amenity item's totalQty (2026-08-25)
+
+Client report while doing the real PC pass on M5: `AmenityItem.totalQty`
+(spec §6) had no visible way to set or edit it in the `/amenities` UI.
+Checked both halves of that report before touching anything:
+
+- **Creation already captured it.** The "Add an item" form has always
+  had a required "Total quantity" field, and `handleCreate` already sent
+  it. Confirmed by re-reading `AmenitiesPage.tsx` line by line before
+  concluding this half of the report didn't match the code — worth
+  flagging back rather than silently "fixing" something that already
+  worked.
+- **Editing an existing item was the real gap.** Every row's only
+  control was "Deactivate/Reactivate" — there was no way to change
+  `totalQty`, or any other field, on an item already in the catalogue.
+  The backend already accepted a full partial update via `PATCH
+  /amenity-items/:id` (`updateAmenityItemSchema` is `createAmenityItemSchema.partial()`);
+  only the frontend was missing.
+
+Added an inline "Edit" control per row (`AmenitiesPage.tsx`), same
+expand-a-panel-below-the-row pattern already used for the amenity
+request workflow's Issue/Return sub-forms — a "Save changes"/"Cancel"
+form pre-filled from the item's current values, covering every editable
+field (name, category, asset tag, `totalQty`, condition, deposit
+settings), not `totalQty` alone: the backend already supports editing
+all of them, so a `totalQty`-only control would have been an odd
+half-measure next to a PATCH endpoint that does more.
+
+Verified: 1 new frontend test (opens the edit panel, confirms `totalQty`
+is pre-filled from the existing item, changes it, saves, confirms the
+table reflects the new value and the panel closes) plus a real
+headless-browser Playwright run doing the same sequence against a
+mocked API. `packages/shared` 70/70, `apps/api` 279/282 (same 3
+pre-existing network-blocked round-trip tests, untouched — no backend
+change this fix), `apps/web` 42/42. Full repo lint/typecheck/build
+clean.

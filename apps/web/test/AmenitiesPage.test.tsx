@@ -203,4 +203,46 @@ describe('AmenitiesPage', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm returned' }));
     await waitFor(() => expect(screen.getByText('Returned')).toBeInTheDocument());
   });
+
+  // Real gap found live-testing, 2026-08-25: totalQty was captured on
+  // creation but an existing item had no way to edit it at all — only
+  // Deactivate/Reactivate existed. This drives the new inline edit form.
+  it('edits an existing item, including totalQty', async () => {
+    const user = userEvent.setup();
+    let items = [kayak];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/amenity-items') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityItems: items });
+      }
+      if (url.endsWith('/amenity-requests')) return jsonResponse(200, { amenityRequests: [] });
+      if (url.endsWith('/amenity-items/amenity_1') && init?.method === 'PATCH') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toMatchObject({ totalQty: 5 });
+        items = [{ ...items[0]!, ...body }];
+        return jsonResponse(200, { amenityItem: items[0] });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Amenities' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Kayak')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    // Two "Total quantity" fields now exist (the edit row + the always-
+    // present "Add an item" form below it) — the edit row's is first.
+    const qtyInput = screen.getAllByLabelText('Total quantity')[0]!;
+    expect(qtyInput).toHaveValue(2); // pre-filled from the existing item
+    await user.clear(qtyInput);
+    await user.type(qtyInput, '5');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(screen.getByRole('cell', { name: '5' })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+  });
 });
