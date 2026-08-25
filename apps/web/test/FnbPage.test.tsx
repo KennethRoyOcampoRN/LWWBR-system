@@ -211,7 +211,7 @@ describe('FnbPage', () => {
     await waitFor(() => expect(screen.queryByText('FB-260824-0001')).not.toBeInTheDocument());
   });
 
-  it('cancelling an order requires a reason and shows it under Recently cancelled', async () => {
+  it('cancelling an order requires a reason and shows it in order history', async () => {
     const user = userEvent.setup();
     const receivedOrder = {
       id: 'order_1',
@@ -232,14 +232,14 @@ describe('FnbPage', () => {
       lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, menuItem: { id: 'menu_1', name: 'Sisig' } }],
     };
     let fnbOrders: Record<string, unknown>[] = [receivedOrder];
-    let cancelledOrders: Record<string, unknown>[] = [];
+    let historyOrders: Record<string, unknown>[] = [];
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: fullAccessUser });
       if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: [sisig] });
       if (url.endsWith('/units/orderable')) return jsonResponse(200, { units: [] });
-      if (url.includes('/fnb-orders?status=CANCELLED')) return jsonResponse(200, { fnbOrders: cancelledOrders });
+      if (url.includes('/fnb-orders?history=true')) return jsonResponse(200, { fnbOrders: historyOrders });
       if (url.includes('/fnb-orders?boardOnly=true')) return jsonResponse(200, { fnbOrders });
       if (url.match(/\/fnb-orders\/order_1\/status$/) && init?.method === 'POST') {
         const body = JSON.parse(init.body as string);
@@ -252,7 +252,7 @@ describe('FnbPage', () => {
           cancelledAt: new Date().toISOString(),
         };
         fnbOrders = [];
-        cancelledOrders = [updated];
+        historyOrders = [updated];
         return jsonResponse(200, { fnbOrder: updated });
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -270,7 +270,7 @@ describe('FnbPage', () => {
     await user.type(screen.getByLabelText('Cancellation reason (required)'), 'Guest left early');
     await user.click(screen.getByRole('button', { name: 'Confirm cancel' }));
 
-    await waitFor(() => expect(screen.getByText('Recently cancelled')).toBeInTheDocument());
-    expect(screen.getByText(/Guest left early/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Order history')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Guest left early/)).toBeInTheDocument());
   });
 });

@@ -192,10 +192,23 @@ export async function listFnbOrders(query: ListFnbOrdersQuery) {
     const cutoff = new Date(Date.now() + leadMinutes * 60_000);
     where.OR = [{ type: { not: 'ADVANCE_ORDER' } }, { scheduledFor: { lte: cutoff } }];
   }
+  if (query.history) {
+    // Same explicit-status-set spirit as boardOnly's own filter, just the
+    // complement: whatever's dropped off the active board. `status`
+    // (if also given) still narrows within this set, since it's applied
+    // above unconditionally.
+    if (!query.status) {
+      where.status = { in: ['SERVED', 'CANCELLED'] };
+    }
+  }
 
   const orders = await prisma.fnbOrder.findMany({
     where,
-    orderBy: [{ createdAt: 'asc' }],
+    orderBy: [{ createdAt: query.history ? 'desc' : 'asc' }],
+    // History can accumulate indefinitely; cap it the same way any
+    // other "recent activity" list in this codebase does rather than
+    // ever loading an unbounded table.
+    take: query.history ? 200 : undefined,
     include: FNB_ORDER_INCLUDE,
   });
   return orders.map(fnbOrderToJson);

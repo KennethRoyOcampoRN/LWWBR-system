@@ -129,7 +129,10 @@ export function FnbPage() {
   };
 
   const [orders, setOrders] = useState<FnbOrderRow[] | 'loading' | 'error'>('loading');
-  const [cancelledOrders, setCancelledOrders] = useState<FnbOrderRow[]>([]);
+  const [history, setHistory] = useState<FnbOrderRow[] | 'loading' | 'error'>('loading');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<'ALL' | 'SERVED' | 'CANCELLED'>('ALL');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historySortAsc, setHistorySortAsc] = useState(false);
   const [units, setUnits] = useState<OrderableUnit[]>([]);
   const [orderType, setOrderType] = useState<FnbOrderTypeKey>('DINE_IN');
   const [settlement, setSettlement] = useState<FnbSettlementKey>('PAY_NOW');
@@ -163,21 +166,25 @@ export function FnbPage() {
       .catch(() => setOrders('error'));
   };
 
-  // Cancelling now requires and stores a reason (client decision,
-  // 2026-08-25) — since CANCELLED drops off the active board, this keeps
-  // that reason visible somewhere rather than only inferable from the
-  // generic audit log.
-  const fetchCancelledOrders = () => {
+  // Real gap found live-testing, 2026-08-25: once an order left the
+  // active kanban board (SERVED or CANCELLED), its full detail was only
+  // visible by digging into Supabase directly — no page showed it, with
+  // a cancellation reason or otherwise. This is that view: every
+  // SERVED/CANCELLED order, newest first (server-sorted, capped at 200 —
+  // see listFnbOrders in service.ts), filtered/searched/sorted further
+  // client-side below.
+  const fetchHistory = () => {
+    setHistory('loading');
     return api
-      .get<{ fnbOrders: FnbOrderRow[] }>('/fnb-orders?status=CANCELLED')
-      .then((res) => setCancelledOrders(res.fnbOrders.slice(-10).reverse()))
-      .catch(() => setCancelledOrders([]));
+      .get<{ fnbOrders: FnbOrderRow[] }>('/fnb-orders?history=true')
+      .then((res) => setHistory(res.fnbOrders))
+      .catch(() => setHistory('error'));
   };
 
   useEffect(() => {
     void fetchItems();
     void fetchOrders();
-    void fetchCancelledOrders();
+    void fetchHistory();
     if (canCreateOrder) {
       api
         .get<{ units: OrderableUnit[] }>('/units/orderable')
@@ -192,7 +199,7 @@ export function FnbPage() {
   useEffect(() => {
     const interval = setInterval(() => {
       void fetchOrders();
-      void fetchCancelledOrders();
+      void fetchHistory();
     }, 30_000);
     return () => clearInterval(interval);
   }, []);
@@ -201,7 +208,7 @@ export function FnbPage() {
     const unsubscribe = subscribeToFnbOrderChanges(
       () => {
         void fetchOrders();
-        void fetchCancelledOrders();
+        void fetchHistory();
       },
       () => {},
     );
@@ -296,7 +303,7 @@ export function FnbPage() {
       setCancellingOrderId(null);
       setCancelReasonDraft('');
       await fetchOrders();
-      await fetchCancelledOrders();
+      await fetchHistory();
     } catch (err) {
       setCancelError(err instanceof ApiRequestError ? err.message : 'Could not cancel the order.');
     }
@@ -307,6 +314,22 @@ export function FnbPage() {
   // text, not a fixed enum, so this stays correct however the seeded/real
   // categories are named rather than assuming any particular set.
   const menuCategories = Array.isArray(items) ? [...new Set(items.map((item) => item.category))].sort() : [];
+
+  const visibleHistory = (Array.isArray(history) ? history : [])
+    .filter((order) => historyStatusFilter === 'ALL' || order.status === historyStatusFilter)
+    .filter((order) => {
+      const term = historySearch.trim().toLowerCase();
+      if (!term) return true;
+      return (
+        order.referenceNo.toLowerCase().includes(term) ||
+        (order.guestName ?? '').toLowerCase().includes(term) ||
+        (order.unit ? `${order.unit.code} ${order.unit.name}`.toLowerCase().includes(term) : false)
+      );
+    })
+    .sort((a, b) => {
+      const diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      return historySortAsc ? diff : -diff;
+    });
 
   return (
     <div className="flex flex-col gap-6">
@@ -447,23 +470,6 @@ export function FnbPage() {
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {cancelledOrders.length > 0 && (
-          <div className="mt-4">
-            <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">Recently cancelled</h3>
-            <ul className="flex flex-col gap-1 text-xs text-gray-600">
-              {cancelledOrders.map((order) => (
-                <li key={order.id} className="rounded border border-gray-200 p-2">
-                  <span className="font-medium text-gray-800">{order.referenceNo}</span>
-                  {' — '}
-                  {order.cancelReason ?? 'No reason recorded'}
-                  {order.cancelledBy ? ` (${order.cancelledBy.fullName}` : ''}
-                  {order.cancelledAt ? `, ${new Date(order.cancelledAt).toLocaleString()})` : order.cancelledBy ? ')' : ''}
-                </li>
-              ))}
-            </ul>
           </div>
         )}
 
@@ -716,6 +722,101 @@ export function FnbPage() {
               {submitting ? 'Adding…' : 'Add menu item'}
             </button>
           </form>
+        )}
+      </div>
+
+      <div className="border-t border-gray-200 pt-6">
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Order history</h2>
+        <p className="mb-2 text-xs text-gray-500">
+          Every completed or cancelled order's full detail — items, room, guest, cancellation reason, timestamps. Once an
+          order leaves the kitchen board, this is where it lives.
+        </p>
+
+        <div className="mb-3 flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            Status
+            <select
+              value={historyStatusFilter}
+              onChange={(e) => setHistoryStatusFilter(e.target.value as 'ALL' | 'SERVED' | 'CANCELLED')}
+              className="rounded border border-gray-300 px-2 py-1 text-sm"
+            >
+              <option value="ALL">All</option>
+              <option value="SERVED">Completed</option>
+              <option value="CANCELLED">Cancelled</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            Search
+            <input
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              placeholder="Reference #, guest, or room"
+              className="rounded border border-gray-300 px-2 py-1 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setHistorySortAsc((prev) => !prev)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+          >
+            Date: {historySortAsc ? 'Oldest first' : 'Newest first'}
+          </button>
+        </div>
+
+        {history === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {history === 'error' && <p role="alert">Could not load order history.</p>}
+        {Array.isArray(history) && visibleHistory.length === 0 && (
+          <p className="text-sm text-gray-500">No matching orders.</p>
+        )}
+        {Array.isArray(history) && visibleHistory.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead>
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4">Reference</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Placed</th>
+                  <th className="py-2 pr-4">Room / Guest</th>
+                  <th className="py-2 pr-4">Items</th>
+                  <th className="py-2 pr-4">Total</th>
+                  <th className="py-2 pr-4">Detail</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {visibleHistory.map((order) => (
+                  <tr key={order.id}>
+                    <td className="py-2 pr-4 font-medium">{order.referenceNo}</td>
+                    <td className="py-2 pr-4">{FNB_ORDER_STATUS_LABELS[order.status]}</td>
+                    <td className="py-2 pr-4">{new Date(order.createdAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">
+                      {order.unit ? order.unit.code : '—'}
+                      {order.guestName ? ` · ${order.guestName}` : ''}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <ul>
+                        {order.lines.map((line) => (
+                          <li key={line.id}>
+                            {line.qty}x {line.menuItem.name}
+                          </li>
+                        ))}
+                      </ul>
+                    </td>
+                    <td className="py-2 pr-4">{formatPeso(order.subtotal)}</td>
+                    <td className="py-2 pr-4 text-xs text-gray-600">
+                      {order.status === 'CANCELLED' && (
+                        <>
+                          {order.cancelReason ?? 'No reason recorded'}
+                          {order.cancelledBy ? ` — ${order.cancelledBy.fullName}` : ''}
+                          {order.cancelledAt ? `, ${new Date(order.cancelledAt).toLocaleString()}` : ''}
+                        </>
+                      )}
+                      {order.status === 'SERVED' && `Placed by ${order.createdBy.fullName}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

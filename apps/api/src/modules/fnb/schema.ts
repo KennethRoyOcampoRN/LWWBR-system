@@ -52,6 +52,16 @@ export const listFnbOrdersQuerySchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v === 'true'),
+  // Real gap found live-testing, 2026-08-25: once an order left the
+  // active kanban board, its full detail (items, cancellation reason,
+  // timestamps) was only visible by digging into Supabase directly.
+  // The history view: SERVED/CANCELLED only, newest first, capped — see
+  // listFnbOrders in service.ts. `status` still narrows further within
+  // this set when given (e.g. history=true&status=CANCELLED).
+  history: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 // Client decision, 2026-08-25: cancelling an order requires a reason,

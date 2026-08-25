@@ -338,6 +338,37 @@ describe('GET /api/v1/fnb-orders', () => {
       }),
     );
   });
+
+  // Real gap found live-testing, 2026-08-25: once an order left the
+  // active kanban board, its full detail was only visible by digging
+  // into Supabase directly. history=true is the order-history view.
+  it('history filters to SERVED/CANCELLED, newest first, capped', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/fnb-orders?history=true').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(mockPrisma.fnbOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { in: ['SERVED', 'CANCELLED'] } }),
+        orderBy: [{ createdAt: 'desc' }],
+        take: 200,
+      }),
+    );
+  });
+
+  it('history narrows further when combined with an explicit status', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/fnb-orders?history=true&status=CANCELLED')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(mockPrisma.fnbOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'CANCELLED' }) }),
+    );
+  });
 });
 
 describe('POST /api/v1/fnb-orders/:id/status', () => {

@@ -3655,3 +3655,62 @@ all three urgency tiers render with the expected classes and the
 "OVERDUE" label. `packages/shared` unchanged, `apps/api` 285/288 (same 3
 pre-existing network-blocked round-trip tests), `apps/web` 44/44. Full
 repo lint/typecheck/build clean.
+
+### Three more findings from live-testing: order history, and one report that turned out already fixed (2026-08-25)
+
+**1. Confirmed correct, no action:** menu items can only be deactivated,
+matches the earlier `FnbOrderLine` foreign-key explanation.
+
+**2. Real gap, fixed: no order history view.** Once an order left the
+active kanban board (SERVED or CANCELLED), its full detail — items,
+room, guest, cancellation reason, timestamps — was only visible by
+digging into Supabase directly. Added an "Order history" section to
+`/restaurant`, below the menu:
+
+- Backend: `GET /fnb-orders` gained a `history=true` flag
+  (`listFnbOrdersQuerySchema`/`listFnbOrders` in `fnb/schema.ts` and
+  `fnb/service.ts`) — filters to `SERVED`/`CANCELLED`, sorts newest
+  first, caps at 200 rows (history can accumulate indefinitely, same
+  reasoning as every other "recent activity" list in this codebase). An
+  explicit `status` query param still narrows further within that set
+  (`history=true&status=CANCELLED`), reusing the existing single-status
+  filter rather than adding a second parallel one.
+- Frontend: `FnbPage.tsx` fetches this once, then filters (status:
+  All/Completed/Cancelled), searches (reference #, guest, room), and
+  sorts (date asc/desc) entirely client-side — the fetched set is small
+  enough that this needed no new backend plumbing per interaction. This
+  replaces the narrower "Recently cancelled" list added for the
+  mandatory-cancel-reason fix earlier today; that data now lives here
+  too, alongside completed orders, rather than in a separate view.
+
+**3. Investigated, not a bug: the amenity "Due Back" field.** Checked the
+actual source (`AmenitiesPage.tsx`, both current and the original M5
+slice 3 commit `c27895c` that introduced it) — this field has always
+been `<input type="datetime-local">`, a native browser calendar+time
+picker, with no `maxLength` attribute anywhere in the codebase. There is
+no free-text 6-character-limited input to fix; nothing in git history
+ever made it one. The described truncation isn't reproducible against
+what's actually committed and built here (confirmed via a clean
+`npm run build`, no stale artifacts). **Likely explanation:** the PC
+running the live test is on a build that predates this field, or has a
+cached/stale bundle from before a rebuild — worth a hard refresh
+(clear cache) or a fresh `npm install && npm run build` on that machine
+before retesting. If the field still looks like free text after that,
+please screenshot it — that would mean something environment-specific
+(e.g. a browser without `datetime-local` support falling back to a
+plain text box) rather than a code defect, and the fix would look
+different (an explicit calendar-widget library) than what "replace the
+free-text input" implies.
+
+Verified: 2 new backend tests (`history=true` filters to
+`SERVED`/`CANCELLED`, sorted desc, capped at 200; combining
+`history=true` with an explicit `status` narrows correctly), the
+existing frontend cancel-flow test updated to assert against the new
+"Order history" section instead of the removed "Recently cancelled"
+list, and a real headless-browser Playwright run confirming: both a
+completed and a cancelled order render with full detail including the
+cancellation reason; the status filter and the search box each narrow
+the list correctly. `packages/shared` unchanged, `apps/api` 287/290
+(same 3 pre-existing network-blocked round-trip tests), `apps/web`
+44/44. Full repo lint/typecheck/build clean. No schema change this time
+— `db push` from the previous entry still covers everything needed.
