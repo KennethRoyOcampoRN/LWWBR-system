@@ -4073,3 +4073,22 @@ and a headless-browser Playwright run confirming Delete only appears on
 an already-inactive unit and never on an active one. `apps/api` 333/336
 (same 3 pre-existing network-blocked round-trip tests), `apps/web`
 55/55. Full repo lint/typecheck/build clean. No schema change.
+
+### Client-confirmed: unit management is fully verified (2026-08-25)
+
+Client live-tested the delete guard directly and confirmed both paths:
+
+- A clean delete succeeds on a freshly-created, never-activated unit
+  (zero history across all six checked relations).
+- A unit with real history is correctly refused, with the
+  `UNIT_HAS_HISTORY` message explaining why and pointing at Deactivate.
+
+This closes out unit management — add/edit/deactivate/delete, the
+three-way grouping, and the six-relation delete guard all verified live.
+Combined with the report builder foundation (occupancy + work-order
+reports) and the common-area check-in fix earlier this session, this
+rounds out today's M6 work.
+
+Holding here per the client's instruction — no further work queued.
+Remaining M6 scope (the rest of spec §8.4's report set, PWA setup) waits
+on the client's review of where things stand before deciding next steps.
