@@ -3801,3 +3801,37 @@ run confirming the new section order and a live delete round-trip.
 `packages/shared` unchanged, `apps/api` 298/301 (same 3 pre-existing
 network-blocked round-trip tests), `apps/web` 46/46. Full repo
 lint/typecheck/build clean.
+
+### Client-confirmed: the restaurant/kitchen/amenities live-testing round is closed (2026-08-25)
+
+Client live-tested the full set of fixes from tonight's three
+restaurant/kitchen/amenities rounds directly against Supabase and
+confirmed, one by one:
+
+- Order history renders in the requested position — between "Place an
+  order" and the menu item listing on `/restaurant`.
+- Historical order line names backfilled correctly by
+  `backfill:order-item-snapshots` (menu prices were already correct;
+  only names needed the one-off backfill — see the Option B entry
+  above).
+- The two-step delete guard behaves as designed on both catalogues: an
+  active/available item shows only "Mark unavailable"/"Deactivate," and
+  "Delete" appears only once it's already been switched off.
+- The amenity-side extra guard holds: an item with a request still
+  in progress (`REQUESTED`/`APPROVED`/`ISSUED`/`OVERDUE`) cannot be
+  deleted even once deactivated.
+- The kitchen board's ~20-30s periodic refresh cadence (the 30s poll
+  fallback plus realtime events) is expected behavior, not a bug —
+  raised and explicitly ruled out during this pass, noted here so it
+  isn't rediscovered as a "finding" in a future session.
+
+This closes out the restaurant/kitchen/amenities corrective work that
+began with tonight's first live-testing pass (menu item edit UI, stock
+check) through the seven-point restaurant/kitchen findings, the order
+history addition, and Option B's real-delete schema change. All of it
+was bugfix/refinement work within the already-approved M5 scope, not new
+M6 work.
+
+Holding here per the client's instruction — no further restaurant/
+kitchen/amenities work queued. M6 still awaits explicit go-ahead, per
+the client's standing instruction earlier this session.
