@@ -10,6 +10,7 @@ import {
   type WorkOrderTypeKey,
 } from '@lwwbr/shared';
 import { addDays, eachDayOfInterval, format } from 'date-fns';
+import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { toCsv } from '../../lib/csv.js';
 import { prisma } from '../../lib/prisma.js';
@@ -450,10 +451,145 @@ async function buildHousekeepingReport(query: ReportQuery, actor: ReportActor): 
   };
 }
 
+interface MaintenanceLogPhoto {
+  id: string;
+  url: string;
+  caption: string | null;
+}
+
+interface MaintenanceLogRow {
+  id: string;
+  date: string;
+  referenceNo: string;
+  title: string;
+  status: WorkOrderStatusKey;
+  unitCode: string | null;
+  unitName: string | null;
+  createdAt: string;
+  issuePhotos: MaintenanceLogPhoto[];
+  completionPhotos: MaintenanceLogPhoto[];
+  issuePhotoUrls: string;
+  completionPhotoUrls: string;
+}
+
+// Spec §8.4 item 6: "Maintenance log by day — includes issue and
+// completion photo thumbnails per ticket, so the day's log is visual
+// evidence rather than a text list. CSV export carries authenticated
+// photo URLs; the Phase 2 PDF export embeds the images two-up per
+// ticket." Confirmed against the spec text before building (flagged as
+// an assumption going in, since "CSV (Phase 1) and PDF (Phase 2)" reads
+// CSV-only at first glance) — the on-screen render is a real image-
+// thumbnail requirement even in Phase 1; only PDF embedding is deferred.
+//
+// "Maintenance log" = WorkOrder rows with type MAINTENANCE — same
+// "the report's own type/event data defines its scope, not a department
+// tag" reasoning as the housekeeping report, since `department` is an
+// independently-set field on WorkOrder (see createWorkOrder) and can in
+// principle diverge from `type`. "Issue" and "completion" photos are
+// exactly the two kinds DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS mandates
+// for MAINTENANCE tickets (onCreate: ISSUE, onDone: COMPLETION, see
+// packages/shared/src/workOrder.ts) — PROGRESS photos, if any, aren't
+// part of this report's definition of "the day's visual evidence."
+//
+// "By day" buckets on createdAt (the date the ticket was opened), same
+// convention as the general work-orders report's own date-range scoping
+// — not completedAt, since an open ticket with no completion date yet
+// still belongs in the log for the day it was filed.
+//
+// Photo URLs: signed for 1 hour (vs. the 300s default used elsewhere in
+// this codebase for a single work-order's live detail view) since a
+// report — especially its CSV export — is meant to be reviewed after the
+// request that generated it, not only in the instant it renders; 300s
+// would make a downloaded CSV's photo links dead before most people
+// opened it. Same signed URLs serve both the on-screen thumbnails and
+// the CSV export's photo-URL columns, generated once per report build.
+const MAINTENANCE_LOG_PHOTO_URL_TTL_SECONDS = 3600;
+
+async function buildMaintenanceLogReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (actor.permissions['report:view'] === 'DEPARTMENT' && actor.department !== 'MAINTENANCE') {
+    throw new ApiError(
+      403,
+      'FORBIDDEN',
+      'Maintenance log is scoped to the Maintenance department; your report access is scoped to a different department.',
+    );
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const workOrders = await prisma.workOrder.findMany({
+    where: { deletedAt: null, type: 'MAINTENANCE', createdAt: { gte: from, lt: toEndExclusive } },
+    include: {
+      unit: { select: { code: true, name: true } },
+      photos: { where: { deletedAt: null, kind: { in: ['ISSUE', 'COMPLETION'] } }, include: { file: true } },
+    },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  const storage = getStorageAdapter();
+  const rows: MaintenanceLogRow[] = await Promise.all(
+    workOrders.map(async (wo) => {
+      const issuePhotos: MaintenanceLogPhoto[] = [];
+      const completionPhotos: MaintenanceLogPhoto[] = [];
+      for (const photo of wo.photos) {
+        const entry = {
+          id: photo.id,
+          url: await storage.getSignedUrl(photo.file.storageKey, MAINTENANCE_LOG_PHOTO_URL_TTL_SECONDS),
+          caption: photo.caption,
+        };
+        if (photo.kind === 'ISSUE') issuePhotos.push(entry);
+        else completionPhotos.push(entry);
+      }
+      return {
+        id: wo.id,
+        date: format(wo.createdAt, 'yyyy-MM-dd'),
+        referenceNo: wo.referenceNo,
+        title: wo.title,
+        status: wo.status as WorkOrderStatusKey,
+        unitCode: wo.unit?.code ?? null,
+        unitName: wo.unit?.name ?? null,
+        createdAt: wo.createdAt.toISOString(),
+        issuePhotos,
+        completionPhotos,
+        issuePhotoUrls: issuePhotos.map((p) => p.url).join('; '),
+        completionPhotoUrls: completionPhotos.map((p) => p.url).join('; '),
+      };
+    }),
+  );
+
+  const byDayMap = new Map<string, number>();
+  for (const row of rows) {
+    byDayMap.set(row.date, (byDayMap.get(row.date) ?? 0) + 1);
+  }
+  const byDay = [...byDayMap.entries()].map(([date, ticketCount]) => ({ date, ticketCount })).sort((a, b) => a.date.localeCompare(b.date));
+
+  const summary = { totalTickets: rows.length, byDay };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'date', label: 'Date' },
+      { key: 'referenceNo', label: 'Reference' },
+      { key: 'title', label: 'Title' },
+      { key: 'status', label: 'Status' },
+      { key: 'unitCode', label: 'Unit' },
+      { key: 'createdAt', label: 'Created' },
+      { key: 'issuePhotoUrls', label: 'Issue photo URLs' },
+      { key: 'completionPhotoUrls', label: 'Completion photo URLs' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
   if (key === 'housekeeping') return buildHousekeepingReport(query, actor);
+  if (key === 'maintenance-log') return buildMaintenanceLogReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 

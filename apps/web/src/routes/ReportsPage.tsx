@@ -62,10 +62,35 @@ interface HousekeepingSummary {
   byAttendant: { attendantId: string; attendantName: string; roomsCleaned: number; avgCleanTimeMinutes: number }[];
 }
 
+interface MaintenanceLogPhoto {
+  id: string;
+  url: string;
+  caption: string | null;
+}
+
+interface MaintenanceLogRow {
+  id: string;
+  date: string;
+  referenceNo: string;
+  title: string;
+  status: string;
+  unitCode: string | null;
+  unitName: string | null;
+  createdAt: string;
+  issuePhotos: MaintenanceLogPhoto[];
+  completionPhotos: MaintenanceLogPhoto[];
+}
+
+interface MaintenanceLogSummary {
+  totalTickets: number;
+  byDay: { date: string; ticketCount: number }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
   | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
-  | { key: 'housekeeping'; from: string; to: string; summary: HousekeepingSummary; rows: HousekeepingRow[] };
+  | { key: 'housekeeping'; from: string; to: string; summary: HousekeepingSummary; rows: HousekeepingRow[] }
+  | { key: 'maintenance-log'; from: string; to: string; summary: MaintenanceLogSummary; rows: MaintenanceLogRow[] };
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -234,6 +259,7 @@ export function ReportsPage() {
       {report?.key === 'occupancy' && <OccupancyReportView report={report} />}
       {report?.key === 'work-orders' && <WorkOrderReportView report={report} />}
       {report?.key === 'housekeeping' && <HousekeepingReportView report={report} />}
+      {report?.key === 'maintenance-log' && <MaintenanceLogReportView report={report} />}
     </div>
   );
 }
@@ -465,6 +491,87 @@ function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { 
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PhotoThumbnails({ photos, emptyLabel }: { photos: MaintenanceLogPhoto[]; emptyLabel: string }) {
+  if (photos.length === 0) return <span className="text-xs text-gray-400">{emptyLabel}</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {photos.map((photo) => (
+        <a key={photo.id} href={photo.url} target="_blank" rel="noreferrer" title={photo.caption ?? undefined}>
+          <img src={photo.url} alt={photo.caption ?? 'Ticket photo'} className="h-12 w-12 rounded object-cover" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// Spec §8.4 item 6: "includes issue and completion photo thumbnails per
+// ticket, so the day's log is visual evidence rather than a text list."
+// Real thumbnails (<img>), not just links — confirmed against the spec
+// text before building, since "CSV (Phase 1) and PDF (Phase 2)" export
+// formats read CSV-only at a glance; the on-screen thumbnail requirement
+// applies in Phase 1 regardless, only PDF embedding waits for Phase 2.
+// Photo URLs are signed for 1 hour server-side (see the API's
+// buildMaintenanceLogReport) rather than the shorter TTL used for a
+// single work order's live detail view, since this same report response
+// also backs the CSV export — a link that's meant to still work after
+// the file is downloaded and opened later.
+function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, { key: 'maintenance-log' }> }) {
+  const { summary, rows } = report;
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="rounded border border-gray-200 p-3 sm:w-64">
+        <p className="text-xs font-medium uppercase text-gray-500">Tickets</p>
+        <p className="text-2xl font-semibold">{summary.totalTickets}</p>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">By day</h2>
+        {summary.byDay.length === 0 && <p className="text-sm text-gray-500">No maintenance tickets in range.</p>}
+        {summary.byDay.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.byDay.map((day) => (
+              <li key={day.date} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{day.date}</span>
+                <span className="font-medium">{day.ticketCount} ticket(s)</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Maintenance log</h2>
+        <div className="flex flex-col gap-3">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded border border-gray-200 p-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-sm font-medium">
+                  {row.date} — {row.referenceNo}: {row.title}
+                </p>
+                <p className="text-xs text-gray-500">
+                  {row.unitCode ? `${row.unitCode} — ${row.unitName} · ` : ''}
+                  {row.status}
+                </p>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-xs font-medium uppercase text-gray-500">Issue</p>
+                  <PhotoThumbnails photos={row.issuePhotos} emptyLabel="No issue photo" />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-medium uppercase text-gray-500">Completion</p>
+                  <PhotoThumbnails photos={row.completionPhotos} emptyLabel="No completion photo yet" />
+                </div>
+              </div>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="text-sm text-gray-500">No maintenance tickets in range.</p>}
         </div>
       </div>
     </div>

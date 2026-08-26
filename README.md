@@ -4150,6 +4150,70 @@ build` clean across all three packages. **Not live-tested** — no access
 to the client's real Supabase data this session; needs a real pass once
 the client is back at their PC, same as every prior slice.
 
+### Maintenance log by day (spec §8.4 item 6) — verified in sandbox only, not live-tested (2026-08-26)
+
+Client confirmed the QC-omission handling on the housekeeping report and
+asked me to continue to this one next, flagging that I should re-check
+the "CSV-only for Phase 1" assumption against the actual spec text
+rather than just going with the read from memory. Did that before
+writing any code — **the assumption was wrong**, worth flagging exactly
+as asked:
+
+> "Every report renders on screen **and** exports to CSV (Phase 1) and
+> PDF (Phase 2)." Item 6 itself: "...photo thumbnails per ticket, so the
+> day's log is visual evidence rather than a text list. CSV export
+> carries authenticated photo URLs; the Phase 2 PDF export embeds the
+> images two-up per ticket."
+
+So the on-screen render needs real `<img>` thumbnails in Phase 1 — only
+the *PDF* embedding is deferred to Phase 2, not image display generally.
+Built it that way: `MaintenanceLogReportView` renders actual photo
+thumbnails (clickable through to the full signed URL), the CSV export
+carries the same signed URLs as plain text columns instead.
+
+**Scope**: "Maintenance log" = `WorkOrder` rows with `type: MAINTENANCE`
+(not a `department` filter — `department` is set independently at
+creation and can in principle diverge from `type`, same reasoning as the
+housekeeping report's own department-vs-data-scope call). "Issue" and
+"completion" photos are exactly the two kinds
+`DEFAULT_WORK_ORDER_PHOTO_REQUIREMENTS` mandates for MAINTENANCE tickets
+— PROGRESS photos, if any exist, aren't part of this report. "By day"
+buckets on `createdAt` (the day the ticket was filed), matching the
+general work-orders report's own date-range convention — a still-open
+ticket with no completion date yet still belongs in the log for the day
+it was opened.
+
+**Photo URL lifetime**: the existing work-order-detail code signs photo
+URLs for 300 seconds (fine for a live screen someone is looking at right
+now). A report — especially its CSV export, meant to be downloaded and
+reviewed later — needs longer-lived links, so this report signs for 1
+hour instead. Same signed URLs back both the on-screen thumbnails and
+the CSV export's URL columns from one report build. This is a low-risk,
+easily-adjustable default (not an architectural decision), so I picked
+it and documented the reasoning rather than stopping to ask; flag if you
+want a different window.
+
+Department scope, permission gating, and DEPARTMENT-vs-ALL report:view
+handling all follow the exact same pattern established by the
+housekeeping report (own-department sees it, any other department is
+refused) — no new ambiguity there.
+
+No schema change — built entirely from existing `WorkOrder`/
+`WorkOrderPhoto`/`FileObject` data. New report key `maintenance-log`
+added to `packages/shared/src/report.ts`; `buildMaintenanceLogReport`
+added to `apps/api/src/modules/reports/service.ts`;
+`MaintenanceLogReportView` added to `ReportsPage.tsx`.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 355 tests, 352 passing (same 3
+pre-existing network-blocked failures), `npm run test -w apps/web` —
+57/57 passing (new tests cover the department-scope split, the
+type-MAINTENANCE filter, day-grouping, signed-URL generation with the
+1-hour TTL, on-screen thumbnail rendering, and CSV export carrying the
+URLs as text), `npm run build` clean across all three packages. **Not
+live-tested** — needs a real pass against the client's Supabase data and
+real work-order photos once they're back at their PC.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

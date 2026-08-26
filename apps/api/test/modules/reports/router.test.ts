@@ -10,6 +10,11 @@ const mockPrisma = {
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
+const mockGetSignedUrl = vi.fn();
+vi.mock('../../../src/adapters/storage/index.js', () => ({
+  getStorageAdapter: () => ({ getSignedUrl: mockGetSignedUrl }),
+}));
+
 const { createApp } = await import('../../../src/app.js');
 const { signAccessToken } = await import('../../../src/modules/auth/tokens.js');
 
@@ -34,6 +39,7 @@ function authCookie() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetSignedUrl.mockImplementation((key: string) => Promise.resolve(`https://signed.example/${key}`));
 });
 
 describe('GET /api/v1/reports/:key', () => {
@@ -297,6 +303,77 @@ describe('GET /api/v1/reports/:key', () => {
     expect(res.body.report.summary.totalRoomsCleaned).toBe(0);
     expect(res.body.report.summary.avgCleanTimeMinutes).toBeNull();
   });
+
+  // Same reasoning as housekeeping's own department-scope test: unlike
+  // occupancy, this report's data genuinely belongs to one department.
+  it('allows the maintenance log for a DEPARTMENT-scoped holder in Maintenance', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/maintenance-log?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses the maintenance log for a DEPARTMENT-scoped holder outside Maintenance', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    const res = await request(createApp())
+      .get('/api/v1/reports/maintenance-log?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('builds the maintenance log: filters to type MAINTENANCE, groups by day, and returns signed issue/completion photo URLs', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_1',
+        referenceNo: 'WO-001',
+        title: 'Leaking faucet',
+        status: 'VERIFIED',
+        unit: { code: 'R01', name: 'Room 1' },
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        photos: [
+          { id: 'photo_issue', kind: 'ISSUE', caption: 'Before', file: { storageKey: 'wo1/issue.jpg' } },
+          { id: 'photo_done', kind: 'COMPLETION', caption: 'After', file: { storageKey: 'wo1/done.jpg' } },
+        ],
+      },
+      {
+        id: 'wo_2',
+        referenceNo: 'WO-002',
+        title: 'AC not cooling',
+        status: 'IN_PROGRESS',
+        unit: { code: 'R02', name: 'Room 2' },
+        createdAt: new Date('2026-08-25T09:00:00+08:00'),
+        photos: [{ id: 'photo_issue2', kind: 'ISSUE', caption: null, file: { storageKey: 'wo2/issue.jpg' } }],
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/maintenance-log?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const { summary, rows } = res.body.report;
+    expect(mockPrisma.workOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ type: 'MAINTENANCE' }) }),
+    );
+    expect(summary.totalTickets).toBe(2);
+    expect(summary.byDay).toEqual([
+      { date: '2026-08-24', ticketCount: 1 },
+      { date: '2026-08-25', ticketCount: 1 },
+    ]);
+    const wo1 = rows.find((r: { id: string }) => r.id === 'wo_1');
+    expect(wo1.issuePhotos).toEqual([{ id: 'photo_issue', url: 'https://signed.example/wo1/issue.jpg', caption: 'Before' }]);
+    expect(wo1.completionPhotos).toEqual([{ id: 'photo_done', url: 'https://signed.example/wo1/done.jpg', caption: 'After' }]);
+    expect(wo1.issuePhotoUrls).toBe('https://signed.example/wo1/issue.jpg');
+    expect(mockGetSignedUrl).toHaveBeenCalledWith('wo1/issue.jpg', 3600);
+    const wo2 = rows.find((r: { id: string }) => r.id === 'wo_2');
+    expect(wo2.completionPhotos).toEqual([]);
+    expect(wo2.completionPhotoUrls).toBe('');
+  });
 });
 
 describe('GET /api/v1/reports/:key/export', () => {
@@ -365,5 +442,29 @@ describe('GET /api/v1/reports/:key/export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Unit,Unit name,Attendant');
     expect(res.text).toContain('R01,Room 1,Attendant A');
+  });
+
+  it('exports the maintenance log as CSV, carrying authenticated photo URLs', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_1',
+        referenceNo: 'WO-001',
+        title: 'Leaking faucet',
+        status: 'VERIFIED',
+        unit: { code: 'R01', name: 'Room 1' },
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        photos: [{ id: 'photo_issue', kind: 'ISSUE', caption: null, file: { storageKey: 'wo1/issue.jpg' } }],
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/maintenance-log/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Date,Reference,Title');
+    expect(res.text).toContain('https://signed.example/wo1/issue.jpg');
   });
 });

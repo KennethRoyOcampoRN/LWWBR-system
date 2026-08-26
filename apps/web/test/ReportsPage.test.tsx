@@ -148,6 +148,51 @@ describe('ReportsPage', () => {
     expect(screen.getByText(/QC pass rate isn't shown/)).toBeInTheDocument();
   });
 
+  it('runs the maintenance log report and shows day-grouped tickets with photo thumbnails', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/maintenance-log?')) {
+        return jsonResponse(200, {
+          report: {
+            key: 'maintenance-log',
+            from: '2026-08-24',
+            to: '2026-08-25',
+            summary: { totalTickets: 1, byDay: [{ date: '2026-08-24', ticketCount: 1 }] },
+            rows: [
+              {
+                id: 'wo_1',
+                date: '2026-08-24',
+                referenceNo: 'WO-001',
+                title: 'Leaking faucet',
+                status: 'VERIFIED',
+                unitCode: 'R01',
+                unitName: 'Room 1',
+                createdAt: '2026-08-24T09:00:00.000Z',
+                issuePhotos: [{ id: 'photo_1', url: 'https://signed.example/issue.jpg', caption: 'Before' }],
+                completionPhotos: [],
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('Report'), 'maintenance-log');
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getByText(/WO-001: Leaking faucet/)).toBeInTheDocument());
+    expect(screen.getByText('Tickets').parentElement).toHaveTextContent('1');
+    expect(screen.getByAltText('Before')).toHaveAttribute('src', 'https://signed.example/issue.jpg');
+    expect(screen.getByText('No completion photo yet')).toBeInTheDocument();
+  });
+
   it('exports the current report to CSV', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
