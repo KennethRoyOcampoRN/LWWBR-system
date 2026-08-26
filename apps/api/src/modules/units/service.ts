@@ -270,6 +270,52 @@ export async function updateUnit(id: string, input: UpdateUnitInput) {
   return prisma.unit.update({ where: { id }, data: input });
 }
 
+// Client decision, 2026-08-25: a real delete, but only for a unit with
+// zero real history — "I made a wrong room by mistake." Same two-step
+// pattern as MenuItem/AmenityItem (deleteMenuItem/deleteAmenityItem):
+// must already be deactivated, so a currently-live unit can't be removed
+// in one click. Unlike those two, there's no name-snapshot escape hatch
+// here — a Unit that's actually been used has real history spread across
+// six different relations (none carry `onDelete: SetNull`, so a real
+// `unit.delete()` against any of them would fail at the DB with an
+// unhandled FK violation if not caught first), and none of those
+// historical rows can be made to survive the unit's own disappearance
+// the way an order-line name snapshot survives a deleted MenuItem — a
+// past booking or work order *is* a room-level record. So instead of
+// finding a way to make deletion safe, this refuses it outright whenever
+// any history exists, and directs the caller to Deactivate instead — the
+// correct tool for "we're decreasing our room count," since deleting a
+// room with real history would corrupt that history, not just this row.
+export async function deleteUnit(id: string) {
+  const existing = await prisma.unit.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Unit not found');
+  }
+  if (existing.isActive) {
+    throw new ApiError(409, 'UNIT_STILL_ACTIVE', 'Deactivate the unit before deleting it.');
+  }
+
+  const [statusEvents, bookingUnits, workOrders, amenityRequests, fnbOrders, inspections] = await Promise.all([
+    prisma.unitStatusEvent.count({ where: { unitId: id } }),
+    prisma.bookingUnit.count({ where: { unitId: id, deletedAt: null } }),
+    prisma.workOrder.count({ where: { unitId: id, deletedAt: null } }),
+    prisma.amenityRequest.count({ where: { unitId: id, deletedAt: null } }),
+    prisma.fnbOrder.count({ where: { unitId: id, deletedAt: null } }),
+    prisma.inspection.count({ where: { unitId: id, deletedAt: null } }),
+  ]);
+  const historyCount = statusEvents + bookingUnits + workOrders + amenityRequests + fnbOrders + inspections;
+  if (historyCount > 0) {
+    throw new ApiError(
+      409,
+      'UNIT_HAS_HISTORY',
+      'This unit has real history (bookings, work orders, or status changes) and cannot be deleted. Deactivate it instead.',
+      { statusEvents, bookingUnits, workOrders, amenityRequests, fnbOrders, inspections },
+    );
+  }
+
+  await prisma.unit.delete({ where: { id } });
+}
+
 // Spec §8.2 attention queue: "rooms dirty >3h." SLA-breached work orders
 // (work orders module, M3) are also real now — see listSlaBreachedWorkOrders
 // in the work orders module, combined into getUnitsDashboard below. This

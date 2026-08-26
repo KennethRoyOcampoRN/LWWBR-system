@@ -15,6 +15,7 @@ import {
   changeUnitStatus,
   createUnit,
   createUnitType,
+  deleteUnit,
   forceUnitStatus,
   getUnitsDashboard,
   getUnitTimeline,
@@ -80,6 +81,18 @@ unitsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = updateUnitSchema.parse(req.body);
     res.status(200).json({ unit: await updateUnit(req.params.id as string, body) });
+  }),
+);
+
+// Client decision, 2026-08-25: genuine hard delete, but only for a unit
+// with zero real history — see deleteUnit's own doc comment for the full
+// reasoning. Not a deletedAt soft-hide; the row is actually removed.
+unitsRouter.delete(
+  '/units/:id',
+  requirePermission('unit:manage'),
+  asyncHandler(async (req, res) => {
+    await deleteUnit(req.params.id as string);
+    res.status(204).end();
   }),
 );
 

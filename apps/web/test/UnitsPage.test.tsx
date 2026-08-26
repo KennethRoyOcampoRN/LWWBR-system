@@ -164,4 +164,82 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
     await waitFor(() => expect(currentRoom.isActive).toBe(false));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Reactivate' })).toBeInTheDocument());
   });
+
+  // Client decision, 2026-08-25: a real delete, but only for a unit with
+  // zero real history. Delete is only offered once already inactive, and
+  // confirms before actually deleting.
+  it('deletes an inactive unit with no history after confirmation', async () => {
+    window.history.pushState({}, '', '/units');
+    const user = userEvent.setup();
+    let units = [{ ...room, isActive: false }];
+    let deleteCalled = false;
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
+      if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
+      if (url.match(/\/units\/unit_1$/) && init?.method === 'DELETE') {
+        deleteCalled = true;
+        units = [];
+        return jsonResponse(204, undefined);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Unit details')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('R01')).not.toBeInTheDocument());
+  });
+
+  it('shows the server\'s UNIT_HAS_HISTORY error rather than deleting a unit with real history', async () => {
+    window.history.pushState({}, '', '/units');
+    const user = userEvent.setup();
+    const inactiveRoom = { ...room, isActive: false };
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [inactiveRoom] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
+      if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
+      if (url.match(/\/units\/unit_1$/) && init?.method === 'DELETE') {
+        return jsonResponse(409, {
+          error: {
+            code: 'UNIT_HAS_HISTORY',
+            message: 'This unit has real history (bookings, work orders, or status changes) and cannot be deleted. Deactivate it instead.',
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('cannot be deleted'));
+    // Still shown — the unit was not removed from the grid.
+    expect(screen.getByText('Unit details')).toBeInTheDocument();
+  });
 });

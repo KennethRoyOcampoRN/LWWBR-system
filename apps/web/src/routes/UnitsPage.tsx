@@ -108,12 +108,14 @@ function UnitDetailDrawer({
   unitTypes,
   onClose,
   onChanged,
+  onDeleted,
 }: {
   unit: UnitRow;
   unitTypeName: string;
   unitTypes: UnitTypeRow[];
   onClose: () => void;
   onChanged: (unit: UnitRow) => void;
+  onDeleted: () => void;
 }) {
   const { user } = useAuth();
   const canManage = Boolean(user?.permissions['unit:manage']);
@@ -201,6 +203,31 @@ function UnitDetailDrawer({
       onChanged({ ...unit, ...res.unit });
     } catch (err) {
       setActiveError(err instanceof ApiRequestError ? err.message : 'Could not update the unit.');
+    }
+  };
+
+  // Client decision, 2026-08-25: a real delete, but only for a unit with
+  // zero real history ("I made a wrong room by mistake") — the server
+  // refuses (409 UNIT_HAS_HISTORY) otherwise, directing the caller to
+  // Deactivate instead, since a unit with real history (bookings, work
+  // orders, status changes) would have that history corrupted by a real
+  // delete. This button is also only offered once already deactivated,
+  // same two-step guard as MenuItem/AmenityItem — the server's own 409
+  // UNIT_STILL_ACTIVE is the real guard; this confirm dialog is a
+  // second, client-side one on top of it.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const deleteUnit = async () => {
+    if (!window.confirm(`Permanently delete "${unit.code} — ${unit.name}"? This cannot be undone.`)) return;
+    setDeleteError(null);
+    setDeleting(true);
+    try {
+      await api.delete(`/units/${unit.id}`);
+      onDeleted();
+    } catch (err) {
+      setDeleteError(err instanceof ApiRequestError ? err.message : 'Could not delete the unit.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -389,11 +416,33 @@ function UnitDetailDrawer({
               <button onClick={() => void toggleUnitActive()} className="text-xs font-medium text-blue-700 hover:underline">
                 {unit.isActive ? 'Deactivate' : 'Reactivate'}
               </button>
+              {/*
+                Client decision, 2026-08-25: only offered once already
+                inactive — matches the server's own 409 UNIT_STILL_ACTIVE
+                guard, so this never fires a request that's certain to
+                be refused. The server's separate 409 UNIT_HAS_HISTORY
+                guard still applies underneath and surfaces via
+                deleteError below.
+              */}
+              {!unit.isActive && (
+                <button
+                  onClick={() => void deleteUnit()}
+                  disabled={deleting}
+                  className="text-xs font-medium text-red-700 hover:underline disabled:opacity-50"
+                >
+                  {deleting ? 'Deleting…' : 'Delete'}
+                </button>
+              )}
             </div>
           </div>
           {activeError && (
             <p role="alert" className="text-xs text-red-600">
               {activeError}
+            </p>
+          )}
+          {deleteError && (
+            <p role="alert" className="text-xs text-red-600">
+              {deleteError}
             </p>
           )}
 
@@ -1300,6 +1349,10 @@ export function UnitsPage() {
           unitTypes={unitTypes}
           onClose={() => setSelectedUnitId(null)}
           onChanged={handleChanged}
+          onDeleted={() => {
+            setSelectedUnitId(null);
+            void fetchUnits();
+          }}
         />
       )}
     </div>

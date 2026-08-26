@@ -4029,3 +4029,47 @@ Playwright run driving the whole thing end to end against the built app.
 `apps/api` 323/326 (same 3 pre-existing network-blocked round-trip
 tests), `apps/web` 53/53. Full repo lint/typecheck/build clean. No
 schema change — every field this needed was already there.
+
+### Add real unit deletion — only for a unit with zero real history (2026-08-25)
+
+Client decision, following the unit-management slice above: add a real
+`DELETE`, but conditioned on a genuine safety check — same two-step
+deactivate-then-delete pattern as `MenuItem`/`AmenityItem`, plus a second
+guard those two don't need. Covers "I made a wrong room by mistake"
+cleanly; a unit that's actually been used keeps Deactivate as the
+correct tool, since deleting it would corrupt real history, not just
+remove a row.
+
+Unlike `MenuItem`/`AmenityItem` (safe to delete once their order/request
+rows snapshot the item's name), a `Unit` has no such escape hatch — a
+past booking or work order *is* a room-level record, not a line item
+that can survive its subject's disappearance via a snapshot. So
+`deleteUnit` (`units/service.ts`) checks all six relations that actually
+reference a unit — `UnitStatusEvent`, `BookingUnit`, `WorkOrder`,
+`AmenityRequest`, `FnbOrder`, `Inspection` (the client's own message
+named the first three explicitly; the other three exist as real FKs too
+and none carry `onDelete: SetNull`, so a real `unit.delete()` against
+any of them would otherwise fail at the DB with an unhandled constraint
+violation rather than a clean guard) — and refuses (`409
+UNIT_HAS_HISTORY`) if any row exists anywhere, pointing the caller at
+Deactivate instead. Still requires the unit be already inactive first
+(`409 UNIT_STILL_ACTIVE` otherwise), same as the other two.
+
+**Frontend**: a Delete button in the drawer's "Unit details" panel, next
+to Deactivate/Reactivate — shown only once already inactive (mirrors the
+server's own guard, so it never fires a request certain to be refused),
+behind a confirm dialog, same as the menu/amenity item pattern. A
+successful delete closes the drawer and refreshes the grid; the server's
+`UNIT_HAS_HISTORY` message (still surfaced if a unit somehow has history
+despite the client-side hiding) explains why and points at Deactivate,
+same as the guard text itself.
+
+Verified: 8 new backend tests (permission gating, 404, the
+still-active guard, one test per relation confirming each alone blocks
+deletion with `UNIT_HAS_HISTORY`, and the zero-history success path), 2
+new frontend tests (a real delete round-trip removing the unit from the
+grid; the `UNIT_HAS_HISTORY` error surfacing without removing the unit),
+and a headless-browser Playwright run confirming Delete only appears on
+an already-inactive unit and never on an active one. `apps/api` 333/336
+(same 3 pre-existing network-blocked round-trip tests), `apps/web`
+55/55. Full repo lint/typecheck/build clean. No schema change.

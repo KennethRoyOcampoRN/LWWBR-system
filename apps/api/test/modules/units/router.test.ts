@@ -4,9 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   unitType: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-  unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+  unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn() },
   unitStatusEvent: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
+  bookingUnit: { count: vi.fn() },
   workOrder: { findMany: vi.fn(), count: vi.fn() },
+  amenityRequest: { count: vi.fn() },
+  fnbOrder: { count: vi.fn() },
+  inspection: { count: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -246,6 +250,73 @@ describe('PATCH /api/v1/units/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.unit.isActive).toBe(false);
     expect(mockPrisma.unit.update).toHaveBeenCalledWith({ where: { id: 'unit_1' }, data: { isActive: false } });
+  });
+});
+
+// Client decision, 2026-08-25: a real delete, but only for a unit with
+// zero real history ("I made a wrong room by mistake"). A unit that's
+// actually been used keeps Deactivate as the correct tool.
+describe('DELETE /api/v1/units/:id', () => {
+  it('requires unit:manage', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+    expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown unit', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(null);
+    const res = await request(createApp()).delete('/api/v1/units/does_not_exist').set('Cookie', authCookie());
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses to delete a still-active unit', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: true }));
+    const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_STILL_ACTIVE');
+    expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+  });
+
+  it.each(['unitStatusEvent', 'bookingUnit', 'workOrder', 'amenityRequest', 'fnbOrder', 'inspection'] as const)(
+    'refuses to delete an inactive unit that has %s history',
+    async (relation) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: false }));
+      mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
+      mockPrisma.bookingUnit.count.mockResolvedValue(0);
+      mockPrisma.workOrder.count.mockResolvedValue(0);
+      mockPrisma.amenityRequest.count.mockResolvedValue(0);
+      mockPrisma.fnbOrder.count.mockResolvedValue(0);
+      mockPrisma.inspection.count.mockResolvedValue(0);
+      mockPrisma[relation].count.mockResolvedValue(1);
+
+      const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('UNIT_HAS_HISTORY');
+      expect(res.body.error.message).toContain('Deactivate');
+      expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+    },
+  );
+
+  it('deletes an inactive unit with zero history', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: false }));
+    mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
+    mockPrisma.bookingUnit.count.mockResolvedValue(0);
+    mockPrisma.workOrder.count.mockResolvedValue(0);
+    mockPrisma.amenityRequest.count.mockResolvedValue(0);
+    mockPrisma.fnbOrder.count.mockResolvedValue(0);
+    mockPrisma.inspection.count.mockResolvedValue(0);
+    mockPrisma.unit.delete.mockResolvedValue(fakeUnit({ isActive: false }));
+
+    const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(204);
+    expect(mockPrisma.unit.delete).toHaveBeenCalledWith({ where: { id: 'unit_1' } });
   });
 });
 
