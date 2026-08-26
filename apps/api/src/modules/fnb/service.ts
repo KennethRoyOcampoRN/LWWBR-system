@@ -253,6 +253,25 @@ export async function listFnbOrders(query: ListFnbOrdersQuery) {
   return orders.map(fnbOrderToJson);
 }
 
+// Real gap found live-testing, 2026-08-25: the Command Center's "Open
+// F&B tickets" KPI card still said "Coming in M5" — F&B has been built
+// and confirmed working since M5 closed. "Open" is the same population
+// the kitchen board itself renders (see listFnbOrders's boardOnly
+// branch above): RECEIVED/PREPARING/READY, with an ADVANCE_ORDER still
+// hidden until its lead-time window opens — an advance order that isn't
+// the kitchen's concern yet shouldn't inflate this count either.
+export async function countOpenFnbOrders(): Promise<number> {
+  const leadMinutes = await getAdvanceOrderLeadMinutes();
+  const cutoff = new Date(Date.now() + leadMinutes * 60_000);
+  return prisma.fnbOrder.count({
+    where: {
+      deletedAt: null,
+      status: { in: ['RECEIVED', 'PREPARING', 'READY'] },
+      OR: [{ type: { not: 'ADVANCE_ORDER' } }, { scheduledFor: { lte: cutoff } }],
+    },
+  });
+}
+
 export async function getFnbOrder(id: string) {
   const order = await prisma.fnbOrder.findFirst({ where: { id, deletedAt: null }, include: FNB_ORDER_INCLUDE });
   if (!order) {

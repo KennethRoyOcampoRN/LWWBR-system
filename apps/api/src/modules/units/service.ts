@@ -18,6 +18,14 @@ import { prisma } from '../../lib/prisma.js';
 // realtime workorder.created broadcast, department notification) is
 // owned by the work orders module, so this reuses it rather than
 // duplicating a second, parallel ticket-creation path here.
+// Real gap found live-testing, 2026-08-25: the Command Center's "Open
+// F&B tickets" KPI and "Overdue amenities" attention-queue row both
+// still said "Coming in M5" — both modules have been built and confirmed
+// working since M5 closed. Same cross-module reuse reasoning as
+// workorders/service.js below: one real implementation, not a second
+// parallel copy of "what counts as open/overdue" in this file.
+import { listOverdueAmenityRequests, type OverdueAmenityRequest } from '../amenities/service.js';
+import { countOpenFnbOrders } from '../fnb/service.js';
 import {
   countUrgentOpenWorkOrders,
   createWorkOrder,
@@ -349,13 +357,12 @@ export interface DirtyRoom {
 // checkoutsToday instead count actual READY->OCCUPIED / OCCUPIED->
 // VACANT_DIRTY UnitStatusEvent rows created today, which answers the
 // same real question ("how much guest turnover happened today") from
-// data that's genuinely available. Open F&B tickets is the one KPI
-// spec's list still can't be computed — F&B doesn't exist yet (M5) — so
-// the frontend still renders that one as an explicit "coming in a later
-// milestone" placeholder. Pending payment verifications was removed
-// outright (not a placeholder): payment tracking is out of scope for
-// this app entirely (client decision, 2026-08-24), not a later
-// milestone.
+// data that's genuinely available. Open F&B tickets — real as of
+// 2026-08-25 (F&B was still M5-in-progress when this comment was first
+// written; that's done now, see countOpenFnbOrders). Pending payment
+// verifications was removed outright (not a placeholder): payment
+// tracking is out of scope for this app entirely (client decision,
+// 2026-08-24), not a later milestone.
 export interface UnitsDashboard {
   kpi: {
     occupied: number;
@@ -365,9 +372,11 @@ export interface UnitsDashboard {
     urgentOpenWorkOrders: number;
     checkinsToday: number;
     checkoutsToday: number;
+    openFnbOrders: number;
   };
   dirtyRooms: DirtyRoom[];
   slaBreachedWorkOrders: SlaBreachedWorkOrder[];
+  overdueAmenityRequests: OverdueAmenityRequest[];
 }
 
 export async function getUnitsDashboard(): Promise<UnitsDashboard> {
@@ -376,7 +385,16 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
     select: { id: true, code: true, name: true, status: true, createdAt: true },
   });
 
-  const kpi = { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 0, checkinsToday: 0, checkoutsToday: 0 };
+  const kpi = {
+    occupied: 0,
+    ready: 0,
+    dirty: 0,
+    outOfOrder: 0,
+    urgentOpenWorkOrders: 0,
+    checkinsToday: 0,
+    checkoutsToday: 0,
+    openFnbOrders: 0,
+  };
   const dirtyUnits: typeof units = [];
   for (const unit of units) {
     switch (unit.status) {
@@ -435,8 +453,10 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
   ]);
   kpi.checkinsToday = checkinsToday;
   kpi.checkoutsToday = checkoutsToday;
+  kpi.openFnbOrders = await countOpenFnbOrders();
+  const overdueAmenityRequests = await listOverdueAmenityRequests();
 
-  return { kpi, dirtyRooms, slaBreachedWorkOrders };
+  return { kpi, dirtyRooms, slaBreachedWorkOrders, overdueAmenityRequests };
 }
 
 export interface UnitActivityEvent {

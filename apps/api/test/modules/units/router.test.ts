@@ -8,9 +8,10 @@ const mockPrisma = {
   unitStatusEvent: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
   bookingUnit: { count: vi.fn() },
   workOrder: { findMany: vi.fn(), count: vi.fn() },
-  amenityRequest: { count: vi.fn() },
+  amenityRequest: { count: vi.fn(), findMany: vi.fn() },
   fnbOrder: { count: vi.fn() },
   inspection: { count: vi.fn() },
+  setting: { findUnique: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -70,6 +71,9 @@ beforeEach(() => {
   mockPrisma.workOrder.findMany.mockResolvedValue([]);
   mockPrisma.workOrder.count.mockResolvedValue(0);
   mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
+  mockPrisma.fnbOrder.count.mockResolvedValue(0);
+  mockPrisma.amenityRequest.findMany.mockResolvedValue([]);
+  mockPrisma.setting.findUnique.mockResolvedValue(null);
   mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
@@ -732,6 +736,7 @@ describe('GET /api/v1/units/dashboard', () => {
       urgentOpenWorkOrders: 0,
       checkinsToday: 0,
       checkoutsToday: 0,
+      openFnbOrders: 0,
     });
     expect(res.body.dirtyRooms).toHaveLength(1);
     expect(res.body.dirtyRooms[0]).toMatchObject({ id: 'unit_dirty_long', code: '102' });
@@ -824,6 +829,75 @@ describe('GET /api/v1/units/dashboard', () => {
     expect(calls[0]![0].where.createdAt.gte.getHours()).toBe(0);
     expect(calls[1]![0]).toMatchObject({ where: { fromStatus: 'OCCUPIED', toStatus: 'VACANT_DIRTY' } });
     expect(calls[1]![0].where.createdAt.gte.getHours()).toBe(0);
+  });
+
+  // Real gap found live-testing, 2026-08-25: this KPI card said "Coming in
+  // M5" until now. countOpenFnbOrders's own where-clause (RECEIVED/
+  // PREPARING/READY, ADVANCE_ORDER lead-time gate) is exercised directly in
+  // fnb/service.test.ts; this just pins that it reaches the dashboard.
+  it('reports open F&B tickets via countOpenFnbOrders', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.fnbOrder.count.mockResolvedValue(7);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.openFnbOrders).toBe(7);
+  });
+
+  // Same reasoning as the SLA-breach comment above: listOverdueAmenityRequests's
+  // own where-clause (status OVERDUE, or ISSUED past dueBackAt) is exercised
+  // directly in amenities/service.test.ts; this pins the end-to-end shape.
+  it('includes overdue amenity requests in the attention queue', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([
+      {
+        id: 'amenity_overdue',
+        referenceNo: 'LWW-AM-0004',
+        status: 'OVERDUE',
+        amenityItemName: 'Beach towel',
+        amenityItem: { name: 'Beach towel' },
+        unit: { code: '201' },
+        dueBackAt: oneHourAgo,
+      },
+      {
+        id: 'amenity_issued_past_due',
+        referenceNo: 'LWW-AM-0005',
+        status: 'ISSUED',
+        amenityItemName: null,
+        amenityItem: { name: 'Kayak' },
+        unit: { code: '202' },
+        dueBackAt: oneHourAgo,
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.overdueAmenityRequests).toHaveLength(2);
+    expect(res.body.overdueAmenityRequests[0]).toMatchObject({
+      id: 'amenity_overdue',
+      referenceNo: 'LWW-AM-0004',
+      itemName: 'Beach towel',
+      unitCode: '201',
+    });
+    expect(res.body.overdueAmenityRequests[0].overdueMinutes).toBeGreaterThanOrEqual(59);
+    expect(res.body.overdueAmenityRequests[1]).toMatchObject({
+      id: 'amenity_issued_past_due',
+      itemName: 'Kayak',
+      unitCode: '202',
+    });
+  });
+
+  it('returns an empty overdue-amenities list when none are past due', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.overdueAmenityRequests).toEqual([]);
   });
 });
 

@@ -4092,3 +4092,64 @@ rounds out today's M6 work.
 Holding here per the client's instruction — no further work queued.
 Remaining M6 scope (the rest of spec §8.4's report set, PWA setup) waits
 on the client's review of where things stand before deciding next steps.
+
+### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
+
+Second round of the exact same bug as "KPI strip: the last three stale
+placeholders, closed out" above: two Command Center widgets still said
+"Coming in M5" after M5 finished, both missed in that earlier pass because
+their backing modules (F&B, amenities) didn't exist yet at the time they
+were written.
+
+**Open F&B tickets KPI** — now `countOpenFnbOrders()`
+(`apps/api/src/modules/fnb/service.ts`), wired into `getUnitsDashboard`
+the same way `workorders/service.ts`'s functions already are (cross-module
+import, no duplicated logic). "Open" is defined as exactly the population
+the kitchen board itself renders (`listFnbOrders`'s `boardOnly` branch):
+`RECEIVED`/`PREPARING`/`READY`, with an `ADVANCE_ORDER` excluded until its
+lead-time window opens (reading the same `fnb.advanceOrderLeadMinutes`
+Setting/default the kitchen board uses). This is a design interpretation
+of the client's "not yet SERVED/CANCELLED" phrasing, not a literal
+reading — an advance order that isn't the kitchen's concern yet shouldn't
+inflate the KPI either. Flagging this interpretation for the client to
+correct if the intent was the broader literal count.
+
+**Overdue amenities attention-queue row** — now
+`listOverdueAmenityRequests()` (`apps/api/src/modules/amenities/service.ts`),
+same live-computed-field pattern as `listSlaBreachedWorkOrders`: `status =
+OVERDUE` (already swept) OR `status = ISSUED AND dueBackAt < now` (not yet
+swept — the sweep job only runs every 15 minutes, so a request that just
+crossed its due-back time is already really overdue before the next sweep
+fires). Reuses the same snapshot -> live-relation -> `(deleted item)`
+fallback chain for `itemName` as Option B's real amenity-item deletion.
+
+Both stub components (`StubKpiCard`, `StubAttentionRow`) are now deleted
+from `DashboardPage.tsx` — no `"Coming in M#"` usage remains anywhere in
+that page, or in `apps/web/src` generally. Confirmed via a repo-wide grep
+sweep (`Coming in M`, `Coming soon`, `not built yet`, `isn't built yet`,
+`doesn't exist yet`, `not yet built`, `— M5`, `— M6`, `(M5)`, `(M6)`): the
+only hit is a legitimate, accurate comment in `ReportsPage.tsx` describing
+the report builder as "M6's first slice" — current, true state, not a
+stale leftover.
+
+No schema change. New/updated backend tests:
+`apps/api/test/modules/fnb/service.test.ts` (new, `countOpenFnbOrders`'s
+where-clause and Setting-driven lead time),
+`apps/api/test/modules/amenities/service.test.ts` (new,
+`listOverdueAmenityRequests`'s where-clause and itemName fallback chain),
+and `apps/api/test/modules/units/router.test.ts` (three new dashboard
+integration tests pinning the end-to-end response shape, plus the
+pre-existing KPI-shape test updated for the new `openFnbOrders` field).
+`apps/web/test/App.smoke.test.tsx`'s Command Center test updated to assert
+real values for both widgets instead of the old stub text.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 346 tests, 343 passing (the same 3
+pre-existing Supabase-round-trip failures every run this session hits, no
+network access from this sandbox), `npm run test -w apps/web` — 55/55
+passing, `npm run build` clean across all three packages. Also verified
+live in a headless browser against the built app (mocked
+`/units/dashboard` response): the F&B KPI card renders a real number, the
+overdue-amenity row renders with real data, the empty-state text renders
+when the list is empty, and zero dashed-border stub elements remain
+anywhere on the page.

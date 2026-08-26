@@ -629,7 +629,7 @@ describe('App', () => {
     expect(screen.getByText('Someone Else', { exact: false })).toBeInTheDocument();
   });
 
-  it('renders the Command Center: real KPI counts, one remaining stubbed KPI, a dirty-room alert, and the activity feed', async () => {
+  it('renders the Command Center: real KPI counts, a dirty-room alert, and the activity feed', async () => {
     const managerUser = {
       ...currentUser,
       roles: ['RESORT_MANAGER'],
@@ -648,10 +648,14 @@ describe('App', () => {
             urgentOpenWorkOrders: 2,
             checkinsToday: 5,
             checkoutsToday: 4,
+            openFnbOrders: 6,
           },
           dirtyRooms: [{ id: 'unit_9', code: 'R09', name: 'Room 9', dirtyMinutes: 200 }],
           slaBreachedWorkOrders: [
             { id: 'wo_1', referenceNo: 'LWW-WO-0007', title: 'Leaking faucet', unitCode: 'R03', overdueMinutes: 90 },
+          ],
+          overdueAmenityRequests: [
+            { id: 'am_1', referenceNo: 'LWW-AM-0004', itemName: 'Beach towel', unitCode: 'R03', overdueMinutes: 45 },
           ],
         });
       }
@@ -688,23 +692,19 @@ describe('App', () => {
     expect(screen.getByText('Open urgent work orders').parentElement).toHaveTextContent('2');
     expect(screen.getByText('Check-ins today').parentElement).toHaveTextContent('5');
     expect(screen.getByText('Check-outs today').parentElement).toHaveTextContent('4');
-
-    // The one remaining stubbed KPI card is explicitly labelled, not
-    // shown as a bare "0" — the rest of the strip is real now.
-    expect(screen.getByText('Open F&B tickets')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming in M5').length).toBeGreaterThan(0);
+    expect(screen.getByText('Open F&B tickets').parentElement).toHaveTextContent('6');
     expect(screen.queryByText('Arrivals / departures today')).not.toBeInTheDocument();
     expect(screen.queryByText('Pending payment verifications')).not.toBeInTheDocument();
 
-    // Attention queue: two real items (a room dirty past 3h, a work order
-    // past its SLA due date) plus the one remaining stub for a later
-    // milestone (amenities, M5). Unverified payments >24h was removed
-    // outright — payment tracking is permanently out of scope, not a later
-    // milestone.
+    // Attention queue: three real items (a room dirty past 3h, a work
+    // order past its SLA due date, an overdue amenity request). Unverified
+    // payments >24h was removed outright — payment tracking is permanently
+    // out of scope, not a later milestone.
     expect(screen.getByText(/R09 — Room 9 still dirty/i)).toBeInTheDocument();
     expect(screen.getByText(/LWW-WO-0007 — Leaking faucet \(R03\) past due/i)).toBeInTheDocument();
     expect(screen.getByText('1h 30m')).toBeInTheDocument();
-    expect(screen.getByText('Overdue amenities')).toBeInTheDocument();
+    expect(screen.getByText(/LWW-AM-0004 — Beach towel \(R03\) overdue/i)).toBeInTheDocument();
+    expect(screen.getByText('45m')).toBeInTheDocument();
     expect(screen.queryByText('Unverified payments >24h')).not.toBeInTheDocument();
 
     // Live activity feed, backfilled from GET /units/activity.

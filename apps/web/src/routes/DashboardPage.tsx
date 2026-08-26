@@ -23,12 +23,20 @@ interface DashboardData {
     urgentOpenWorkOrders: number;
     checkinsToday: number;
     checkoutsToday: number;
+    openFnbOrders: number;
   };
   dirtyRooms: { id: string; code: string; name: string; dirtyMinutes: number }[];
   slaBreachedWorkOrders: {
     id: string;
     referenceNo: string;
     title: string;
+    unitCode: string | null;
+    overdueMinutes: number;
+  }[];
+  overdueAmenityRequests: {
+    id: string;
+    referenceNo: string;
+    itemName: string;
     unitCode: string | null;
     overdueMinutes: number;
   }[];
@@ -84,36 +92,6 @@ function KpiCard({ label, value, accentClass }: { label: string; value: number; 
       <p className="text-2xl font-semibold">{value}</p>
       <p className="text-xs font-medium">{label}</p>
     </div>
-  );
-}
-
-// A stub KPI card for the one remaining §8.2 KPI that depends on a module
-// that doesn't exist yet (F&B/M5). Deliberately styled to look like a
-// placeholder — dashed border, muted text, an explicit "coming in" note —
-// so it can never be mistaken for a real zero.
-function StubKpiCard({ label, comingIn }: { label: string; comingIn: string }) {
-  return (
-    <div className="rounded border border-dashed border-gray-300 bg-gray-50 p-3 text-gray-400">
-      <p className="text-2xl font-semibold">—</p>
-      <p className="text-xs font-medium">{label}</p>
-      <p className="text-[10px] italic">Coming in {comingIn}</p>
-    </div>
-  );
-}
-
-// A stub attention-queue row, same "coming in M#" treatment as the KPI
-// stub cards above, for the one remaining §8.2 attention-queue item that
-// still depends on a module that doesn't exist yet (amenities, M5).
-// SLA-breached work orders got their own real row below as of 2026-08-24;
-// unverified payments >24h was removed outright the same day — payment
-// tracking is permanently out of scope for this app (handled by the
-// external website/POS), not merely a later milestone.
-function StubAttentionRow({ label, comingIn }: { label: string; comingIn: string }) {
-  return (
-    <li className="flex items-center justify-between rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-gray-400">
-      <span className="text-sm">{label}</span>
-      <span className="text-[10px] italic">Coming in {comingIn}</span>
-    </li>
   );
 }
 
@@ -182,10 +160,7 @@ export function CommandCenter() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-lg font-semibold">Command Center</h1>
-        <p className="text-sm text-gray-500">
-          All but one card here is live from real data. "Coming in M5" is the one exception —
-          it depends on the F&amp;B module, which isn't built yet.
-        </p>
+        <p className="text-sm text-gray-500">Every card here is live from real data.</p>
       </div>
 
       <section>
@@ -213,7 +188,11 @@ export function CommandCenter() {
               value={dashboard.kpi.checkoutsToday}
               accentClass="border-blue-300 bg-blue-50 text-blue-900"
             />
-            <StubKpiCard label="Open F&B tickets" comingIn="M5" />
+            <KpiCard
+              label="Open F&B tickets"
+              value={dashboard.kpi.openFnbOrders}
+              accentClass="border-orange-300 bg-orange-50 text-orange-900"
+            />
           </div>
         )}
       </section>
@@ -252,7 +231,22 @@ export function CommandCenter() {
           {typeof dashboard === 'object' && dashboard.slaBreachedWorkOrders.length === 0 && (
             <li className="text-sm text-gray-500">No work orders past their SLA due date.</li>
           )}
-          <StubAttentionRow label="Overdue amenities" comingIn="M5" />
+          {typeof dashboard === 'object' &&
+            dashboard.overdueAmenityRequests.map((req) => (
+              <li
+                key={req.id}
+                className="flex items-center justify-between rounded border border-orange-300 bg-orange-50 px-3 py-2"
+              >
+                <span className="text-sm font-medium text-orange-900">
+                  {req.referenceNo} — {req.itemName}
+                  {req.unitCode ? ` (${req.unitCode})` : ''} overdue
+                </span>
+                <span className="text-xs font-semibold text-orange-800">{formatDuration(req.overdueMinutes)}</span>
+              </li>
+            ))}
+          {typeof dashboard === 'object' && dashboard.overdueAmenityRequests.length === 0 && (
+            <li className="text-sm text-gray-500">No amenity requests past their due-back time.</li>
+          )}
         </ul>
       </section>
 

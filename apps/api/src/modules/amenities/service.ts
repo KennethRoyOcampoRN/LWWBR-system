@@ -306,6 +306,49 @@ export async function changeAmenityRequestStatus(id: string, input: ChangeAmenit
 // the manual table), so it doesn't go through getAmenityRequestTransition
 // or a permission check; the job route's shared-secret gate (jobs/
 // router.ts) is the only authorization this needs.
+export interface OverdueAmenityRequest {
+  id: string;
+  referenceNo: string;
+  itemName: string;
+  unitCode: string | null;
+  dueBackAt: string;
+  overdueMinutes: number;
+}
+
+// Real gap found live-testing, 2026-08-25: the Command Center's
+// "Overdue amenities" attention-queue row still said "Coming in M5" —
+// the amenity workflow (including the sweep above) has been done and
+// confirmed working since M5 closed. Same live computed-field pattern as
+// listSlaBreachedWorkOrders (work orders module): `status: 'OVERDUE'` OR
+// `status: 'ISSUED' && dueBackAt < now`, not just the persisted OVERDUE
+// status alone — the sweep only runs every 15 minutes, so a request that
+// crossed its dueBackAt a minute ago is already really overdue even
+// though the sweep hasn't flipped it yet. Property-wide, no actor/
+// visibility scoping, same as listSlaBreachedWorkOrders — this powers
+// the Command Center, gated on unit:read there, not amenity:read.
+export async function listOverdueAmenityRequests(): Promise<OverdueAmenityRequest[]> {
+  const now = Date.now();
+  const requests = await prisma.amenityRequest.findMany({
+    where: {
+      deletedAt: null,
+      OR: [{ status: 'OVERDUE' }, { status: 'ISSUED', dueBackAt: { lt: new Date(now) } }],
+    },
+    include: { unit: { select: { code: true } }, amenityItem: { select: { name: true } } },
+    orderBy: [{ dueBackAt: 'asc' }],
+  });
+
+  return requests.map((request) => ({
+    id: request.id,
+    referenceNo: request.referenceNo,
+    // Same snapshot -> live relation -> placeholder fallback chain as
+    // amenityRequestToJson's own itemName (Option B, 2026-08-25).
+    itemName: request.amenityItemName ?? request.amenityItem?.name ?? '(deleted item)',
+    unitCode: request.unit?.code ?? null,
+    dueBackAt: request.dueBackAt!.toISOString(),
+    overdueMinutes: Math.floor((now - request.dueBackAt!.getTime()) / 60_000),
+  }));
+}
+
 export async function applyAmenityOverdueSweep(): Promise<{ flippedCount: number }> {
   const result = await prisma.amenityRequest.updateMany({
     where: { status: 'ISSUED', dueBackAt: { lt: new Date() }, deletedAt: null },
