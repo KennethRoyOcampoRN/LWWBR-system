@@ -2,8 +2,14 @@ import {
   allowedManualTransitions,
   allowedOverrideTransitions,
   isBookableUnitKind,
+  UNIT_KIND_GROUP_KEYS,
+  UNIT_KIND_GROUP_LABELS,
+  UNIT_KIND_KEYS,
+  UNIT_KIND_LABELS,
   UNIT_STATUS_KEYS,
+  unitKindGroup,
   type AnyUnitStatusKey,
+  type UnitKindKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
@@ -99,15 +105,18 @@ function defaultForceToStatus(status: AnyUnitStatusKey): UnitStatusKey {
 function UnitDetailDrawer({
   unit,
   unitTypeName,
+  unitTypes,
   onClose,
   onChanged,
 }: {
   unit: UnitRow;
   unitTypeName: string;
+  unitTypes: UnitTypeRow[];
   onClose: () => void;
   onChanged: (unit: UnitRow) => void;
 }) {
   const { user } = useAuth();
+  const canManage = Boolean(user?.permissions['unit:manage']);
   const [timeline, setTimeline] = useState<TimelineEvent[] | 'loading' | 'error'>('loading');
   const [upcomingBookings, setUpcomingBookings] = useState<UpcomingBooking[] | 'loading' | 'error'>('loading');
   const [note, setNote] = useState('');
@@ -132,6 +141,68 @@ function UnitDetailDrawer({
   const [checkOutSelectedUnitIds, setCheckOutSelectedUnitIds] = useState<string[]>([]);
   const [checkOutSubmitting, setCheckOutSubmitting] = useState(false);
   const [checkOutError, setCheckOutError] = useState<string | null>(null);
+
+  // Real gap found live-testing, 2026-08-25: there was no UI to edit a
+  // unit's own details at all — every field was stuck at whatever the
+  // seed script created. Same start/cancel/submit-edit pattern as
+  // AmenitiesPage.tsx's inline item edit; fields are captured into local
+  // state on "Edit" rather than bound live to `unit` so a background
+  // realtime status update while editing can't silently overwrite an
+  // in-progress form value.
+  const [editingUnit, setEditingUnit] = useState(false);
+  const [editType, setEditType] = useState<UnitKindKey>(unit.type as UnitKindKey);
+  const [editUnitTypeId, setEditUnitTypeId] = useState(unit.unitTypeId);
+  const [editName, setEditName] = useState(unit.name);
+  const [editCapacity, setEditCapacity] = useState(String(unit.capacity));
+  const [editFloor, setEditFloor] = useState(unit.floor ?? '');
+  const [editNotes, setEditNotes] = useState(unit.notes ?? '');
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [activeError, setActiveError] = useState<string | null>(null);
+
+  const startEditUnit = () => {
+    setEditingUnit(true);
+    setEditError(null);
+    setEditType(unit.type as UnitKindKey);
+    setEditUnitTypeId(unit.unitTypeId);
+    setEditName(unit.name);
+    setEditCapacity(String(unit.capacity));
+    setEditFloor(unit.floor ?? '');
+    setEditNotes(unit.notes ?? '');
+  };
+  const cancelEditUnit = () => setEditingUnit(false);
+
+  const submitEditUnit = async (event: FormEvent) => {
+    event.preventDefault();
+    setEditError(null);
+    setEditSubmitting(true);
+    try {
+      const res = await api.patch<{ unit: UnitRow }>(`/units/${unit.id}`, {
+        name: editName,
+        type: editType,
+        unitTypeId: editUnitTypeId,
+        capacity: Number(editCapacity),
+        floor: editFloor.trim() || null,
+        notes: editNotes.trim() || null,
+      });
+      onChanged({ ...unit, ...res.unit });
+      setEditingUnit(false);
+    } catch (err) {
+      setEditError(err instanceof ApiRequestError ? err.message : 'Could not save the changes.');
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const toggleUnitActive = async () => {
+    setActiveError(null);
+    try {
+      const res = await api.patch<{ unit: UnitRow }>(`/units/${unit.id}`, { isActive: !unit.isActive });
+      onChanged({ ...unit, ...res.unit });
+    } catch (err) {
+      setActiveError(err instanceof ApiRequestError ? err.message : 'Could not update the unit.');
+    }
+  };
 
   // Refetches on unit.id (opening a different unit) AND unit.version
   // (this same unit's status changed, from any source — clicking a
@@ -298,6 +369,122 @@ function UnitDetailDrawer({
       >
         {UNIT_STATUS_LABELS[unit.status]}
       </span>
+      {!unit.isActive && (
+        <span className="inline-block w-fit rounded-full border border-gray-400 bg-gray-200 px-3 py-1 text-sm font-medium text-gray-800">
+          Inactive
+        </span>
+      )}
+
+      {canManage && (
+        <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Unit details</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => (editingUnit ? cancelEditUnit() : startEditUnit())}
+                className="text-xs font-medium text-blue-700 hover:underline"
+              >
+                {editingUnit ? 'Close' : 'Edit'}
+              </button>
+              <button onClick={() => void toggleUnitActive()} className="text-xs font-medium text-blue-700 hover:underline">
+                {unit.isActive ? 'Deactivate' : 'Reactivate'}
+              </button>
+            </div>
+          </div>
+          {activeError && (
+            <p role="alert" className="text-xs text-red-600">
+              {activeError}
+            </p>
+          )}
+
+          {editingUnit && (
+            <form onSubmit={(e) => void submitEditUnit(e)} className="flex flex-col gap-2">
+              {editError && (
+                <p role="alert" className="text-xs text-red-600">
+                  {editError}
+                </p>
+              )}
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Type
+                <select
+                  required
+                  value={editType}
+                  onChange={(e) => setEditType(e.target.value as UnitKindKey)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                >
+                  {UNIT_KIND_GROUP_KEYS.map((group) => (
+                    <optgroup key={group} label={UNIT_KIND_GROUP_LABELS[group]}>
+                      {UNIT_KIND_KEYS.filter((kind) => unitKindGroup(kind) === group).map((kind) => (
+                        <option key={kind} value={kind}>
+                          {UNIT_KIND_LABELS[kind]}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Unit type
+                <select
+                  required
+                  value={editUnitTypeId}
+                  onChange={(e) => setEditUnitTypeId(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                >
+                  {unitTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Name
+                <input
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Capacity
+                <input
+                  required
+                  type="number"
+                  min={1}
+                  value={editCapacity}
+                  onChange={(e) => setEditCapacity(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Floor (optional)
+                <input
+                  value={editFloor}
+                  onChange={(e) => setEditFloor(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Notes (optional)
+                <input
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={editSubmitting}
+                className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {editSubmitting ? 'Saving…' : 'Save changes'}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
 
       {/* Deliberately separate from the status badge above and the
           Timeline below — a reservation, not a status. The live status
@@ -769,6 +956,184 @@ function CheckInPanel({ units, onCheckedIn }: { units: UnitRow[]; onCheckedIn: (
   );
 }
 
+// Real gap found live-testing, 2026-08-25: there was no UI to add a unit
+// at all — every unit was stuck at whatever the seed script created,
+// despite spec §9/§10 always describing that data as placeholder pending
+// a real admin UI. Type is the first field, client decision: choosing it
+// determines which of the three groups (see UNIT_KIND_GROUP_LABELS) the
+// new unit lands in — the <optgroup>s make that visible at the point of
+// choice, not just in how the grid sorts it afterward.
+function AddUnitForm({ unitTypes, onCreated }: { unitTypes: UnitTypeRow[]; onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [type, setType] = useState<UnitKindKey>('ROOM');
+  const [unitTypeId, setUnitTypeId] = useState('');
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [capacity, setCapacity] = useState('');
+  const [floor, setFloor] = useState('');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const resetForm = () => {
+    setType('ROOM');
+    setUnitTypeId('');
+    setCode('');
+    setName('');
+    setCapacity('');
+    setFloor('');
+    setNotes('');
+    setError(null);
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await api.post('/units', {
+        code,
+        name,
+        type,
+        unitTypeId,
+        capacity: capacity ? Number(capacity) : undefined,
+        floor: floor.trim() || undefined,
+        notes: notes.trim() || undefined,
+      });
+      resetForm();
+      setOpen(false);
+      onCreated();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not add the unit.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
+      >
+        + Add unit
+      </button>
+    );
+  }
+
+  return (
+    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700">Add a unit</h2>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            resetForm();
+          }}
+          className="text-xs text-gray-500 hover:underline"
+        >
+          Close
+        </button>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-red-700">
+          {error}
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Type
+          <select
+            required
+            value={type}
+            onChange={(e) => setType(e.target.value as UnitKindKey)}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          >
+            {UNIT_KIND_GROUP_KEYS.map((group) => (
+              <optgroup key={group} label={UNIT_KIND_GROUP_LABELS[group]}>
+                {UNIT_KIND_KEYS.filter((kind) => unitKindGroup(kind) === group).map((kind) => (
+                  <option key={kind} value={kind}>
+                    {UNIT_KIND_LABELS[kind]}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Unit type (rate/capacity template)
+          <select
+            required
+            value={unitTypeId}
+            onChange={(e) => setUnitTypeId(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          >
+            <option value="" disabled>
+              Select…
+            </option>
+            {unitTypes.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Code
+          <input
+            required
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="e.g. R21"
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Name
+          <input
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Room 21"
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Capacity (optional — defaults from unit type)
+          <input
+            type="number"
+            min={1}
+            value={capacity}
+            onChange={(e) => setCapacity(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          Floor (optional)
+          <input
+            value={floor}
+            onChange={(e) => setFloor(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          />
+        </label>
+      </div>
+      <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+        Notes (optional)
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} className="rounded border border-gray-300 px-2 py-1 text-sm" />
+      </label>
+      <button
+        type="submit"
+        disabled={submitting}
+        className="w-fit rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+      >
+        {submitting ? 'Adding…' : 'Add unit'}
+      </button>
+    </form>
+  );
+}
+
 export function UnitsPage() {
   const { user } = useAuth();
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
@@ -851,6 +1216,7 @@ export function UnitsPage() {
     ? units.find((u) => u.id === selectedUnitId)
     : undefined;
   const showReconnecting = realtimeStatus === 'reconnecting' && hasConnectedOnce.current;
+  const canManageUnits = Boolean(user?.permissions['unit:manage']);
 
   return (
     <div className="flex flex-col gap-4">
@@ -869,32 +1235,55 @@ export function UnitsPage() {
       {units === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
       {units === 'error' && <p role="alert">Could not load units.</p>}
 
-      {Array.isArray(units) && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-          {units.map((unit) => (
-            <button
-              key={unit.id}
-              onClick={() => setSelectedUnitId(unit.id)}
-              className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]}`}
-            >
-              {unit.latestNote && (
-                <span
-                  role="img"
-                  aria-label={`Note: ${unit.latestNote}`}
-                  title={`Note: ${unit.latestNote}`}
-                  tabIndex={0}
-                  className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-[10px] font-bold leading-none text-white"
-                >
-                  i
-                </span>
+      {/* Client decision, 2026-08-25: three-way grouping — Rooms &
+          Cottages / Common areas / Facilities — used here and in the
+          Add-unit form's own Type field below. Facilities renders even
+          while empty (spec's seeded common areas are all COMMON_AREA,
+          confirmed against seed.ts — none are FACILITY today) so a
+          future facility gets its own section automatically, no code
+          change needed. */}
+      {Array.isArray(units) &&
+        UNIT_KIND_GROUP_KEYS.map((group) => {
+          const groupUnits = units.filter((unit) => unitKindGroup(unit.type) === group);
+          return (
+            <div key={group} className="flex flex-col gap-2">
+              <h2 className="text-sm font-semibold text-gray-700">
+                {UNIT_KIND_GROUP_LABELS[group]} ({groupUnits.length})
+              </h2>
+              {groupUnits.length === 0 && <p className="text-xs text-gray-400">None yet.</p>}
+              {groupUnits.length > 0 && (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                  {groupUnits.map((unit) => (
+                    <button
+                      key={unit.id}
+                      onClick={() => setSelectedUnitId(unit.id)}
+                      className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]} ${unit.isActive ? '' : 'opacity-50'}`}
+                    >
+                      {unit.latestNote && (
+                        <span
+                          role="img"
+                          aria-label={`Note: ${unit.latestNote}`}
+                          title={`Note: ${unit.latestNote}`}
+                          tabIndex={0}
+                          className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-[10px] font-bold leading-none text-white"
+                        >
+                          i
+                        </span>
+                      )}
+                      <span className="font-semibold">{unit.code}</span>
+                      <span className="text-xs">{unit.name}</span>
+                      <span className="text-xs font-medium">
+                        {unit.isActive ? UNIT_STATUS_LABELS[unit.status] : 'Inactive'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
-              <span className="font-semibold">{unit.code}</span>
-              <span className="text-xs">{unit.name}</span>
-              <span className="text-xs font-medium">{UNIT_STATUS_LABELS[unit.status]}</span>
-            </button>
-          ))}
-        </div>
-      )}
+            </div>
+          );
+        })}
+
+      {canManageUnits && <AddUnitForm unitTypes={unitTypes} onCreated={() => void fetchUnits()} />}
 
       {/* New feature, 2026-08-24: check-in as a quick-action below the
           grid, gated on booking:checkin — same pattern as the Verify
@@ -908,6 +1297,7 @@ export function UnitsPage() {
         <UnitDetailDrawer
           unit={selectedUnit}
           unitTypeName={unitTypeName(selectedUnit.unitTypeId)}
+          unitTypes={unitTypes}
           onClose={() => setSelectedUnitId(null)}
           onChanged={handleChanged}
         />

@@ -1,5 +1,14 @@
 import { TZDate } from '@date-fns/tz';
-import type { DepartmentKey, PermissionKey, PermissionScope, UnitStatusKey, WorkOrderStatusKey, WorkOrderTypeKey } from '@lwwbr/shared';
+import {
+  UNIT_KIND_GROUP_LABELS,
+  unitKindGroup,
+  type DepartmentKey,
+  type PermissionKey,
+  type PermissionScope,
+  type UnitStatusKey,
+  type WorkOrderStatusKey,
+  type WorkOrderTypeKey,
+} from '@lwwbr/shared';
 import { addDays, eachDayOfInterval, format } from 'date-fns';
 import { ApiError } from '../../lib/apiError.js';
 import { toCsv } from '../../lib/csv.js';
@@ -66,7 +75,7 @@ async function buildOccupancyReport(query: ReportQuery, actor: ReportActor): Pro
 
   const units = await prisma.unit.findMany({
     where: { deletedAt: null },
-    select: { id: true, code: true, name: true, createdAt: true },
+    select: { id: true, code: true, name: true, type: true, createdAt: true },
     orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
   });
 
@@ -110,7 +119,21 @@ async function buildOccupancyReport(query: ReportQuery, actor: ReportActor): Pro
       }
       if (status === 'OCCUPIED') occupiedCount += 1;
 
-      rows.push({ date: dateLabel, unitId: unit.id, unitCode: unit.code, unitName: unit.name, status });
+      // Client decision, 2026-08-25: the same three-way grouping applied
+      // to the Units grid and the unit-creation form — Rooms & Cottages /
+      // Common areas / Facilities — carries into any report/list that
+      // shows all units together. Computed here (not left for the
+      // frontend to derive) so the CSV export, not just the on-screen
+      // view, carries the group.
+      const group = unitKindGroup(unit.type);
+      rows.push({
+        date: dateLabel,
+        unitId: unit.id,
+        unitCode: unit.code,
+        unitName: unit.name,
+        group: group ? UNIT_KIND_GROUP_LABELS[group] : unit.type,
+        status,
+      });
     }
 
     summary.push({ date: dateLabel, occupiedCount, totalUnits, occupancyRate: totalUnits > 0 ? occupiedCount / totalUnits : 0 });
@@ -121,6 +144,7 @@ async function buildOccupancyReport(query: ReportQuery, actor: ReportActor): Pro
     rows,
     csvColumns: [
       { key: 'date', label: 'Date' },
+      { key: 'group', label: 'Group' },
       { key: 'unitCode', label: 'Unit code' },
       { key: 'unitName', label: 'Unit name' },
       { key: 'status', label: 'Status' },

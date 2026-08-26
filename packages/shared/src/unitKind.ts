@@ -19,3 +19,41 @@ export const BOOKABLE_UNIT_KINDS: readonly UnitKindKey[] = ['ROOM', 'COTTAGE'];
 export function isBookableUnitKind(kind: string): boolean {
   return (BOOKABLE_UNIT_KINDS as readonly string[]).includes(kind);
 }
+
+export const UNIT_KIND_LABELS: Record<UnitKindKey, string> = {
+  ROOM: 'Room',
+  COTTAGE: 'Cottage',
+  COMMON_AREA: 'Common area',
+  FACILITY: 'Facility',
+};
+
+// Client decision, 2026-08-25: three-way grouping used everywhere units
+// are listed together — the Units grid, the unit-creation form (type
+// determines which group a new unit lands in), and any report/list that
+// shows all units at once. "Common areas" (not "Facilities") is the
+// label for COMMON_AREA, since that's the real enum value every current
+// unit (Pool, Beach Front, CR-Male/Female, Function Hall, Restaurant,
+// Open Field) actually holds — confirmed against seed.ts, not assumed.
+// FACILITY stays a distinct group in code even though it has zero real
+// units today, so a future facility (gym, spa, ...) gets its own section
+// automatically, with no code change — never folded into COMMON_AREA.
+export const UNIT_KIND_GROUP_KEYS = ['ROOMS_COTTAGES', 'COMMON_AREAS', 'FACILITIES'] as const;
+
+export type UnitKindGroupKey = (typeof UNIT_KIND_GROUP_KEYS)[number];
+
+export const UNIT_KIND_GROUP_LABELS: Record<UnitKindGroupKey, string> = {
+  ROOMS_COTTAGES: 'Rooms & Cottages',
+  COMMON_AREAS: 'Common areas',
+  FACILITIES: 'Facilities',
+};
+
+export const UNIT_KIND_TO_GROUP: Record<UnitKindKey, UnitKindGroupKey> = {
+  ROOM: 'ROOMS_COTTAGES',
+  COTTAGE: 'ROOMS_COTTAGES',
+  COMMON_AREA: 'COMMON_AREAS',
+  FACILITY: 'FACILITIES',
+};
+
+export function unitKindGroup(kind: string): UnitKindGroupKey | undefined {
+  return (UNIT_KIND_TO_GROUP as Record<string, UnitKindGroupKey>)[kind];
+}

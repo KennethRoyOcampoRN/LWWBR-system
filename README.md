@@ -3968,3 +3968,64 @@ accommodations remain checkable. `packages/shared` unchanged besides the
 new file, `apps/api` 311/314 (same 3 pre-existing network-blocked
 round-trip tests), `apps/web` 50/50. Full repo lint/typecheck/build
 clean. No schema change.
+
+### Real gap found live-testing: no UI to add, edit, or deactivate a unit (2026-08-25)
+
+Checked thoroughly per the client's report: the Units page had no "Add
+unit" control at all — every unit was permanently stuck at whatever
+`seed.ts` created, despite spec §9/§10 always describing that data as
+placeholder pending a real admin UI. Investigated before building
+anything: `POST /units` and `PATCH /units/:id` already existed
+server-side (gated on `unit:manage`, built during M2) with every spec §6
+field already accepted — only the frontend UI to call them was ever
+missing. No backend gap here, just a genuine missing screen.
+
+**Grouping, resolved from the client's own confirmed research**: real
+seed data has every current common area (Pool, Beach Front, Open Field,
+CR-Male/Female, Function Hall, Restaurant) at `COMMON_AREA` — none are
+`FACILITY`, confirmed against `seed.ts`, not assumed. Three-way grouping
+— "Rooms & Cottages" (`ROOM`/`COTTAGE`), "Common areas" (`COMMON_AREA`),
+"Facilities" (`FACILITY`) — lands in `packages/shared/src/unitKind.ts`
+(`UNIT_KIND_GROUP_KEYS`/`_LABELS`, `unitKindGroup()`) so every place that
+needs it reads the same source. `FACILITY` stays its own group in code
+even with zero real units today — never folded into `COMMON_AREA` — so a
+future facility (gym, spa, ...) gets its own section automatically, no
+code change required.
+
+**Built**:
+- **Add a unit**: a form on the Units page (gated `unit:manage`), Type as
+  the literal first field — an `<optgroup>` per group makes the
+  three-way split visible at the point of choice, not just in how the
+  grid sorts the result afterward. Code, name, unit type (existing
+  rate/capacity template), capacity (optional, defaults from the unit
+  type same as the API always did), floor and notes (both optional).
+- **Edit a unit**: a "Unit details" panel inside the existing detail
+  drawer (gated `unit:manage`), same start/cancel/submit-edit pattern as
+  `AmenitiesPage.tsx`'s inline item edit — name, type, unit type,
+  capacity, floor, notes. `code` stays immutable after creation (the API
+  never accepted it in the update schema to begin with).
+- **(Soft-)delete/deactivate**: a Deactivate/Reactivate toggle in the
+  same panel, the existing `isActive` field via `PATCH` — same
+  soft-disable convention as `AmenityItem`/`MenuItem`, no hard delete (a
+  `Unit` has live relations everywhere — bookings, work orders, status
+  events — that a real delete was never asked for and would endanger).
+  An inactive unit now visibly dims in the grid with an "Inactive" badge,
+  both in its tile and its drawer — previously `isActive` had no visual
+  treatment anywhere since nothing could ever set it.
+- **Grouping applied everywhere spec-relevant**: the Units grid renders
+  three sections (Facilities shown even at "(0)"); the occupancy report
+  (M6 slice 1) gained a `group` column, computed server-side so the CSV
+  export carries it too, not just the on-screen view.
+
+Verified: 10 new backend tests (`POST`/`PATCH /units` permission gating,
+unknown-`unitTypeId`/duplicate-code rejection, capacity defaulting, every
+`UNIT_KIND_KEYS` value accepted including `COMMON_AREA`/`FACILITY`, a
+plain edit, and the `isActive` toggle), 1 updated occupancy-report test
+(now asserts the `group` label per row), 3 new frontend tests (grid
+grouping including the empty-Facilities case; the full add-unit flow;
+edit + deactivate from the drawer), and a real headless-browser
+Playwright run driving the whole thing end to end against the built app.
+`packages/shared` unchanged besides the `unitKind.ts` additions,
+`apps/api` 323/326 (same 3 pre-existing network-blocked round-trip
+tests), `apps/web` 53/53. Full repo lint/typecheck/build clean. No
+schema change — every field this needed was already there.

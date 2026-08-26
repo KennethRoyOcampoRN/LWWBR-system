@@ -10,6 +10,9 @@ interface OccupancyRow {
   unitId: string;
   unitCode: string;
   unitName: string;
+  // Server-derived label — Rooms & Cottages / Common areas / Facilities,
+  // same three-way grouping as the Units grid and unit-creation form.
+  group: string;
   status: keyof typeof UNIT_STATUS_LABELS;
 }
 
@@ -252,6 +255,7 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
             <thead className="sticky top-0 bg-white">
               <tr className="text-left text-xs font-medium uppercase text-gray-500">
                 <th className="py-2 pr-4 pl-2">Date</th>
+                <th className="py-2 pr-4">Group</th>
                 <th className="py-2 pr-4">Unit</th>
                 <th className="py-2 pr-4">Status</th>
               </tr>
@@ -260,6 +264,7 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
               {report.rows.map((row) => (
                 <tr key={`${row.date}-${row.unitId}`}>
                   <td className="py-2 pr-4 pl-2">{row.date}</td>
+                  <td className="py-2 pr-4 text-xs text-gray-500">{row.group}</td>
                   <td className="py-2 pr-4">
                     {row.unitCode} — {row.unitName}
                   </td>

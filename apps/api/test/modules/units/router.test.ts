@@ -130,6 +130,125 @@ describe('GET /api/v1/units and /unit-types', () => {
   });
 });
 
+// Real gap found live-testing, 2026-08-25: there was no UI to add, edit,
+// or deactivate a unit at all, despite these routes already existing —
+// only the frontend was missing. Adding coverage for the routes
+// themselves alongside the new UI.
+describe('POST /api/v1/units', () => {
+  it('requires unit:manage, not just unit:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'R21', name: 'Room 21', unitTypeId: 'type_1', type: 'ROOM' });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects an unknown unitTypeId', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue(null);
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'R21', name: 'Room 21', unitTypeId: 'type_1', type: 'ROOM' });
+    expect(res.status).toBe(422);
+    expect(mockPrisma.unit.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a code already in use', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', defaultCapacity: 2 });
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ code: 'R21' }));
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'R21', name: 'Room 21', unitTypeId: 'type_1', type: 'ROOM' });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_CODE_TAKEN');
+  });
+
+  it('creates a unit, defaulting capacity from the unit type when not given', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', defaultCapacity: 4 });
+    mockPrisma.unit.findFirst.mockResolvedValue(null);
+    mockPrisma.unit.create.mockResolvedValue(fakeUnit({ code: 'R21', name: 'Room 21', capacity: 4 }));
+
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'R21', name: 'Room 21', unitTypeId: 'type_1', type: 'ROOM' });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.unit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ code: 'R21', name: 'Room 21', type: 'ROOM', capacity: 4 }) }),
+    );
+  });
+
+  // Client decision, 2026-08-25: choosing the type is the form's first
+  // field, and every UNIT_KIND_KEYS value must reach the service intact
+  // — including COMMON_AREA/FACILITY, not just ROOM/COTTAGE.
+  it.each(['ROOM', 'COTTAGE', 'COMMON_AREA', 'FACILITY'])('accepts %s as a unit type', async (type) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', defaultCapacity: 1 });
+    mockPrisma.unit.findFirst.mockResolvedValue(null);
+    mockPrisma.unit.create.mockResolvedValue(fakeUnit({ type }));
+
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'X01', name: 'Test unit', unitTypeId: 'type_1', type });
+
+    expect(res.status).toBe(201);
+  });
+});
+
+describe('PATCH /api/v1/units/:id', () => {
+  it('requires unit:manage', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp()).patch('/api/v1/units/unit_1').set('Cookie', authCookie()).send({ name: 'New name' });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for an unknown unit', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(null);
+    const res = await request(createApp()).patch('/api/v1/units/does_not_exist').set('Cookie', authCookie()).send({ name: 'New name' });
+    expect(res.status).toBe(404);
+  });
+
+  it('edits a unit\'s own details', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit());
+    mockPrisma.unit.update.mockResolvedValue(fakeUnit({ name: 'Room 101 Deluxe', capacity: 3 }));
+
+    const res = await request(createApp())
+      .patch('/api/v1/units/unit_1')
+      .set('Cookie', authCookie())
+      .send({ name: 'Room 101 Deluxe', capacity: 3 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.unit.name).toBe('Room 101 Deluxe');
+    expect(mockPrisma.unit.update).toHaveBeenCalledWith({
+      where: { id: 'unit_1' },
+      data: { name: 'Room 101 Deluxe', capacity: 3 },
+    });
+  });
+
+  // Soft-delete/deactivate, per the client's explicit request — same
+  // isActive-toggle pattern as AmenityItem/MenuItem, no hard delete.
+  it('deactivates a unit via isActive', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: true }));
+    mockPrisma.unit.update.mockResolvedValue(fakeUnit({ isActive: false }));
+
+    const res = await request(createApp()).patch('/api/v1/units/unit_1').set('Cookie', authCookie()).send({ isActive: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.unit.isActive).toBe(false);
+    expect(mockPrisma.unit.update).toHaveBeenCalledWith({ where: { id: 'unit_1' }, data: { isActive: false } });
+  });
+});
+
 describe('GET /api/v1/units/orderable', () => {
   it('requires fnb:create, not unit:read', async () => {
     // POC_HOUSEKEEPING holds unit:read but not fnb:create — proves this

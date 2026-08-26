@@ -75,11 +75,12 @@ describe('GET /api/v1/reports/:key', () => {
   it('builds the occupancy report by day and by unit', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.unit.findMany.mockResolvedValue([
-      { id: 'unit_1', code: 'R01', name: 'Room 1', createdAt: new Date('2026-08-01T00:00:00Z') },
-      { id: 'unit_2', code: 'R02', name: 'Room 2', createdAt: new Date('2026-08-01T00:00:00Z') },
+      { id: 'unit_1', code: 'R01', name: 'Room 1', type: 'ROOM', createdAt: new Date('2026-08-01T00:00:00Z') },
+      { id: 'unit_2', code: 'R02', name: 'Room 2', type: 'ROOM', createdAt: new Date('2026-08-01T00:00:00Z') },
+      { id: 'unit_3', code: 'POOL', name: 'Pool', type: 'COMMON_AREA', createdAt: new Date('2026-08-01T00:00:00Z') },
     ]);
-    // R01 becomes OCCUPIED on the 24th; R02 never transitions (stays the
-    // VACANT_DIRTY column default with no logged event).
+    // R01 becomes OCCUPIED on the 24th; R02/Pool never transition (stay
+    // at the VACANT_DIRTY column default with no logged event).
     mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
       { unitId: 'unit_1', toStatus: 'OCCUPIED', createdAt: new Date('2026-08-24T10:00:00+08:00') },
     ]);
@@ -89,14 +90,17 @@ describe('GET /api/v1/reports/:key', () => {
       .set('Cookie', authCookie());
 
     expect(res.status).toBe(200);
-    expect(res.body.report.rows).toHaveLength(4); // 2 units x 2 days
+    expect(res.body.report.rows).toHaveLength(6); // 3 units x 2 days
     const day24R01 = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'R01');
     expect(day24R01.status).toBe('OCCUPIED');
+    expect(day24R01.group).toBe('Rooms & Cottages');
     const day24R02 = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'R02');
     expect(day24R02.status).toBe('VACANT_DIRTY');
+    const day24Pool = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'POOL');
+    expect(day24Pool.group).toBe('Common areas');
     expect(res.body.report.summary.byDay).toEqual([
-      { date: '2026-08-24', occupiedCount: 1, totalUnits: 2, occupancyRate: 0.5 },
-      { date: '2026-08-25', occupiedCount: 1, totalUnits: 2, occupancyRate: 0.5 },
+      { date: '2026-08-24', occupiedCount: 1, totalUnits: 3, occupancyRate: 1 / 3 },
+      { date: '2026-08-25', occupiedCount: 1, totalUnits: 3, occupancyRate: 1 / 3 },
     ]);
   });
 
