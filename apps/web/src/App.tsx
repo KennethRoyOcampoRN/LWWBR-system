@@ -9,6 +9,7 @@ import { LoginPage } from './routes/LoginPage.js';
 import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
 import { RequirePermission } from './routes/RequirePermission.js';
+import { ReportsPage } from './routes/ReportsPage.js';
 import { RolesPage } from './routes/RolesPage.js';
 import { SessionsPage } from './routes/SessionsPage.js';
 import { UnitsPage } from './routes/UnitsPage.js';
@@ -71,6 +72,14 @@ export function App() {
                   element={
                     <RequirePermission permission="fnb:read">
                       <FnbPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/reports"
+                  element={
+                    <RequirePermission permission="report:view">
+                      <ReportsPage />
                     </RequirePermission>
                   }
                 />

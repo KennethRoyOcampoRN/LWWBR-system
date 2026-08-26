@@ -9,7 +9,7 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read' | 'fnb:read';
+  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read' | 'fnb:read' | 'report:view';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -31,6 +31,11 @@ const NAV_ITEMS: {
   // and the kitchen board are a later slice. Per the role matrix,
   // Maintenance/Housekeeping staff hold no fnb:* key at all.
   { to: '/restaurant', label: 'Restaurant', permission: 'fnb:read' },
+  // M6, report builder (2026-08-25): starting with occupancy/unit status
+  // history and work-order stats (spec §8.4 items 1 and 4) — the two
+  // report builders with the most real data already behind them from
+  // tonight's testing.
+  { to: '/reports', label: 'Reports', permission: 'report:view' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

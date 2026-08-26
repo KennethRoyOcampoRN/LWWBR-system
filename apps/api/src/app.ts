@@ -14,6 +14,7 @@ import { filesRouter } from './modules/files/router.js';
 import { fnbRouter } from './modules/fnb/router.js';
 import { jobsRouter } from './modules/jobs/router.js';
 import { notificationsRouter } from './modules/notifications/router.js';
+import { reportsRouter } from './modules/reports/router.js';
 import { rolesRouter } from './modules/roles/router.js';
 import { unitsRouter } from './modules/units/router.js';
 import { usersRouter } from './modules/users/router.js';
@@ -68,6 +69,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', bookingsRouter);
   app.use('/api/v1', amenitiesRouter);
   app.use('/api/v1', fnbRouter);
+  app.use('/api/v1', reportsRouter);
   app.use('/api/v1', jobsRouter);
 
   for (const router of options.extraRouters ?? []) {

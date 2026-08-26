@@ -3835,3 +3835,95 @@ M6 work.
 Holding here per the client's instruction — no further restaurant/
 kitchen/amenities work queued. M6 still awaits explicit go-ahead, per
 the client's standing instruction earlier this session.
+
+## M6 — Report builder (spec §8.4)
+
+Client confirmed M5 fully closed and gave the go-ahead to start M6,
+2026-08-25: "Start with the two reports that have the most real data
+behind them already" — occupancy/unit status history and work-order
+stats. Building the 9-report MVP set in small slices, same discipline as
+every other milestone this session, not all at once.
+
+### Slice 1: occupancy/unit status history + work-order stats reports (2026-08-25)
+
+**New module**: `GET /reports/:key` (`report:view`) and
+`GET /reports/:key/export?format=csv` (`report:export` — a separate,
+narrower permission per the role matrix: POC_HOUSEKEEPING/
+POC_MAINTENANCE hold `report:view` only, no export). `packages/shared`
+gains `REPORT_KEYS`/`REPORT_LABELS` (currently `occupancy`,
+`work-orders`) as the shared source of truth between the API's
+dispatcher and the frontend's report picker, same convention as every
+other domain enum in that package.
+
+**1. Occupancy & unit status history (by day, by unit).** Built from
+`UnitStatusEvent` — real data going back through tonight's whole testing
+session. Walks each unit's status-event history forward to derive its
+status as of the end of each day in the requested range (the Unit.status
+column only ever holds the *current* status, not history), correctly
+falling back to the schema's `VACANT_DIRTY` default for any day before a
+unit's first logged transition rather than guessing. Rows are literally
+the "by day, by unit" grid spec names; a daily occupancy-rate summary is
+also computed for on-screen display, but the CSV export carries the
+finer-grained detail rows, same reasoning as the work-order report
+below. A `report:view` holder scoped to `DEPARTMENT` (POC_HOUSEKEEPING,
+POC_MAINTENANCE, RESTAURANT_MANAGER) is refused this report with `403` —
+occupancy has no department axis on `Unit` to scope by, so silently
+returning the whole property (a grant their scope was never meant to
+carry) or a silently empty report (indistinguishable from a bug) were
+both worse than a clear boundary. Flagging this as a report-specific
+interpretation, not a spec-stated rule — a future report *with* a real
+department axis (e.g. housekeeping productivity, item 5) should not
+inherit this same refusal.
+
+**2. Work orders: volume, by type, by department, average time-to-close,
+SLA breaches, top recurring units.** Scoped by `createdAt` within
+`[from, to]` — every stat describes tickets *opened* in the period, the
+standard reporting convention. "Time-to-close" uses `verifiedAt` as the
+close event (spec's own transition table treats VERIFIED, not DONE, as
+the true close: "DONE → VERIFIED requires `workorder:verify`"); a ticket
+only DONE, not yet verified, has no close time yet and is excluded from
+the average rather than counted as zero. "SLA breaches" extends spec's
+own live computed-field definition (`dueAt < now && status not in (DONE,
+VERIFIED, CANCELLED)`, see `listSlaBreachedWorkOrders`) to also catch a
+ticket that was *closed late* — a ticket verified after its `dueAt` is
+breached even though it's no longer open; CANCELLED never breaches
+regardless of `dueAt`, since it was never actually worked to completion
+or failure. A `DEPARTMENT`-scoped `report:view` holder gets this report
+forced to their own department (ignoring any `?department=` query param)
+rather than refused outright — unlike occupancy, this report genuinely
+has a department axis, so the existing `workorder:read_all` scoping
+pattern (`visibilityWhereClause` in workorders/service.ts) applies
+directly here too.
+
+**Frontend**: new `/reports` page (nav item gated on `report:view`) — a
+report picker, date-range inputs, an optional department filter (shown
+only for work-orders), "Run report" (renders summary tiles/tables plus
+the full detail rows on screen), and "Export CSV" (hidden entirely for a
+caller without `report:export`). CSV download required a new
+`api.downloadCsv` helper — the export route returns a raw `text/csv`
+body, not JSON, so it can't reuse the existing JSON-parsing `request()`
+helper, but mirrors its one-retry-on-401 behavior so a short-lived
+access token doesn't fail a download mid-click.
+
+**Monitoring-not-transactions applied here too**: neither report touches
+money — no revenue, rates, or payment figures appear in either, per the
+client's explicit scope call for this slice. That principle will matter
+more once F&B/amenity/payments reports (items 7, 8, 3) land later in
+M6.
+
+Verified: 9 new backend tests (permission gating on both routes;
+unknown-key/from-after-to validation; the occupancy DEPARTMENT-scope
+403; the occupancy day×unit derivation including the
+no-events-yet-fallback case; the work-order report's volume/breakdowns/
+SLA-breach/time-to-close math including the CANCELLED-never-breaches and
+still-open-past-due cases; the work-order DEPARTMENT-scope forcing;
+CSV export content), 3 new frontend tests (running a report and reading
+its summary/detail; the CSV export round-trip including the download
+event; the DEPARTMENT-scoped viewer seeing no Export button and no
+department filter for occupancy), and a real headless-browser Playwright
+run confirming both reports render on screen, the CSV export fires an
+actual browser download, and the department filter only appears for the
+work-orders report. `packages/shared` 70/70 (unchanged besides the new
+report.ts file), `apps/api` 307/310 (same 3 pre-existing network-blocked
+round-trip tests), `apps/web` 49/49. Full repo lint/typecheck/build
+clean. No schema change.

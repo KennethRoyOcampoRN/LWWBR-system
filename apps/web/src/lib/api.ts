@@ -64,6 +64,25 @@ async function request<T>(path: string, init?: RequestInit, skipRefresh = false)
   return body as T;
 }
 
+// Spec §8.4: every report "exports to CSV." The export route returns a
+// raw text/csv body (Content-Disposition: attachment), not JSON — this
+// can't reuse `request` above (which always calls res.json()), but
+// mirrors its one-retry-on-401 behavior so a short-lived access token
+// doesn't fail a download the user is actively waiting on.
+async function downloadCsv(path: string, skipRefresh = false): Promise<Blob> {
+  const res = await fetch(`/api/v1${path}`, { credentials: 'include' });
+  if (!res.ok) {
+    if (res.status === 401 && !skipRefresh) {
+      await request('/auth/refresh', { method: 'POST' }, true).catch(() => undefined);
+      return downloadCsv(path, true);
+    }
+    const body = await res.json().catch(() => null);
+    const error = (body as { error?: { code?: string; message?: string; details?: unknown } } | null)?.error;
+    throw new ApiRequestError(res.status, error?.code ?? 'UNKNOWN_ERROR', error?.message ?? 'Request failed', error?.details);
+  }
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, data?: unknown) =>
@@ -80,4 +99,5 @@ export const api = {
     formData.append(field, file);
     return request<T>(path, { method: 'POST', body: formData });
   },
+  downloadCsv,
 };
