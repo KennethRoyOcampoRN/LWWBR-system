@@ -1,6 +1,7 @@
 import {
   allowedManualTransitions,
   allowedOverrideTransitions,
+  isBookableUnitKind,
   UNIT_STATUS_KEYS,
   type AnyUnitStatusKey,
   type UnitStatusKey,
@@ -567,6 +568,19 @@ function isBookable(unit: UnitRow): boolean {
   return unit.isActive && unit.status !== 'OUT_OF_ORDER' && unit.status !== 'BLOCKED' && unit.status !== 'OCCUPIED';
 }
 
+// Real bug found live-testing, 2026-08-25: the picker listed common
+// areas (Beach Front, CR-Female/Male, Function Hall, Pool, Restaurant —
+// COMMON_AREA/FACILITY) as selectable check-in destinations alongside
+// real accommodations. Unlike isBookable above (a *temporary* live-state
+// disable, still shown greyed out so the front desk understands why),
+// this is a permanent category exclusion — a common area was never
+// going to become a valid check-in target, so it's filtered out of the
+// list entirely rather than shown disabled. The server carries the same
+// rule independently (422 UNIT_NOT_BOOKABLE in checkInBooking).
+function isGuestAccommodation(unit: UnitRow): boolean {
+  return isBookableUnitKind(unit.type);
+}
+
 // "YYYY-MM-DD" for today in Asia/Manila, as a default for the date
 // picker — 'en-CA' formats a plain date as ISO order, no locale parsing
 // needed to build the string back up.
@@ -690,11 +704,12 @@ function CheckInPanel({ units, onCheckedIn }: { units: UnitRow[]; onCheckedIn: (
             Rooms
             {selectedCount > 0 ? ` (${selectedCount} selected)` : ''}
             <span className="ml-1 text-xs font-normal text-gray-500">
-              (out-of-order/blocked/occupied rooms are shown but cannot be selected)
+              (rooms/cottages only — common areas aren&apos;t listed; out-of-order/blocked/occupied ones are shown but
+              cannot be selected)
             </span>
           </summary>
           <ul className="mt-2 flex flex-col gap-1">
-            {units.map((unit) => {
+            {units.filter(isGuestAccommodation).map((unit) => {
               const bookable = isBookable(unit);
               const checked = selectedUnitIds.includes(unit.id);
               return (

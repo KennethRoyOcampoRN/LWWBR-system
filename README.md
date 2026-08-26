@@ -3927,3 +3927,44 @@ work-orders report. `packages/shared` 70/70 (unchanged besides the new
 report.ts file), `apps/api` 307/310 (same 3 pre-existing network-blocked
 round-trip tests), `apps/web` 49/49. Full repo lint/typecheck/build
 clean. No schema change.
+
+### Real bug found live-testing: common areas selectable at Check-in (2026-08-25)
+
+The Check-in room picker let common areas — Beach Front, CR-Female,
+CR-Male, Function Hall, Pool, Restaurant (`COMMON_AREA`/`FACILITY`
+`Unit.type`) — be selected as a guest's check-in destination, alongside
+real accommodations (`ROOM`/`COTTAGE`). "Check a guest into the Pool"
+never means anything.
+
+`packages/shared` gains `unitKind.ts` (`UNIT_KIND_KEYS`,
+`BOOKABLE_UNIT_KINDS = ['ROOM', 'COTTAGE']`, `isBookableUnitKind`) —
+mirrors the Prisma `UnitKind` enum, same duplication reasoning as
+`departments.ts`. Fixed on both sides:
+
+- **Frontend**: `UnitsPage.tsx`'s Check-in picker now filters the list
+  to `isGuestAccommodation` (kind) before mapping, on top of the
+  existing `isBookable` (live status) disable logic. These are
+  deliberately different treatments for different kinds of
+  "unselectable": a `BLOCKED`/`OUT_OF_ORDER`/`OCCUPIED` room is a real,
+  temporary state of a real accommodation, so it's still shown, just
+  greyed out, same as before — the front desk should be able to see
+  *why* a room isn't pickable. A common area was never going to become a
+  valid check-in target under any status, so it's excluded from the list
+  entirely rather than shown disabled forever.
+- **Backend**: `checkInBooking` gains the same guard the picker now
+  encodes client-side — `422 UNIT_NOT_BOOKABLE` if any selected unit's
+  `type` isn't `ROOM`/`COTTAGE` — checked before the existing status
+  guards, same "never even try, and reject it anyway if it somehow
+  reaches here" pairing every other unavailable-unit check in that loop
+  already has.
+
+Verified: 4 new backend tests (COMMON_AREA/FACILITY rejected with 422
+UNIT_NOT_BOOKABLE; ROOM/COTTAGE still proceed normally), 1 new frontend
+test (`UnitsPage.test.tsx`, the page's first — asserts the picker lists
+exactly the bookable units and no common areas), and a real
+headless-browser Playwright run against the actual six named units from
+the report confirming each is excluded and exactly the 2 real
+accommodations remain checkable. `packages/shared` unchanged besides the
+new file, `apps/api` 311/314 (same 3 pre-existing network-blocked
+round-trip tests), `apps/web` 50/50. Full repo lint/typecheck/build
+clean. No schema change.

@@ -6,6 +6,7 @@ export * from './rolePermissions.js';
 export * from './departments.js';
 export * from './authz.js';
 export * from './unitStatus.js';
+export * from './unitKind.js';
 export * from './workOrder.js';
 export * from './booking.js';
 export * from './amenity.js';

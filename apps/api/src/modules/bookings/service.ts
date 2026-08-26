@@ -1,6 +1,7 @@
 import { TZDate } from '@date-fns/tz';
 import {
   BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
+  isBookableUnitKind,
   type BookingStatusKey,
   type PermissionKey,
   type PermissionScope,
@@ -158,6 +159,20 @@ export async function checkInBooking(input: CheckInBookingInput, actor: BookingA
   }
 
   for (const unit of units) {
+    // Real bug found live-testing, 2026-08-25: common areas (Beach
+    // Front, CR-Female/Male, Function Hall, Pool, Restaurant —
+    // COMMON_AREA/FACILITY) were checkable-into alongside real guest
+    // accommodations. The picker now filters these out client-side
+    // (UnitsPage.tsx), but this is the real block — same "never even
+    // try, and reject it anyway if it somehow reaches here" pairing as
+    // every other unavailable-unit check in this loop.
+    if (!isBookableUnitKind(unit.type)) {
+      throw new ApiError(422, 'UNIT_NOT_BOOKABLE', `${unit.code} is not a guest accommodation and cannot be checked in.`, {
+        unitId: unit.id,
+        unitCode: unit.code,
+        unitType: unit.type,
+      });
+    }
     if (unit.status === 'OUT_OF_ORDER' || unit.status === 'BLOCKED') {
       throw new ApiError(
         409,

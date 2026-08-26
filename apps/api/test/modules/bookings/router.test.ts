@@ -55,7 +55,7 @@ function authCookie() {
 }
 
 function fakeUnit(overrides: Partial<Record<string, unknown>> = {}) {
-  return { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'READY', deletedAt: null, ...overrides };
+  return { id: 'unit_1', code: 'R01', name: 'Room 1', type: 'ROOM', status: 'READY', deletedAt: null, ...overrides };
 }
 
 function validCheckInBody(overrides: Partial<Record<string, unknown>> = {}) {
@@ -240,6 +240,35 @@ describe('POST /api/v1/bookings/checkin — redesign 2026-08-24 (client decision
 
     expect(res.status).toBe(422);
     expect(mockPrisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  // Real bug found live-testing, 2026-08-25: common areas (Beach Front,
+  // CR-Female/Male, Function Hall, Pool, Restaurant — COMMON_AREA/
+  // FACILITY) were checkable-into alongside real guest accommodations.
+  // The picker now filters these out client-side; this is the real
+  // server-side block.
+  it.each(['COMMON_AREA', 'FACILITY'])('rejects check-in for a %s unit (422 UNIT_NOT_BOOKABLE)', async (type) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ type })]);
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkin').set('Cookie', authCookie()).send(validCheckInBody());
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('UNIT_NOT_BOOKABLE');
+    expect(mockPrisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['ROOM', 'COTTAGE'])('allows check-in for a %s unit to proceed past the type guard', async (type) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ type, status: 'READY' })]);
+    mockPrisma.booking.create.mockResolvedValue({ id: 'booking_1' });
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition());
+    mockPrisma.booking.findFirst.mockResolvedValue(fakeBookingWithUnits());
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkin').set('Cookie', authCookie()).send(validCheckInBody());
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.booking.create).toHaveBeenCalled();
   });
 
   it.each(['OUT_OF_ORDER', 'BLOCKED'])('hard-blocks check-in when the unit is %s (409 UNIT_UNAVAILABLE)', async (status) => {
