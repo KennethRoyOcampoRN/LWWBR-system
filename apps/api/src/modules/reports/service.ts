@@ -298,9 +298,162 @@ async function buildWorkOrderReport(query: ReportQuery, actor: ReportActor): Pro
   };
 }
 
+interface HousekeepingReportRow {
+  unitId: string;
+  unitCode: string;
+  unitName: string;
+  attendantId: string;
+  attendantName: string;
+  cleaningStartedAt: string;
+  cleanedAt: string;
+  cleanTimeMinutes: number;
+}
+
+// Spec §8.4 item 5: "Housekeeping productivity: rooms cleaned per
+// attendant, average clean time, QC pass rate." QC pass rate is
+// deliberately omitted (client decision, 2026-08-26): there is no live
+// QC-step data to report on — the `Inspection` model is defined in the
+// schema but nothing in the app ever writes to it, consistent with the
+// 2026-08-22 decision that folded QC into the single CLEANED->READY
+// click by the same attendant who cleaned the room (see
+// packages/shared/src/unitStatus.ts's own comment on that redesign).
+// Revisit this if/when a real QC signal is actually captured.
+//
+// "Rooms cleaned" = a completed CLEANING->CLEANED cycle, credited to
+// whichever attendant performed that closing transition. "Clean time" is
+// that same cycle's duration, paired against the immediately preceding
+// VACANT_DIRTY->CLEANING event for the same unit — an event-pairing walk
+// per unit, not a fixed window, since a unit can cycle through
+// dirty/clean more than once inside the report's date range. A
+// CLEANING->CLEANED event with no preceding CLEANING start observed
+// (e.g. a FORCED_CORRECTION straight to CLEANED) has no real clean cycle
+// to measure and is skipped, not counted as a zero-duration clean.
+//
+// "Cleaned within the report range" is judged by the CLEANED event's own
+// createdAt (when the work finished), not the CLEANING start — same
+// "count by the closing event" convention as the work-order report's
+// time-to-close reasoning. A cycle that started before `from` but
+// finished inside the range still counts, with its true (possibly
+// longer) duration; one that started inside the range but hasn't
+// finished by `to` is excluded — it isn't a completed clean yet.
+//
+// Department axis: unlike occupancy (no department axis at all), this
+// report's data genuinely is HOUSEKEEPING's own — every row is an
+// attendant's cleaning work. A DEPARTMENT-scoped report:view holder
+// whose own department is HOUSEKEEPING sees the report normally (it's
+// already entirely their department's data, no filter needed); one from
+// any other department has nothing of their own here and is refused,
+// same reasoning as occupancy's blanket refusal but department-aware
+// rather than blanket, since this report (unlike occupancy) does belong
+// to exactly one department.
+async function buildHousekeepingReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (actor.permissions['report:view'] === 'DEPARTMENT' && actor.department !== 'HOUSEKEEPING') {
+    throw new ApiError(
+      403,
+      'FORBIDDEN',
+      'Housekeeping productivity is scoped to the Housekeeping department; your report access is scoped to a different department.',
+    );
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const events = await prisma.unitStatusEvent.findMany({
+    where: { toStatus: { in: ['CLEANING', 'CLEANED'] }, createdAt: { lt: toEndExclusive } },
+    orderBy: [{ unitId: 'asc' }, { createdAt: 'asc' }],
+    select: {
+      unitId: true,
+      toStatus: true,
+      actorId: true,
+      createdAt: true,
+      unit: { select: { code: true, name: true } },
+      actor: { select: { fullName: true } },
+    },
+  });
+
+  const rows: HousekeepingReportRow[] = [];
+  let cleaningStartedAt: Date | null = null;
+  let currentUnitId: string | null = null;
+
+  for (const event of events) {
+    if (event.unitId !== currentUnitId) {
+      currentUnitId = event.unitId;
+      cleaningStartedAt = null;
+    }
+    if (event.toStatus === 'CLEANING') {
+      cleaningStartedAt = event.createdAt;
+      continue;
+    }
+    // toStatus === 'CLEANED'
+    if (cleaningStartedAt && event.createdAt >= from && event.createdAt < toEndExclusive) {
+      rows.push({
+        unitId: event.unitId,
+        unitCode: event.unit?.code ?? '',
+        unitName: event.unit?.name ?? '',
+        attendantId: event.actorId,
+        attendantName: event.actor.fullName,
+        cleaningStartedAt: cleaningStartedAt.toISOString(),
+        cleanedAt: event.createdAt.toISOString(),
+        cleanTimeMinutes: Math.round((event.createdAt.getTime() - cleaningStartedAt.getTime()) / 60_000),
+      });
+    }
+    cleaningStartedAt = null;
+  }
+
+  const byAttendant = new Map<
+    string,
+    { attendantId: string; attendantName: string; roomsCleaned: number; totalMinutes: number }
+  >();
+  for (const row of rows) {
+    const existing = byAttendant.get(row.attendantId) ?? {
+      attendantId: row.attendantId,
+      attendantName: row.attendantName,
+      roomsCleaned: 0,
+      totalMinutes: 0,
+    };
+    existing.roomsCleaned += 1;
+    existing.totalMinutes += row.cleanTimeMinutes;
+    byAttendant.set(row.attendantId, existing);
+  }
+  const byAttendantSummary = [...byAttendant.values()]
+    .map((a) => ({
+      attendantId: a.attendantId,
+      attendantName: a.attendantName,
+      roomsCleaned: a.roomsCleaned,
+      avgCleanTimeMinutes: Math.round(a.totalMinutes / a.roomsCleaned),
+    }))
+    .sort((a, b) => b.roomsCleaned - a.roomsCleaned);
+
+  const totalMinutes = rows.reduce((sum, row) => sum + row.cleanTimeMinutes, 0);
+
+  const summary = {
+    totalRoomsCleaned: rows.length,
+    avgCleanTimeMinutes: rows.length > 0 ? Math.round(totalMinutes / rows.length) : null,
+    byAttendant: byAttendantSummary,
+  };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'unitCode', label: 'Unit' },
+      { key: 'unitName', label: 'Unit name' },
+      { key: 'attendantName', label: 'Attendant' },
+      { key: 'cleaningStartedAt', label: 'Cleaning started' },
+      { key: 'cleanedAt', label: 'Cleaned' },
+      { key: 'cleanTimeMinutes', label: 'Clean time (min)' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
+  if (key === 'housekeeping') return buildHousekeepingReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 

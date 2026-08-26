@@ -45,9 +45,27 @@ interface WorkOrderSummary {
   topRecurringUnits: { unitCode: string; unitName: string; count: number }[];
 }
 
+interface HousekeepingRow {
+  unitId: string;
+  unitCode: string;
+  unitName: string;
+  attendantId: string;
+  attendantName: string;
+  cleaningStartedAt: string;
+  cleanedAt: string;
+  cleanTimeMinutes: number;
+}
+
+interface HousekeepingSummary {
+  totalRoomsCleaned: number;
+  avgCleanTimeMinutes: number | null;
+  byAttendant: { attendantId: string; attendantName: string; roomsCleaned: number; avgCleanTimeMinutes: number }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
-  | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] };
+  | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
+  | { key: 'housekeeping'; from: string; to: string; summary: HousekeepingSummary; rows: HousekeepingRow[] };
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -215,6 +233,7 @@ export function ReportsPage() {
 
       {report?.key === 'occupancy' && <OccupancyReportView report={report} />}
       {report?.key === 'work-orders' && <WorkOrderReportView report={report} />}
+      {report?.key === 'housekeeping' && <HousekeepingReportView report={report} />}
     </div>
   );
 }
@@ -367,6 +386,81 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
                   <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
                   <td className="py-2 pr-4">{row.slaBreached ? 'Breached' : '—'}</td>
                   <td className="py-2 pr-4">{formatMinutes(row.timeToCloseMinutes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Spec §8.4 item 5's three stats are "rooms cleaned per attendant,
+// average clean time, QC pass rate" — QC pass rate is omitted here, per
+// the same client decision documented in the API's buildHousekeepingReport
+// (reports/service.ts): no QC step actually produces data to report on
+// today, since cleaning and marking a room ready happen in one motion by
+// the same attendant.
+function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { key: 'housekeeping' }> }) {
+  const { summary, rows } = report;
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Rooms cleaned</p>
+          <p className="text-2xl font-semibold">{summary.totalRoomsCleaned}</p>
+        </div>
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Avg. clean time</p>
+          <p className="text-2xl font-semibold">{formatMinutes(summary.avgCleanTimeMinutes)}</p>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500">
+        QC pass rate isn't shown — housekeeping has no separate QC step to report on; the attendant who cleans a
+        room marks it ready in the same motion.
+      </p>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">By attendant</h2>
+        {summary.byAttendant.length === 0 && <p className="text-sm text-gray-500">No completed cleans in range.</p>}
+        {summary.byAttendant.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.byAttendant.map((row) => (
+              <li key={row.attendantId} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{row.attendantName}</span>
+                <span className="font-medium">
+                  {row.roomsCleaned} rooms · avg {formatMinutes(row.avgCleanTimeMinutes)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Cleans in range</h2>
+        <div className="max-h-96 overflow-auto rounded border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <th className="py-2 pr-4 pl-2">Unit</th>
+                <th className="py-2 pr-4">Attendant</th>
+                <th className="py-2 pr-4">Cleaning started</th>
+                <th className="py-2 pr-4">Cleaned</th>
+                <th className="py-2 pr-4">Clean time</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row) => (
+                <tr key={`${row.unitId}-${row.cleanedAt}`}>
+                  <td className="py-2 pr-4 pl-2 font-medium">
+                    {row.unitCode} — {row.unitName}
+                  </td>
+                  <td className="py-2 pr-4">{row.attendantName}</td>
+                  <td className="py-2 pr-4">{new Date(row.cleaningStartedAt).toLocaleString()}</td>
+                  <td className="py-2 pr-4">{new Date(row.cleanedAt).toLocaleString()}</td>
+                  <td className="py-2 pr-4">{formatMinutes(row.cleanTimeMinutes)}</td>
                 </tr>
               ))}
             </tbody>

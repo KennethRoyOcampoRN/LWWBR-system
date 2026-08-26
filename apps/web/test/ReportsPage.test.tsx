@@ -99,6 +99,55 @@ describe('ReportsPage', () => {
     expect(screen.getByText('Breached')).toBeInTheDocument();
   });
 
+  it('runs the housekeeping report and shows attendant productivity, with no QC pass rate shown', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/housekeeping?')) {
+        return jsonResponse(200, {
+          report: {
+            key: 'housekeeping',
+            from: '2026-08-24',
+            to: '2026-08-25',
+            summary: {
+              totalRoomsCleaned: 2,
+              avgCleanTimeMinutes: 25,
+              byAttendant: [
+                { attendantId: 'user_a', attendantName: 'Attendant A', roomsCleaned: 2, avgCleanTimeMinutes: 25 },
+              ],
+            },
+            rows: [
+              {
+                unitId: 'unit_1',
+                unitCode: 'R01',
+                unitName: 'Room 1',
+                attendantId: 'user_a',
+                attendantName: 'Attendant A',
+                cleaningStartedAt: '2026-08-24T01:00:00.000Z',
+                cleanedAt: '2026-08-24T01:30:00.000Z',
+                cleanTimeMinutes: 30,
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('Report'), 'housekeeping');
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getAllByText('Attendant A').length).toBeGreaterThan(0));
+    expect(screen.getByText('Rooms cleaned').parentElement).toHaveTextContent('2');
+    expect(screen.getByText(/2 rooms · avg 25m/)).toBeInTheDocument();
+    expect(screen.getByText(/QC pass rate isn't shown/)).toBeInTheDocument();
+  });
+
   it('exports the current report to CSV', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

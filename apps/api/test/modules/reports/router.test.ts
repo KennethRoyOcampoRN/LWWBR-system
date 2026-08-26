@@ -182,6 +182,121 @@ describe('GET /api/v1/reports/:key', () => {
       expect.objectContaining({ where: expect.objectContaining({ department: 'MAINTENANCE' }) }),
     );
   });
+
+  // Unlike occupancy (refused outright, no department axis at all), this
+  // report's data genuinely IS housekeeping's own — a same-department
+  // holder sees it normally.
+  it('allows the housekeeping report for a DEPARTMENT-scoped holder in Housekeeping', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/housekeeping?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+  });
+
+  // A DEPARTMENT-scoped holder from a different department has no
+  // housekeeping data of their own — refused, same as occupancy but
+  // department-aware rather than blanket.
+  it('refuses the housekeeping report for a DEPARTMENT-scoped holder outside Housekeeping', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    const res = await request(createApp())
+      .get('/api/v1/reports/housekeeping?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('builds the housekeeping report: rooms cleaned per attendant and average clean time', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      // unit_1: a complete 30-minute clean by Attendant A, finished inside range.
+      {
+        unitId: 'unit_1',
+        toStatus: 'CLEANING',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        unit: { code: 'R01', name: 'Room 1' },
+        actor: { fullName: 'Attendant A' },
+      },
+      {
+        unitId: 'unit_1',
+        toStatus: 'CLEANED',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-24T09:30:00+08:00'),
+        unit: { code: 'R01', name: 'Room 1' },
+        actor: { fullName: 'Attendant A' },
+      },
+      // unit_2: a CLEANED event with no preceding CLEANING start observed
+      // (e.g. a forced correction) — skipped, no clean cycle to measure.
+      {
+        unitId: 'unit_2',
+        toStatus: 'CLEANED',
+        actorId: 'user_b',
+        createdAt: new Date('2026-08-24T10:00:00+08:00'),
+        unit: { code: 'R02', name: 'Room 2' },
+        actor: { fullName: 'Attendant B' },
+      },
+      // unit_3: a 20-minute clean by Attendant A again, finished inside range.
+      {
+        unitId: 'unit_3',
+        toStatus: 'CLEANING',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-25T08:00:00+08:00'),
+        unit: { code: 'R03', name: 'Room 3' },
+        actor: { fullName: 'Attendant A' },
+      },
+      {
+        unitId: 'unit_3',
+        toStatus: 'CLEANED',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-25T08:20:00+08:00'),
+        unit: { code: 'R03', name: 'Room 3' },
+        actor: { fullName: 'Attendant A' },
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/housekeeping?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const { summary, rows } = res.body.report;
+    expect(rows).toHaveLength(2);
+    expect(summary.totalRoomsCleaned).toBe(2);
+    expect(summary.avgCleanTimeMinutes).toBe(25); // (30 + 20) / 2
+    expect(summary.byAttendant).toEqual([
+      { attendantId: 'user_a', attendantName: 'Attendant A', roomsCleaned: 2, avgCleanTimeMinutes: 25 },
+    ]);
+    expect(rows.find((r: { unitCode: string }) => r.unitCode === 'R01')).toMatchObject({
+      attendantName: 'Attendant A',
+      cleanTimeMinutes: 30,
+    });
+  });
+
+  it('excludes a clean cycle that started before the range and has not finished by "to"', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      {
+        unitId: 'unit_1',
+        toStatus: 'CLEANING',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        unit: { code: 'R01', name: 'Room 1' },
+        actor: { fullName: 'Attendant A' },
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/housekeeping?from=2026-08-24&to=2026-08-24')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.report.rows).toEqual([]);
+    expect(res.body.report.summary.totalRoomsCleaned).toBe(0);
+    expect(res.body.report.summary.avgCleanTimeMinutes).toBeNull();
+  });
 });
 
 describe('GET /api/v1/reports/:key/export', () => {
@@ -219,5 +334,36 @@ describe('GET /api/v1/reports/:key/export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Reference,Type,Department');
     expect(res.text).toContain('WO-001,MAINTENANCE,MAINTENANCE');
+  });
+
+  it('exports the housekeeping report as CSV', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
+      {
+        unitId: 'unit_1',
+        toStatus: 'CLEANING',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        unit: { code: 'R01', name: 'Room 1' },
+        actor: { fullName: 'Attendant A' },
+      },
+      {
+        unitId: 'unit_1',
+        toStatus: 'CLEANED',
+        actorId: 'user_a',
+        createdAt: new Date('2026-08-24T09:30:00+08:00'),
+        unit: { code: 'R01', name: 'Room 1' },
+        actor: { fullName: 'Attendant A' },
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/housekeeping/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Unit,Unit name,Attendant');
+    expect(res.text).toContain('R01,Room 1,Attendant A');
   });
 });

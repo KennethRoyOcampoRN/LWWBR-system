@@ -4093,6 +4093,63 @@ Holding here per the client's instruction — no further work queued.
 Remaining M6 scope (the rest of spec §8.4's report set, PWA setup) waits
 on the client's review of where things stand before deciding next steps.
 
+### Housekeeping productivity report (spec §8.4 item 5) — verified in sandbox only, not live-tested (2026-08-26)
+
+Client is off-PC and asked me to keep building report builder slices
+solo, sandbox-verified only, stopping on genuine design ambiguity rather
+than guessing. One came up immediately on this report and I stopped to
+ask rather than build through it.
+
+**The ambiguity**: spec §8.4 item 5 asks for three stats — "rooms
+cleaned per attendant, average clean time, QC pass rate." The first two
+map cleanly to real `UnitStatusEvent` data. The third doesn't: the
+`Inspection` model exists in the schema but nothing in the app has ever
+written to it, consistent with the 2026-08-22 client decision that
+folded QC into the single CLEANED->READY click by the same attendant who
+cleaned the room — there's no separate QC decision being captured
+anywhere today. Asked the client how to handle this (omit it / proxy off
+re-clean rate / build a real QC capture step first); **client chose to
+omit it and ship the other two metrics now**, revisiting QC pass rate
+later if a real signal gets captured.
+
+**What "rooms cleaned" and "clean time" mean here**: a completed
+`CLEANING -> CLEANED` cycle, credited to whichever attendant performed
+that closing transition, paired against the immediately preceding
+`VACANT_DIRTY -> CLEANING` event for the same unit (an event-pairing walk
+per unit, not a fixed window — a room can cycle dirty/clean more than
+once inside a date range). A `CLEANED` event with no observed preceding
+`CLEANING` start (e.g. a forced correction straight to CLEANED) has no
+real cycle to measure and is skipped rather than counted as a
+zero-duration clean. A cycle counts in the report's date range by its
+*closing* event's timestamp — same "count by the closing event"
+convention already used for the work-order report's time-to-close.
+
+**Department scope**: unlike occupancy (refused outright for any
+DEPARTMENT-scoped `report:view` holder — no department axis at all on
+that data), this report's data genuinely *is* Housekeeping's own, so a
+DEPARTMENT-scoped holder whose own department is HOUSEKEEPING sees it
+normally; one from any other department is refused, department-aware
+rather than blanket.
+
+No schema change — built entirely from existing `UnitStatusEvent` rows.
+New report key `housekeeping` added to `packages/shared/src/report.ts`'s
+`REPORT_KEYS`/`REPORT_LABELS`; `buildHousekeepingReport` added to
+`apps/api/src/modules/reports/service.ts`; a `HousekeepingReportView`
+added to `apps/web/src/routes/ReportsPage.tsx`, including an explicit
+on-screen note that QC pass rate isn't shown and why (not just a silent
+omission).
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 351 tests, 348 passing (same 3
+pre-existing Supabase round-trip failures every run this session hits,
+no network from this sandbox), `npm run test -w apps/web` — 56/56
+passing (new tests cover the department-scope allow/refuse split, the
+attendant-credit/clean-time math including the skipped-unpaired-CLEANED
+and started-but-not-finished-in-range cases, and CSV export), `npm run
+build` clean across all three packages. **Not live-tested** — no access
+to the client's real Supabase data this session; needs a real pass once
+the client is back at their PC, same as every prior slice.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale
