@@ -4406,6 +4406,48 @@ the rest of this session — remaining M6 scope (PWA setup, per the
 earlier "Client-confirmed: unit management is fully verified" note)
 waits on review.
 
+### Real bug found live-testing: occupancy report included non-bookable common areas (2026-08-26)
+
+Client reported: the occupancy & unit status history report (spec §8.4
+item 1, the first report built this session) listed common areas (Pool,
+Beach Front, Function Hall, the CRs, the Restaurant) alongside real
+rooms/cottages. "Occupancy" only means something for a bookable unit —
+a common area can't be "occupied" the way a room can — and worse, the
+daily occupancy-rate summary was computing its percentage against *all*
+units as the denominator, including those, understating the real rate.
+
+Fixed by filtering `buildOccupancyReport`'s unit query
+(`apps/api/src/modules/reports/service.ts`) to `BOOKABLE_UNIT_KINDS`
+(`packages/shared/src/unitKind.ts`) — the exact same ROOM/COTTAGE list
+already used by the Check-in picker and its server-side guard, reused
+here per the client's explicit instruction rather than reimplemented.
+Since the unit list feeding both the per-day rows and the
+`occupiedCount`/`totalUnits` summary math is the same filtered array,
+one `where` clause fix corrects both problems at once — no separate
+denominator calculation to fix. The report's `group` column (Rooms &
+Cottages / Common areas / Facilities) now always reads "Rooms &
+Cottages," since every remaining row is bookable by definition; left in
+rather than removed, since it's still accurate and dropping it would be
+a CSV/API shape change beyond what was reported as broken.
+
+No schema change. Updated the existing occupancy test to reflect the
+corrected row count/occupancy-rate math, and added a dedicated test
+asserting the `unit.findMany` where-clause carries the
+`type: { in: ['ROOM', 'COTTAGE'] }` filter — the actual regression
+protection, since a Prisma mock doesn't filter on its own the way a real
+query would.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 371 tests, 368 passing (same 3
+pre-existing network-blocked failures every run this session hits),
+`npm run test -w apps/web` — 60/60 passing, `npm run test -w
+packages/shared` — 76/76 passing, `npm run build` clean across all
+three packages. **Not live-tested** — needs a real pass against the
+client's Supabase unit data (specifically confirming Pool/Beach
+Front/Function Hall/CRs/Restaurant no longer appear, and that the
+occupancy-rate percentage now looks right) once they're back at their
+PC.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

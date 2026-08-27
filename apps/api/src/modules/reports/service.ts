@@ -1,5 +1,6 @@
 import { TZDate } from '@date-fns/tz';
 import {
+  BOOKABLE_UNIT_KINDS,
   UNIT_KIND_GROUP_LABELS,
   unitKindGroup,
   canViewAmenityUtilisationReport,
@@ -56,6 +57,20 @@ interface ReportResult {
 // to recompute it, but the CSV export carries the detail rows — the
 // finer-grained, reconstructable data — same reasoning as the
 // work-orders report below.
+//
+// Real bug found live-testing, 2026-08-26: this report included
+// non-accommodation units (COMMON_AREA/FACILITY — Pool, Beach Front,
+// Function Hall, the CRs, the Restaurant), which threw off both the
+// per-unit rows and the daily occupancy-rate denominator. "Occupancy" is
+// only meaningful for a bookable unit — a common area can't be
+// "occupied" the way a room can. Filtered to BOOKABLE_UNIT_KINDS
+// (packages/shared/src/unitKind.ts), the same ROOM/COTTAGE list already
+// used by the Check-in picker and its server-side guard, reused here
+// rather than reimplemented so this can never drift from that
+// definition. Since every unit in this report is now ROOM/COTTAGE, the
+// `group` column always reads "Rooms & Cottages" — left in rather than
+// removed, since it's still accurate and removing it would be a CSV/API
+// shape change beyond this bug fix.
 async function buildOccupancyReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   // No department axis exists on Unit — occupancy is property-wide by
   // nature. A DEPARTMENT-scoped report:view holder (POC_HOUSEKEEPING,
@@ -80,7 +95,7 @@ async function buildOccupancyReport(query: ReportQuery, actor: ReportActor): Pro
   const toEndExclusive = addDays(to, 1);
 
   const units = await prisma.unit.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, type: { in: [...BOOKABLE_UNIT_KINDS] } },
     select: { id: true, code: true, name: true, type: true, createdAt: true },
     orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
   });

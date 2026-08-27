@@ -83,13 +83,16 @@ describe('GET /api/v1/reports/:key', () => {
 
   it('builds the occupancy report by day and by unit', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    // Only ROOM/COTTAGE units are ever returned to this report — see the
+    // `filters to ROOM/COTTAGE` test below for the where-clause itself.
+    // A real DB, given that where-clause, would never hand back a
+    // COMMON_AREA/FACILITY row, so the mock doesn't include one here.
     mockPrisma.unit.findMany.mockResolvedValue([
       { id: 'unit_1', code: 'R01', name: 'Room 1', type: 'ROOM', createdAt: new Date('2026-08-01T00:00:00Z') },
       { id: 'unit_2', code: 'R02', name: 'Room 2', type: 'ROOM', createdAt: new Date('2026-08-01T00:00:00Z') },
-      { id: 'unit_3', code: 'POOL', name: 'Pool', type: 'COMMON_AREA', createdAt: new Date('2026-08-01T00:00:00Z') },
     ]);
-    // R01 becomes OCCUPIED on the 24th; R02/Pool never transition (stay
-    // at the VACANT_DIRTY column default with no logged event).
+    // R01 becomes OCCUPIED on the 24th; R02 never transitions (stays at
+    // the VACANT_DIRTY column default with no logged event).
     mockPrisma.unitStatusEvent.findMany.mockResolvedValue([
       { unitId: 'unit_1', toStatus: 'OCCUPIED', createdAt: new Date('2026-08-24T10:00:00+08:00') },
     ]);
@@ -99,18 +102,35 @@ describe('GET /api/v1/reports/:key', () => {
       .set('Cookie', authCookie());
 
     expect(res.status).toBe(200);
-    expect(res.body.report.rows).toHaveLength(6); // 3 units x 2 days
+    expect(res.body.report.rows).toHaveLength(4); // 2 units x 2 days
     const day24R01 = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'R01');
     expect(day24R01.status).toBe('OCCUPIED');
     expect(day24R01.group).toBe('Rooms & Cottages');
     const day24R02 = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'R02');
     expect(day24R02.status).toBe('VACANT_DIRTY');
-    const day24Pool = res.body.report.rows.find((r: { date: string; unitCode: string }) => r.date === '2026-08-24' && r.unitCode === 'POOL');
-    expect(day24Pool.group).toBe('Common areas');
     expect(res.body.report.summary.byDay).toEqual([
-      { date: '2026-08-24', occupiedCount: 1, totalUnits: 3, occupancyRate: 1 / 3 },
-      { date: '2026-08-25', occupiedCount: 1, totalUnits: 3, occupancyRate: 1 / 3 },
+      { date: '2026-08-24', occupiedCount: 1, totalUnits: 2, occupancyRate: 0.5 },
+      { date: '2026-08-25', occupiedCount: 1, totalUnits: 2, occupancyRate: 0.5 },
     ]);
+  });
+
+  // Real bug found live-testing, 2026-08-26: common areas (Pool, Beach
+  // Front, Function Hall, the CRs, the Restaurant) aren't bookable and
+  // can't be "occupied" the way a room can, but were showing up in this
+  // report and skewing the occupancy-rate denominator. Fixed by filtering
+  // to BOOKABLE_UNIT_KINDS (packages/shared/src/unitKind.ts) — the same
+  // ROOM/COTTAGE list the Check-in picker already uses — reused here
+  // rather than reimplemented.
+  it('filters to ROOM/COTTAGE units only (BOOKABLE_UNIT_KINDS), excluding COMMON_AREA/FACILITY', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+
+    await request(createApp()).get('/api/v1/reports/occupancy?from=2026-08-24&to=2026-08-25').set('Cookie', authCookie());
+
+    expect(mockPrisma.unit.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ type: { in: ['ROOM', 'COTTAGE'] } }) }),
+    );
   });
 
   it('builds the work-orders report with volume, breakdowns, SLA breaches, and time-to-close', async () => {
