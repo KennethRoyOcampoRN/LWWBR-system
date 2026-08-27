@@ -4214,6 +4214,59 @@ URLs as text), `npm run build` clean across all three packages. **Not
 live-tested** — needs a real pass against the client's Supabase data and
 real work-order photos once they're back at their PC.
 
+### F&B orders report (spec §8.4 item 7) — verified in sandbox only, not live-tested (2026-08-26)
+
+Client set the boundary ahead of time this time, rather than waiting for
+me to hit it: "revenue" means the sum of `FnbOrder.subtotal` — list
+prices already stored on orders/menu items, genuinely operational
+monitoring (order volume, popular items), never anything implying money
+was actually collected or verified, since no payment-status field exists
+on `FnbOrder` to tie into anyway. Told to proceed if the report can stay
+in "what was ordered and its listed value" territory, and to flag
+specifically if that line blurred anywhere. It didn't — the whole report
+sits cleanly on that side, and the on-screen view says so explicitly
+("does not mean payment was collected or verified") rather than leaving
+it implicit.
+
+**Volume, revenue, average prep time, top items** — all built from
+existing `FnbOrder`/`FnbOrderLine` data, no schema change:
+
+- **Volume**: every order placed in range, including CANCELLED — same
+  "opened in period" convention as the work-orders report's own
+  `totalVolume`.
+- **Revenue**: sum of `subtotal` across non-cancelled orders only. A
+  cancelled order's items were never actually prepared or served, so
+  including its listed value would overstate what food/drink volume
+  genuinely moved — an order-fulfillment accuracy call, not a payment
+  question, so I made this call and documented it rather than treating
+  it as the kind of ambiguity to stop for.
+- **Average prep time**: `preparingAt` → `readyAt` per order (the literal
+  kitchen-prep window the workflow's own timestamps name), averaged over
+  orders where both are set. Deliberately not the wider
+  received-to-ready window, which would also count queue/acknowledgement
+  wait as "prep."
+- **Top items**: `FnbOrderLine.qty` summed by `menuItemName`, across the
+  same non-cancelled orders revenue uses, top 10 by quantity.
+
+Department scope follows the same pattern as housekeeping/maintenance-log:
+a DEPARTMENT-scoped `report:view` holder in RESTAURANT sees it normally,
+any other department is refused.
+
+New report key `fnb-orders` added to `packages/shared/src/report.ts`;
+`buildFnbOrderReport` added to `apps/api/src/modules/reports/service.ts`;
+`FnbOrderReportView` added to `ReportsPage.tsx`, reusing the same peso
+formatting `FnbPage.tsx`'s menu-price display already uses.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 360 tests, 357 passing (same 3
+pre-existing network-blocked failures), `npm run test -w apps/web` —
+58/58 passing (new tests cover the department-scope split, the
+volume-includes/revenue-excludes-cancelled split, the prep-time
+averaging, top-items aggregation, the empty-range case, and CSV export),
+`npm run build` clean across all three packages. **Not live-tested** —
+needs a real pass against the client's Supabase F&B data once they're
+back at their PC.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

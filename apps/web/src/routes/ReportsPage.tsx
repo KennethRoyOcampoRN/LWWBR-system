@@ -86,11 +86,32 @@ interface MaintenanceLogSummary {
   byDay: { date: string; ticketCount: number }[];
 }
 
+interface FnbOrderRow {
+  id: string;
+  referenceNo: string;
+  type: string;
+  status: string;
+  unitCode: string | null;
+  guestName: string | null;
+  createdAt: string;
+  readyAt: string | null;
+  prepTimeMinutes: number | null;
+  subtotal: number;
+}
+
+interface FnbOrderSummary {
+  totalVolume: number;
+  totalRevenue: number;
+  avgPrepTimeMinutes: number | null;
+  topItems: { itemName: string; qty: number }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
   | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
   | { key: 'housekeeping'; from: string; to: string; summary: HousekeepingSummary; rows: HousekeepingRow[] }
-  | { key: 'maintenance-log'; from: string; to: string; summary: MaintenanceLogSummary; rows: MaintenanceLogRow[] };
+  | { key: 'maintenance-log'; from: string; to: string; summary: MaintenanceLogSummary; rows: MaintenanceLogRow[] }
+  | { key: 'fnb-orders'; from: string; to: string; summary: FnbOrderSummary; rows: FnbOrderRow[] };
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -104,6 +125,13 @@ function formatMinutes(minutes: number | null): string {
   if (minutes === null) return '—';
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+// Order/menu-item list value, not a payment figure — same "₱" formatting
+// FnbPage.tsx already uses for menu prices; no payment-collected concept
+// exists on FnbOrder to format instead.
+function formatPeso(amount: number): string {
+  return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // Spec §8.4 report builder — M6's first slice (2026-08-25): the two
@@ -260,6 +288,7 @@ export function ReportsPage() {
       {report?.key === 'work-orders' && <WorkOrderReportView report={report} />}
       {report?.key === 'housekeeping' && <HousekeepingReportView report={report} />}
       {report?.key === 'maintenance-log' && <MaintenanceLogReportView report={report} />}
+      {report?.key === 'fnb-orders' && <FnbOrderReportView report={report} />}
     </div>
   );
 }
@@ -572,6 +601,88 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
             </div>
           ))}
           {rows.length === 0 && <p className="text-sm text-gray-500">No maintenance tickets in range.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Spec §8.4 item 7: "F&B orders: volume, revenue, average prep time, top
+// items." "Revenue" here is the sum of each order's listed subtotal —
+// what was ordered and its listed value — not a record of money actually
+// collected; there is no payment-status field on FnbOrder to report on
+// instead (client decision, 2026-08-26, same monitoring-not-transactions
+// boundary as the rest of this app). Cancelled orders are excluded from
+// revenue and top items (their food/drink was never actually prepared or
+// served) but still counted in volume, same "opened in period"
+// convention as the work-orders report.
+function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key: 'fnb-orders' }> }) {
+  const { summary, rows } = report;
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Volume</p>
+          <p className="text-2xl font-semibold">{summary.totalVolume}</p>
+        </div>
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Revenue (listed value)</p>
+          <p className="text-2xl font-semibold">{formatPeso(summary.totalRevenue)}</p>
+        </div>
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Avg. prep time</p>
+          <p className="text-2xl font-semibold">{formatMinutes(summary.avgPrepTimeMinutes)}</p>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500">
+        "Revenue" is the total listed value of what was ordered (cancelled orders excluded) — it does not mean
+        payment was collected or verified; this app doesn't track that.
+      </p>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Top items</h2>
+        {summary.topItems.length === 0 && <p className="text-sm text-gray-500">No fulfilled orders in range.</p>}
+        {summary.topItems.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.topItems.map((item) => (
+              <li key={item.itemName} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{item.itemName}</span>
+                <span className="font-medium">{item.qty}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Orders in range</h2>
+        <div className="max-h-96 overflow-auto rounded border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <th className="py-2 pr-4 pl-2">Reference</th>
+                <th className="py-2 pr-4">Type</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2 pr-4">Unit</th>
+                <th className="py-2 pr-4">Created</th>
+                <th className="py-2 pr-4">Prep time</th>
+                <th className="py-2 pr-4">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
+                  <td className="py-2 pr-4">{row.type}</td>
+                  <td className="py-2 pr-4">{row.status}</td>
+                  <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
+                  <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
+                  <td className="py-2 pr-4">{formatMinutes(row.prepTimeMinutes)}</td>
+                  <td className="py-2 pr-4">{formatPeso(row.subtotal)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

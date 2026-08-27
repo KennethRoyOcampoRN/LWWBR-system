@@ -3,6 +3,7 @@ import {
   UNIT_KIND_GROUP_LABELS,
   unitKindGroup,
   type DepartmentKey,
+  type FnbOrderStatusKey,
   type PermissionKey,
   type PermissionScope,
   type UnitStatusKey,
@@ -585,11 +586,139 @@ async function buildMaintenanceLogReport(query: ReportQuery, actor: ReportActor)
   };
 }
 
+interface FnbOrderReportRow {
+  id: string;
+  referenceNo: string;
+  type: string;
+  status: FnbOrderStatusKey;
+  unitCode: string | null;
+  guestName: string | null;
+  createdAt: string;
+  readyAt: string | null;
+  prepTimeMinutes: number | null;
+  subtotal: number;
+}
+
+// Spec §8.4 item 7: "F&B orders: volume, revenue, average prep time, top
+// items." Client decision, 2026-08-26: "revenue" here means the sum of
+// `FnbOrder.subtotal` — order/menu-item list prices already stored on
+// the order and its lines, not a record of money actually collected.
+// Same monitoring-not-transactions boundary as everywhere else in this
+// app: this is "what was ordered and its listed value," never "what was
+// paid" — there is no payment-status field on FnbOrder to tie into
+// (`settlement` is only the guest's stated intent, PAY_NOW vs.
+// CHARGE_TO_ROOM, not a payment record) and this report doesn't invent
+// one.
+//
+// "Volume" counts every order placed in range regardless of outcome
+// (including CANCELLED), same "opened in period" convention as the
+// work-orders report's own totalVolume. "Revenue" and "top items"
+// deliberately exclude CANCELLED orders: a cancelled order's items were
+// never actually prepared or served, so counting its listed value would
+// overstate what food/drink volume genuinely moved — this is an
+// accuracy call about *order fulfillment*, not a payment-verification
+// question, so it stays on the safe side of the boundary the client
+// drew rather than needing to be asked about.
+//
+// "Average prep time" reads literally off the two timestamps the kitchen
+// workflow itself already names for this: `preparingAt` -> `readyAt`
+// (the PREPARING -> READY duration), not the wider RECEIVED -> READY
+// window that would also include queue/acknowledgement wait. Only
+// orders with both timestamps set are averaged; an order still in
+// progress (no readyAt yet) has no prep time to report.
+async function buildFnbOrderReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (actor.permissions['report:view'] === 'DEPARTMENT' && actor.department !== 'RESTAURANT') {
+    throw new ApiError(
+      403,
+      'FORBIDDEN',
+      'F&B orders is scoped to the Restaurant department; your report access is scoped to a different department.',
+    );
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const orders = await prisma.fnbOrder.findMany({
+    where: { deletedAt: null, createdAt: { gte: from, lt: toEndExclusive } },
+    include: {
+      unit: { select: { code: true } },
+      lines: { where: { deletedAt: null }, select: { menuItemName: true, qty: true, unitPrice: true } },
+    },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  const rows: FnbOrderReportRow[] = orders.map((order) => {
+    const prepTimeMinutes =
+      order.preparingAt && order.readyAt
+        ? Math.round((order.readyAt.getTime() - order.preparingAt.getTime()) / 60_000)
+        : null;
+    return {
+      id: order.id,
+      referenceNo: order.referenceNo,
+      type: order.type,
+      status: order.status as FnbOrderStatusKey,
+      unitCode: order.unit?.code ?? null,
+      guestName: order.guestName,
+      createdAt: order.createdAt.toISOString(),
+      readyAt: order.readyAt?.toISOString() ?? null,
+      prepTimeMinutes,
+      subtotal: Number(order.subtotal),
+    };
+  });
+
+  const fulfilledOrders = orders.filter((order) => order.status !== 'CANCELLED');
+  const totalRevenue = fulfilledOrders.reduce((sum, order) => sum + Number(order.subtotal), 0);
+
+  const prepTimes = rows.filter((r) => r.prepTimeMinutes !== null).map((r) => r.prepTimeMinutes as number);
+  const avgPrepTimeMinutes =
+    prepTimes.length > 0 ? Math.round(prepTimes.reduce((sum, m) => sum + m, 0) / prepTimes.length) : null;
+
+  const itemQtyByName = new Map<string, number>();
+  for (const order of fulfilledOrders) {
+    for (const line of order.lines) {
+      const name = line.menuItemName ?? '(deleted item)';
+      itemQtyByName.set(name, (itemQtyByName.get(name) ?? 0) + line.qty);
+    }
+  }
+  const topItems = [...itemQtyByName.entries()]
+    .map(([itemName, qty]) => ({ itemName, qty }))
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 10);
+
+  const summary = {
+    totalVolume: rows.length,
+    totalRevenue,
+    avgPrepTimeMinutes,
+    topItems,
+  };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'referenceNo', label: 'Reference' },
+      { key: 'type', label: 'Type' },
+      { key: 'status', label: 'Status' },
+      { key: 'unitCode', label: 'Unit' },
+      { key: 'guestName', label: 'Guest' },
+      { key: 'createdAt', label: 'Created' },
+      { key: 'readyAt', label: 'Ready' },
+      { key: 'prepTimeMinutes', label: 'Prep time (min)' },
+      { key: 'subtotal', label: 'Subtotal' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
   if (key === 'housekeeping') return buildHousekeepingReport(query, actor);
   if (key === 'maintenance-log') return buildMaintenanceLogReport(query, actor);
+  if (key === 'fnb-orders') return buildFnbOrderReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 

@@ -193,6 +193,58 @@ describe('ReportsPage', () => {
     expect(screen.getByText('No completion photo yet')).toBeInTheDocument();
   });
 
+  it('runs the F&B orders report and shows volume/revenue/prep-time/top-items, with the listed-value note', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/fnb-orders?')) {
+        return jsonResponse(200, {
+          report: {
+            key: 'fnb-orders',
+            from: '2026-08-24',
+            to: '2026-08-25',
+            summary: {
+              totalVolume: 2,
+              totalRevenue: 650,
+              avgPrepTimeMinutes: 15,
+              topItems: [{ itemName: 'Adobo', qty: 3 }],
+            },
+            rows: [
+              {
+                id: 'fnb_1',
+                referenceNo: 'FNB-001',
+                type: 'DINE_IN',
+                status: 'SERVED',
+                unitCode: 'R01',
+                guestName: 'Juan',
+                createdAt: '2026-08-24T01:00:00.000Z',
+                readyAt: '2026-08-24T01:20:00.000Z',
+                prepTimeMinutes: 20,
+                subtotal: 500,
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('Report'), 'fnb-orders');
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getByText('FNB-001')).toBeInTheDocument());
+    expect(screen.getByText('Volume').parentElement).toHaveTextContent('2');
+    expect(screen.getByText('Revenue (listed value)').parentElement).toHaveTextContent('₱650.00');
+    expect(screen.getByText('Avg. prep time').parentElement).toHaveTextContent('15m');
+    expect(screen.getByText('Adobo')).toBeInTheDocument();
+    expect(screen.getByText(/does not mean payment was collected or verified/)).toBeInTheDocument();
+  });
+
   it('exports the current report to CSV', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

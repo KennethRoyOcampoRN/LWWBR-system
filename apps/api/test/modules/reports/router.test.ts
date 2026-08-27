@@ -6,6 +6,7 @@ const mockPrisma = {
   unit: { findMany: vi.fn() },
   unitStatusEvent: { findMany: vi.fn() },
   workOrder: { findMany: vi.fn() },
+  fnbOrder: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -374,6 +375,103 @@ describe('GET /api/v1/reports/:key', () => {
     expect(wo2.completionPhotos).toEqual([]);
     expect(wo2.completionPhotoUrls).toBe('');
   });
+
+  // Same reasoning as housekeeping/maintenance-log's own department-scope
+  // tests: this report's data genuinely belongs to Restaurant.
+  it('allows F&B orders for a DEPARTMENT-scoped holder in Restaurant', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER', { department: 'RESTAURANT' }));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/fnb-orders?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses F&B orders for a DEPARTMENT-scoped holder outside Restaurant', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_MAINTENANCE', { department: 'MAINTENANCE' }));
+    const res = await request(createApp())
+      .get('/api/v1/reports/fnb-orders?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('builds the F&B orders report: volume includes cancelled, revenue/top items exclude it, prep time from preparingAt->readyAt', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([
+      {
+        id: 'fnb_1',
+        referenceNo: 'FNB-001',
+        type: 'DINE_IN',
+        status: 'SERVED',
+        unit: { code: 'R01' },
+        guestName: 'Juan',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        preparingAt: new Date('2026-08-24T09:05:00+08:00'),
+        readyAt: new Date('2026-08-24T09:25:00+08:00'), // 20 min prep
+        subtotal: '500.00',
+        lines: [{ menuItemName: 'Adobo', qty: 2, unitPrice: '150.00' }],
+      },
+      {
+        id: 'fnb_2',
+        referenceNo: 'FNB-002',
+        type: 'ROOM_SERVICE',
+        status: 'CANCELLED',
+        unit: { code: 'R02' },
+        guestName: 'Maria',
+        createdAt: new Date('2026-08-24T10:00:00+08:00'),
+        preparingAt: null,
+        readyAt: null,
+        subtotal: '300.00',
+        lines: [{ menuItemName: 'Sisig', qty: 1, unitPrice: '300.00' }],
+      },
+      {
+        id: 'fnb_3',
+        referenceNo: 'FNB-003',
+        type: 'DINE_IN',
+        status: 'SERVED',
+        unit: null,
+        guestName: null,
+        createdAt: new Date('2026-08-24T11:00:00+08:00'),
+        preparingAt: new Date('2026-08-24T11:00:00+08:00'),
+        readyAt: new Date('2026-08-24T11:10:00+08:00'), // 10 min prep
+        subtotal: '150.00',
+        lines: [{ menuItemName: 'Adobo', qty: 1, unitPrice: '150.00' }],
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/fnb-orders?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const { summary, rows } = res.body.report;
+    expect(summary.totalVolume).toBe(3); // includes the cancelled order
+    expect(summary.totalRevenue).toBe(650); // 500 + 150, cancelled 300 excluded
+    expect(summary.avgPrepTimeMinutes).toBe(15); // (20 + 10) / 2
+    expect(summary.topItems).toEqual([{ itemName: 'Adobo', qty: 3 }]); // Sisig excluded (cancelled order)
+    const cancelled = rows.find((r: { id: string }) => r.id === 'fnb_2');
+    expect(cancelled.prepTimeMinutes).toBeNull();
+    expect(cancelled.subtotal).toBe(300); // still shown on the row itself, just excluded from revenue
+  });
+
+  it('returns null avgPrepTimeMinutes and zero revenue/volume when no orders are in range', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/fnb-orders?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.report.summary).toEqual({
+      totalVolume: 0,
+      totalRevenue: 0,
+      avgPrepTimeMinutes: null,
+      topItems: [],
+    });
+  });
 });
 
 describe('GET /api/v1/reports/:key/export', () => {
@@ -466,5 +564,33 @@ describe('GET /api/v1/reports/:key/export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Date,Reference,Title');
     expect(res.text).toContain('https://signed.example/wo1/issue.jpg');
+  });
+
+  it('exports the F&B orders report as CSV', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([
+      {
+        id: 'fnb_1',
+        referenceNo: 'FNB-001',
+        type: 'DINE_IN',
+        status: 'SERVED',
+        unit: { code: 'R01' },
+        guestName: 'Juan',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        preparingAt: new Date('2026-08-24T09:05:00+08:00'),
+        readyAt: new Date('2026-08-24T09:25:00+08:00'),
+        subtotal: '500.00',
+        lines: [{ menuItemName: 'Adobo', qty: 2, unitPrice: '150.00' }],
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/fnb-orders/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Reference,Type,Status');
+    expect(res.text).toContain('FNB-001,DINE_IN,SERVED');
   });
 });
