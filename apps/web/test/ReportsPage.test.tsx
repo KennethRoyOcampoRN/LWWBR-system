@@ -311,6 +311,57 @@ describe('ReportsPage', () => {
     expect(screen.getByText('Paddle lost')).toBeInTheDocument();
   });
 
+  it('runs the audit extract report and shows events, breakdowns, and expandable before/after', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/audit-extract?')) {
+        return jsonResponse(200, {
+          report: {
+            key: 'audit-extract',
+            from: '2026-08-24',
+            to: '2026-08-25',
+            summary: {
+              totalEvents: 1,
+              byAction: [{ action: 'update', count: 1 }],
+              byEntity: [{ entity: 'WorkOrder', count: 1 }],
+              topActors: [{ actorId: 'user_5', actorName: 'Resort Manager (Demo)', count: 1 }],
+            },
+            rows: [
+              {
+                id: 'audit_1',
+                createdAt: '2026-08-24T01:00:00.000Z',
+                actorId: 'user_5',
+                actorName: 'Resort Manager (Demo)',
+                action: 'update',
+                entity: 'WorkOrder',
+                entityId: 'wo_1',
+                ip: '10.0.0.1',
+                userAgent: 'Mozilla/5.0',
+                before: '{"status":"OPEN"}',
+                after: '{"status":"ASSIGNED"}',
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('Report'), 'audit-extract');
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getByText('wo_1')).toBeInTheDocument());
+    expect(screen.getByText('Events').parentElement).toHaveTextContent('1');
+    expect(screen.getByText('before/after')).toBeInTheDocument(); // rendered collapsed by default (<details>)
+    expect(screen.getByText(/before: {"status":"OPEN"}/)).toBeInTheDocument();
+  });
+
   it('exports the current report to CSV', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

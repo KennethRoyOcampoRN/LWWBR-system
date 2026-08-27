@@ -12,6 +12,7 @@ export const REPORT_KEYS = [
   'maintenance-log',
   'fnb-orders',
   'amenity-utilisation',
+  'audit-extract',
 ] as const;
 
 export type ReportKey = (typeof REPORT_KEYS)[number];
@@ -23,4 +24,5 @@ export const REPORT_LABELS: Record<ReportKey, string> = {
   'maintenance-log': 'Maintenance log',
   'fnb-orders': 'F&B orders',
   'amenity-utilisation': 'Amenity utilisation & loss/damage',
+  'audit-extract': 'User activity / audit extract',
 };

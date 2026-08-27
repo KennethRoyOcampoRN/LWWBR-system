@@ -8,6 +8,7 @@ const mockPrisma = {
   workOrder: { findMany: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
   amenityRequest: { findMany: vi.fn() },
+  auditLog: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -571,6 +572,89 @@ describe('GET /api/v1/reports/:key', () => {
     const cancelled = rows.find((r: { id: string }) => r.id === 'am_3');
     expect(cancelled.issuedAt).toBeNull();
   });
+
+  // Spec §8.4 item 9: "SYSTEM_ADMIN, RESORT_MANAGER, OWNER only." Unlike
+  // the amenity report, this needs no new role-gate function — audit:read
+  // is already granted to exactly those three roles and nowhere else, so
+  // checking that one permission directly is the whole restriction.
+  it('allows the audit extract for SYSTEM_ADMIN, RESORT_MANAGER, and OWNER (the audit:read holders)', async () => {
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+
+    for (const role of ['SYSTEM_ADMIN', 'RESORT_MANAGER', 'OWNER']) {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(role));
+      const res = await request(createApp())
+        .get('/api/v1/reports/audit-extract?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('refuses the audit extract for report:view holders without audit:read', async () => {
+    for (const [role, department] of [
+      ['OPS_SAFETY_SUPERVISOR', 'GROUNDS_SAFETY'],
+      ['ADMIN_HEAD', 'FRONT_OFFICE'],
+      ['RESTAURANT_MANAGER', 'RESTAURANT'],
+    ] as const) {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(role, { department }));
+      const res = await request(createApp())
+        .get('/api/v1/reports/audit-extract?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('builds the audit extract: resolves actor names, redacted before/after already safe to surface, breakdowns by action/entity/actor', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'audit_1',
+        actorId: 'user_5',
+        actor: { fullName: 'Resort Manager (Demo)' },
+        action: 'update',
+        entity: 'WorkOrder',
+        entityId: 'wo_1',
+        ip: '10.0.0.1',
+        userAgent: 'Mozilla/5.0',
+        before: { status: 'OPEN' },
+        after: { status: 'ASSIGNED' },
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+      },
+      {
+        id: 'audit_2',
+        actorId: null,
+        actor: null,
+        action: 'LOGIN_FAILURE',
+        entity: 'Session',
+        entityId: 'unknown',
+        ip: '10.0.0.2',
+        userAgent: null,
+        before: null,
+        after: null,
+        createdAt: new Date('2026-08-24T10:00:00+08:00'),
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/audit-extract?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const { summary, rows } = res.body.report;
+    expect(summary.totalEvents).toBe(2);
+    expect(summary.byAction).toEqual(
+      expect.arrayContaining([{ action: 'update', count: 1 }, { action: 'LOGIN_FAILURE', count: 1 }]),
+    );
+    expect(summary.byEntity).toEqual(
+      expect.arrayContaining([{ entity: 'WorkOrder', count: 1 }, { entity: 'Session', count: 1 }]),
+    );
+    const withActor = rows.find((r: { id: string }) => r.id === 'audit_1');
+    expect(withActor.actorName).toBe('Resort Manager (Demo)');
+    expect(withActor.before).toBe(JSON.stringify({ status: 'OPEN' }));
+    expect(withActor.after).toBe(JSON.stringify({ status: 'ASSIGNED' }));
+    const noActor = rows.find((r: { id: string }) => r.id === 'audit_2');
+    expect(noActor.actorName).toBe('System');
+    expect(noActor.before).toBeNull();
+  });
 });
 
 describe('GET /api/v1/reports/:key/export', () => {
@@ -725,6 +809,43 @@ describe('GET /api/v1/reports/:key/export', () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER', { department: 'RESTAURANT' }));
     const res = await request(createApp())
       .get('/api/v1/reports/amenity-utilisation/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('exports the audit extract as CSV, with before/after as JSON text columns', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'audit_1',
+        actorId: 'user_5',
+        actor: { fullName: 'Resort Manager (Demo)' },
+        action: 'update',
+        entity: 'WorkOrder',
+        entityId: 'wo_1',
+        ip: '10.0.0.1',
+        userAgent: 'Mozilla/5.0',
+        before: { status: 'OPEN' },
+        after: { status: 'ASSIGNED' },
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/audit-extract/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Timestamp,Actor,Action');
+    expect(res.text).toContain('Resort Manager (Demo)');
+    expect(res.text).toContain('""status"":""ASSIGNED""'); // CSV-doubled quotes around the JSON payload
+  });
+
+  it('refuses the audit extract CSV export for report:export holders without audit:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER', { department: 'RESTAURANT' }));
+    const res = await request(createApp())
+      .get('/api/v1/reports/audit-extract/export?from=2026-08-24&to=2026-08-25&format=csv')
       .set('Cookie', authCookie());
     expect(res.status).toBe(403);
   });

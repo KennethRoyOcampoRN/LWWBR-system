@@ -4345,6 +4345,67 @@ three packages. **Not live-tested** — needs a real pass against the
 client's Supabase amenity data, and specifically their own account's
 role, once they're back at their PC.
 
+### User activity / audit extract (spec §8.4 item 9) — closes the MVP report set — verified in sandbox only, not live-tested (2026-08-26)
+
+Client confirmed the CASHIER-exclusion fix on the amenity report matches
+what they meant. This report closes out spec §8.4's full nine-report
+MVP set.
+
+No new ambiguity here — spec is explicit about the restriction
+("SYSTEM_ADMIN, RESORT_MANAGER, OWNER only"), and it turned out to need
+no new role-gate function at all: `audit:read` is already granted to
+exactly those three roles and nowhere else (`rolePermissions.ts`), so
+checking that one existing permission directly *is* the spec's
+restriction, verbatim — simpler than the amenity report's case, as
+expected going in.
+
+Built from `AuditLog`, the model the audit Prisma extension (wired up
+back in M1) has been writing to all session for every create/update/
+delete on an audited entity, plus explicit login events — this is the
+first place anything actually reads those rows back. Scoped on
+`createdAt`, same convention as every other report here.
+
+One deliberate scope boundary, flagged rather than silently assumed:
+spec §9 separately lists a raw `GET /audit-logs?entity=&actorId=&from=&
+to=` browsing endpoint with its own entity/actorId filters — that's a
+distinct, not-yet-built API surface (no dedicated audit module exists),
+out of scope for "continue the report builder." This report is
+date-range only, matching every other report in this set; the raw
+browsing endpoint is a separate task if wanted later.
+
+One data-safety note, not a new decision: every `AuditLog.before`/
+`after` JSON blob is already redacted of credential material at write
+time (`auditExtension.ts`'s `redactSensitiveFields`, applied before any
+row is ever persisted) — so surfacing the full before/after here, to a
+role that already holds `audit:read`, doesn't newly expose anything
+sensitive. On screen it renders collapsed per event (a `<details>`
+disclosure) rather than inline, since it can be sizeable and most rows
+don't need it open to be useful; in the CSV it's a plain JSON-text
+column (over-quoted, RFC-4180-safe, courtesy of the existing `toCsv`
+helper's own escaping).
+
+New report key `audit-extract` added to
+`packages/shared/src/report.ts`; `buildAuditExtractReport` added to
+`apps/api/src/modules/reports/service.ts`; `AuditExtractReportView`
+added to `ReportsPage.tsx`.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 370 tests, 367 passing (same 3
+pre-existing network-blocked failures), `npm run test -w apps/web` —
+60/60 passing (new tests cover the three-role allow list, the refusal
+of report:view holders without `audit:read`, actor-name resolution
+including the null-actor "System" fallback, the before/after JSON
+round-trip through both the JSON response and the CSV export, and the
+collapsed-details UI), `npm run build` clean across all three packages.
+**Not live-tested** — needs a real pass against the client's actual
+Supabase audit history once they're back at their PC.
+
+This closes spec §8.4's full nine-report MVP set. Holding here per the
+same "report back and let the client decide next steps" discipline as
+the rest of this session — remaining M6 scope (PWA setup, per the
+earlier "Client-confirmed: unit management is fully verified" note)
+waits on review.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

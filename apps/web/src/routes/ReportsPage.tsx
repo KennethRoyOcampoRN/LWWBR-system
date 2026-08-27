@@ -126,6 +126,27 @@ interface AmenityUtilisationSummary {
   byItem: { itemName: string; requestCount: number; qtyIssued: number; lostDamagedCount: number }[];
 }
 
+interface AuditExtractRow {
+  id: string;
+  createdAt: string;
+  actorId: string | null;
+  actorName: string;
+  action: string;
+  entity: string;
+  entityId: string;
+  ip: string | null;
+  userAgent: string | null;
+  before: string | null;
+  after: string | null;
+}
+
+interface AuditExtractSummary {
+  totalEvents: number;
+  byAction: { action: string; count: number }[];
+  byEntity: { entity: string; count: number }[];
+  topActors: { actorId: string | null; actorName: string; count: number }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
   | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
@@ -138,7 +159,8 @@ type ReportResponse =
       to: string;
       summary: AmenityUtilisationSummary;
       rows: AmenityUtilisationRow[];
-    };
+    }
+  | { key: 'audit-extract'; from: string; to: string; summary: AuditExtractSummary; rows: AuditExtractRow[] };
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -317,6 +339,7 @@ export function ReportsPage() {
       {report?.key === 'maintenance-log' && <MaintenanceLogReportView report={report} />}
       {report?.key === 'fnb-orders' && <FnbOrderReportView report={report} />}
       {report?.key === 'amenity-utilisation' && <AmenityUtilisationReportView report={report} />}
+      {report?.key === 'audit-extract' && <AuditExtractReportView report={report} />}
     </div>
   );
 }
@@ -789,6 +812,105 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
                   <td className="py-2 pr-4">{row.status}</td>
                   <td className="py-2 pr-4">{new Date(row.requestedAt).toLocaleString()}</td>
                   <td className="py-2 pr-4">{row.conditionOnReturn ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Spec §8.4 item 9: "User activity / audit extract (SYSTEM_ADMIN,
+// RESORT_MANAGER, OWNER only)." Access is gated server-side on the
+// audit:read permission — already granted to exactly those three roles
+// — so a caller without it never reaches this view; nothing extra to
+// gate client-side. Before/after JSON per event is shown collapsed
+// (<details>) rather than inline in the row, since it can be sizeable
+// and most rows don't need it open to be useful.
+function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { key: 'audit-extract' }> }) {
+  const { summary, rows } = report;
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="rounded border border-gray-200 p-3 sm:w-64">
+        <p className="text-xs font-medium uppercase text-gray-500">Events</p>
+        <p className="text-2xl font-semibold">{summary.totalEvents}</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">By action</h2>
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.byAction.map((row) => (
+              <li key={row.action} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{row.action}</span>
+                <span className="font-medium">{row.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">By entity</h2>
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.byEntity.map((row) => (
+              <li key={row.entity} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{row.entity}</span>
+                <span className="font-medium">{row.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Top actors</h2>
+          {summary.topActors.length === 0 && <p className="text-sm text-gray-500">No events in range.</p>}
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.topActors.map((row) => (
+              <li key={row.actorId ?? 'system'} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{row.actorName}</span>
+                <span className="font-medium">{row.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Events in range</h2>
+        <div className="max-h-96 overflow-auto rounded border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <th className="py-2 pr-4 pl-2">Timestamp</th>
+                <th className="py-2 pr-4">Actor</th>
+                <th className="py-2 pr-4">Action</th>
+                <th className="py-2 pr-4">Entity</th>
+                <th className="py-2 pr-4">Entity ID</th>
+                <th className="py-2 pr-4">IP</th>
+                <th className="py-2 pr-4">Details</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td className="py-2 pr-4 pl-2">{new Date(row.createdAt).toLocaleString()}</td>
+                  <td className="py-2 pr-4">{row.actorName}</td>
+                  <td className="py-2 pr-4 font-medium">{row.action}</td>
+                  <td className="py-2 pr-4">{row.entity}</td>
+                  <td className="py-2 pr-4 font-mono text-xs">{row.entityId}</td>
+                  <td className="py-2 pr-4">{row.ip ?? '—'}</td>
+                  <td className="py-2 pr-4">
+                    {(row.before || row.after) && (
+                      <details>
+                        <summary className="cursor-pointer text-xs text-blue-700">before/after</summary>
+                        <pre className="mt-1 max-w-xs overflow-auto whitespace-pre-wrap text-xs text-gray-600">
+                          {row.before ? `before: ${row.before}\n` : ''}
+                          {row.after ? `after: ${row.after}` : ''}
+                        </pre>
+                      </details>
+                    )}
+                    {!row.before && !row.after && '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -830,6 +830,113 @@ async function buildAmenityUtilisationReport(query: ReportQuery, actor: ReportAc
   };
 }
 
+interface AuditExtractRow {
+  id: string;
+  createdAt: string;
+  actorId: string | null;
+  actorName: string;
+  action: string;
+  entity: string;
+  entityId: string;
+  ip: string | null;
+  userAgent: string | null;
+  before: unknown;
+  after: unknown;
+}
+
+// Spec §8.4 item 9: "User activity / audit extract (SYSTEM_ADMIN,
+// RESORT_MANAGER, OWNER only)." Unlike the amenity report, this
+// restriction needs no new role-based gate — `audit:read` is already
+// granted to exactly those three roles (see rolePermissions.ts) and
+// nowhere else, so checking that one existing permission *is* the
+// spec's restriction, verbatim. All three also hold report:view at ALL
+// scope, so the router's own requirePermission('report:view') never
+// blocks a legitimate caller before reaching this check.
+//
+// Every AuditLog row's `before`/`after` JSON is already redacted of
+// credential material at write time (see auditExtension.ts's
+// redactSensitiveFields, applied in prisma.ts's audit extension before
+// any row is persisted) — safe to surface here in full to a role that
+// already holds audit:read.
+//
+// Scoped by createdAt, same convention as every other report in this
+// file. Spec §9 separately lists a raw `GET /audit-logs?entity=&
+// actorId=&from=&to=` browsing endpoint with its own entity/actorId
+// filters — that's a distinct, not-yet-built API surface (no dedicated
+// audit module exists yet), out of scope for this report-builder slice;
+// this report is date-range only, matching every other report here.
+async function buildAuditExtractReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (!actor.permissions['audit:read']) {
+    throw new ApiError(403, 'FORBIDDEN', 'The audit extract is restricted to SYSTEM_ADMIN, RESORT_MANAGER, and OWNER.');
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const logs = await prisma.auditLog.findMany({
+    where: { createdAt: { gte: from, lt: toEndExclusive } },
+    include: { actor: { select: { fullName: true } } },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  const rows: AuditExtractRow[] = logs.map((log) => ({
+    id: log.id,
+    createdAt: log.createdAt.toISOString(),
+    actorId: log.actorId,
+    actorName: log.actor?.fullName ?? (log.actorId ? log.actorId : 'System'),
+    action: log.action,
+    entity: log.entity,
+    entityId: log.entityId,
+    ip: log.ip,
+    userAgent: log.userAgent,
+    before: log.before,
+    after: log.after,
+  }));
+
+  const byActionMap = new Map<string, number>();
+  const byEntityMap = new Map<string, number>();
+  const byActorMap = new Map<string, { actorId: string | null; actorName: string; count: number }>();
+  for (const row of rows) {
+    byActionMap.set(row.action, (byActionMap.get(row.action) ?? 0) + 1);
+    byEntityMap.set(row.entity, (byEntityMap.get(row.entity) ?? 0) + 1);
+    const actorKey = row.actorId ?? 'system';
+    const existing = byActorMap.get(actorKey) ?? { actorId: row.actorId, actorName: row.actorName, count: 0 };
+    existing.count += 1;
+    byActorMap.set(actorKey, existing);
+  }
+
+  const summary = {
+    totalEvents: rows.length,
+    byAction: [...byActionMap.entries()].map(([action, count]) => ({ action, count })).sort((a, b) => b.count - a.count),
+    byEntity: [...byEntityMap.entries()].map(([entity, count]) => ({ entity, count })).sort((a, b) => b.count - a.count),
+    topActors: [...byActorMap.values()].sort((a, b) => b.count - a.count).slice(0, 10),
+  };
+
+  return {
+    summary,
+    rows: rows.map((row) => ({
+      ...row,
+      before: row.before !== null ? JSON.stringify(row.before) : null,
+      after: row.after !== null ? JSON.stringify(row.after) : null,
+    })) as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'createdAt', label: 'Timestamp' },
+      { key: 'actorName', label: 'Actor' },
+      { key: 'action', label: 'Action' },
+      { key: 'entity', label: 'Entity' },
+      { key: 'entityId', label: 'Entity ID' },
+      { key: 'ip', label: 'IP' },
+      { key: 'userAgent', label: 'User agent' },
+      { key: 'before', label: 'Before' },
+      { key: 'after', label: 'After' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
@@ -837,6 +944,7 @@ export async function getReport(key: string, query: ReportQuery, actor: ReportAc
   if (key === 'maintenance-log') return buildMaintenanceLogReport(query, actor);
   if (key === 'fnb-orders') return buildFnbOrderReport(query, actor);
   if (key === 'amenity-utilisation') return buildAmenityUtilisationReport(query, actor);
+  if (key === 'audit-extract') return buildAuditExtractReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 
