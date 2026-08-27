@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allowedAmenityRequestTransitions,
+  canViewAmenityUtilisationReport,
   getAmenityRequestTransition,
   type AmenityRequestStatusKey,
 } from '../src/amenityRequest.js';
@@ -64,5 +65,39 @@ describe('amenity request transition table (spec §7.4)', () => {
     expect(allowedAmenityRequestTransitions('REQUESTED', { 'amenity:approve': 'ALL' })).toEqual(['APPROVED', 'CANCELLED']);
     expect(allowedAmenityRequestTransitions('REQUESTED', {})).toEqual([]);
     expect(allowedAmenityRequestTransitions('APPROVED', { 'amenity:issue': 'ALL' })).toEqual(['ISSUED']);
+  });
+});
+
+// Client decision, 2026-08-26: the amenity utilisation & loss/damage
+// report is gated by oversight role, not report:view's ordinary scope
+// split — see canViewAmenityUtilisationReport's own header comment for
+// the full reasoning.
+describe('canViewAmenityUtilisationReport', () => {
+  it('always allows SYSTEM_ADMIN and RESORT_MANAGER', () => {
+    expect(canViewAmenityUtilisationReport(['SYSTEM_ADMIN'])).toBe(true);
+    expect(canViewAmenityUtilisationReport(['RESORT_MANAGER'])).toBe(true);
+  });
+
+  it('allows POC_HOUSEKEEPING, the one department-POC role that currently holds amenity:approve', () => {
+    expect(canViewAmenityUtilisationReport(['POC_HOUSEKEEPING'])).toBe(true);
+  });
+
+  it('refuses POC_MAINTENANCE and RESTAURANT_MANAGER — department POCs, but neither holds amenity:manage/amenity:approve', () => {
+    expect(canViewAmenityUtilisationReport(['POC_MAINTENANCE'])).toBe(false);
+    expect(canViewAmenityUtilisationReport(['RESTAURANT_MANAGER'])).toBe(false);
+  });
+
+  it('refuses CASHIER despite holding amenity:approve — not a department POC role, so it does not qualify', () => {
+    expect(canViewAmenityUtilisationReport(['CASHIER'])).toBe(false);
+  });
+
+  it('refuses OWNER, OPS_SAFETY_SUPERVISOR, and ADMIN_HEAD despite their own ALL-scope report:view', () => {
+    expect(canViewAmenityUtilisationReport(['OWNER'])).toBe(false);
+    expect(canViewAmenityUtilisationReport(['OPS_SAFETY_SUPERVISOR'])).toBe(false);
+    expect(canViewAmenityUtilisationReport(['ADMIN_HEAD'])).toBe(false);
+  });
+
+  it('allows a multi-role user if any one of their roles qualifies', () => {
+    expect(canViewAmenityUtilisationReport(['RESTAURANT_STAFF', 'SYSTEM_ADMIN'])).toBe(true);
   });
 });

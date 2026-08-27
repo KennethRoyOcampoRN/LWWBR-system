@@ -4267,6 +4267,84 @@ averaging, top-items aggregation, the empty-range case, and CSV export),
 needs a real pass against the client's Supabase F&B data once they're
 back at their PC.
 
+### Amenity utilisation & loss/damage report (spec §8.4 item 8) — verified in sandbox only, not live-tested (2026-08-26)
+
+Client confirmed the F&B orders boundary held clean (revenue as order-
+subtotal totals, no payment/settlement implication) — that report was
+actually already shipped before their confirmation landed, so no rework
+needed there.
+
+This report hit a real, structural ambiguity, and I stopped to ask
+rather than guess. Two findings before writing any code:
+
+1. **"Loss/damage" is not a gap.** There's already a real, fully-wired
+   `LOST_DAMAGED` status on `AmenityRequestStatus` (reachable from
+   OVERDUE, gated by `amenity:return`, captured with a
+   `conditionOnReturn` note, live in the return-flow UI). No inference
+   or new field needed — the report just reports on that status
+   directly.
+2. **Department scope has no clean answer.** Unlike housekeeping/
+   maintenance/F&B, amenities aren't owned by one department —
+   `amenity:*` permissions are granted broadly (front desk, cashier,
+   housekeeping, resort staff all hold them), and among the three
+   DEPARTMENT-scoped `report:view` holders, only POC_HOUSEKEEPING
+   touches amenities at all. There's no `department` field on
+   `AmenityRequest` to filter by either.
+
+Asked how to handle #2. Client's answer, in their own words: "the
+people who physically issue/return amenities span multiple departments
+... The report itself should be an oversight tool: restrict report:view
+for amenity utilisation to roles actually responsible for monitoring
+stock — SYSTEM_ADMIN, RESORT_MANAGER, and any amenity-relevant POC (per
+whichever holds amenity:manage/amenity:approve today) — refuse it for
+everyone else, regardless of whether they hold amenity:request/issue
+operationally."
+
+Implemented as a new role-based gate,
+`canViewAmenityUtilisationReport` (`packages/shared/src/amenityRequest.ts`)
+— same narrow, documented-exception pattern as `workOrder.ts`'s
+`canVerifyWorkOrder` and `unitStatus.ts`'s
+`canOverrideAutomaticTransition`: a policy decision about which role's
+authority reaches, not the ordinary report:view ALL/DEPARTMENT scope
+check. `ReportActor` gained a `roles` field (threaded through from
+`req.authUser!.roles` in the router) so the service layer can make this
+call.
+
+One thing worth flagging: building this, my first pass computed
+"amenity-relevant" too literally — "any role holding
+amenity:manage/amenity:approve" — which would have let CASHIER through
+(it holds `amenity:approve` in this codebase, unrelated to this
+report). The client said "amenity-relevant **POC**," and CASHIER isn't
+a department POC, so I scoped the dynamic check to the actual POC-tier
+trio this codebase already names elsewhere (`workOrder.ts`'s own header
+comment calls POC_HOUSEKEEPING/POC_MAINTENANCE/RESTAURANT_MANAGER "the
+department POC") — a test catching the CASHIER case caught this before
+it shipped. Today that resolves to: SYSTEM_ADMIN, RESORT_MANAGER, and
+POC_HOUSEKEEPING (the only one of the three POC-tier roles that
+currently holds `amenity:manage`/`amenity:approve`); POC_MAINTENANCE
+and RESTAURANT_MANAGER hold neither and are refused, as are
+OWNER/OPS_SAFETY_SUPERVISOR/ADMIN_HEAD/CASHIER despite their own
+ALL-scope `report:view`.
+
+**Utilisation and loss/damage** — built from existing `AmenityRequest`
+data, no schema change: total requests and qty issued in range (scoped
+on `createdAt`, same convention as every other report here), broken
+down per item, with `qtyIssued` counting only requests where `issuedAt`
+is actually set (a REQUESTED/APPROVED/CANCELLED request never had
+anything physically handed out) — and a loss/damage count and detail
+list pulled straight from `LOST_DAMAGED` status rows.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 365 tests, 362 passing (same 3
+pre-existing network-blocked failures), `npm run test -w apps/web` —
+59/59 passing, `npm run test -w packages/shared` — 76/76 passing (new
+role-gate tests specifically pin the CASHIER-exclusion case, plus the
+allow/refuse split for every relevant role, the qty-issued-excludes-
+never-issued math, and CSV export), `npm run build` clean across all
+three packages. **Not live-tested** — needs a real pass against the
+client's Supabase amenity data, and specifically their own account's
+role, once they're back at their PC.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

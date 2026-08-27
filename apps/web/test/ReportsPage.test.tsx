@@ -245,6 +245,72 @@ describe('ReportsPage', () => {
     expect(screen.getByText(/does not mean payment was collected or verified/)).toBeInTheDocument();
   });
 
+  it('runs the amenity utilisation report and shows requests/qty-issued/loss-damage', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/amenity-utilisation?')) {
+        return jsonResponse(200, {
+          report: {
+            key: 'amenity-utilisation',
+            from: '2026-08-24',
+            to: '2026-08-25',
+            summary: {
+              totalRequests: 2,
+              totalQtyIssued: 3,
+              lostDamagedCount: 1,
+              byItem: [
+                { itemName: 'Kayak', requestCount: 1, qtyIssued: 1, lostDamagedCount: 1 },
+                { itemName: 'Beach towel', requestCount: 1, qtyIssued: 2, lostDamagedCount: 0 },
+              ],
+            },
+            rows: [
+              {
+                id: 'am_1',
+                referenceNo: 'LWW-AM-0001',
+                itemName: 'Beach towel',
+                unitCode: 'R01',
+                qty: 2,
+                status: 'RETURNED',
+                requestedAt: '2026-08-24T01:00:00.000Z',
+                issuedAt: '2026-08-24T01:05:00.000Z',
+                returnedAt: '2026-08-24T10:00:00.000Z',
+                conditionOnReturn: 'Good',
+              },
+              {
+                id: 'am_2',
+                referenceNo: 'LWW-AM-0002',
+                itemName: 'Kayak',
+                unitCode: 'R02',
+                qty: 1,
+                status: 'LOST_DAMAGED',
+                requestedAt: '2026-08-24T02:00:00.000Z',
+                issuedAt: '2026-08-24T02:05:00.000Z',
+                returnedAt: null,
+                conditionOnReturn: 'Paddle lost',
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('Report'), 'amenity-utilisation');
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getByText('LWW-AM-0001')).toBeInTheDocument());
+    expect(screen.getByText('Requests').parentElement).toHaveTextContent('2');
+    expect(screen.getByText('Qty issued').parentElement).toHaveTextContent('3');
+    expect(screen.getByText('Lost / damaged').parentElement).toHaveTextContent('1');
+    expect(screen.getByText('Paddle lost')).toBeInTheDocument();
+  });
+
   it('exports the current report to CSV', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

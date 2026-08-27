@@ -5,7 +5,14 @@
 // as every other domain enum in this package: the API's dispatcher and
 // the frontend's report picker both read this list rather than each
 // hardcoding their own.
-export const REPORT_KEYS = ['occupancy', 'work-orders', 'housekeeping', 'maintenance-log', 'fnb-orders'] as const;
+export const REPORT_KEYS = [
+  'occupancy',
+  'work-orders',
+  'housekeeping',
+  'maintenance-log',
+  'fnb-orders',
+  'amenity-utilisation',
+] as const;
 
 export type ReportKey = (typeof REPORT_KEYS)[number];
 
@@ -15,4 +22,5 @@ export const REPORT_LABELS: Record<ReportKey, string> = {
   housekeeping: 'Housekeeping productivity',
   'maintenance-log': 'Maintenance log',
   'fnb-orders': 'F&B orders',
+  'amenity-utilisation': 'Amenity utilisation & loss/damage',
 };

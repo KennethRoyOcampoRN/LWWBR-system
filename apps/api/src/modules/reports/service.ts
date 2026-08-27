@@ -2,10 +2,13 @@ import { TZDate } from '@date-fns/tz';
 import {
   UNIT_KIND_GROUP_LABELS,
   unitKindGroup,
+  canViewAmenityUtilisationReport,
+  type AmenityRequestStatusKey,
   type DepartmentKey,
   type FnbOrderStatusKey,
   type PermissionKey,
   type PermissionScope,
+  type RoleKey,
   type UnitStatusKey,
   type WorkOrderStatusKey,
   type WorkOrderTypeKey,
@@ -20,6 +23,7 @@ import type { ReportQuery } from './schema.js';
 interface ReportActor {
   department: string;
   permissions: Partial<Record<PermissionKey, PermissionScope>>;
+  roles: RoleKey[];
 }
 
 // Spec §3.2: "Timezone Asia/Manila everywhere... never store naive local
@@ -713,12 +717,126 @@ async function buildFnbOrderReport(query: ReportQuery, actor: ReportActor): Prom
   };
 }
 
+interface AmenityUtilisationRow {
+  id: string;
+  referenceNo: string;
+  itemName: string;
+  unitCode: string | null;
+  qty: number;
+  status: AmenityRequestStatusKey;
+  requestedAt: string;
+  issuedAt: string | null;
+  returnedAt: string | null;
+  conditionOnReturn: string | null;
+}
+
+// Spec §8.4 item 8: "Amenity utilisation and loss/damage." Client
+// decision, 2026-08-26: this report's access is gated by oversight role
+// (canViewAmenityUtilisationReport, packages/shared/src/amenityRequest.ts),
+// not by report:view's ordinary ALL/DEPARTMENT scope — amenities have no
+// single owning department the way housekeeping/maintenance/F&B do, and
+// scoping by who can operate amenities would admit every front-line role
+// that hands out a towel, not just the people responsible for monitoring
+// stock. See that function's own comment for the full reasoning. Because
+// access is role-gated rather than scope-gated, this report is always
+// built property-wide for whoever passes the role check — there's no
+// `department` filter to apply.
+//
+// "Loss/damage" maps directly onto the real `LOST_DAMAGED` status
+// already wired into the amenity request lifecycle (reachable from
+// OVERDUE, captured with `conditionOnReturn` — see amenities/service.ts)
+// — no new field or inference needed.
+//
+// "Utilisation" is scoped by `createdAt` (request placed in range), same
+// convention as every other report in this file. "Qty issued" sums `qty`
+// for any request where `issuedAt` is set, regardless of its current
+// status (RETURNED, OVERDUE, or LOST_DAMAGED all passed through ISSUED)
+// — a REQUESTED/APPROVED/CANCELLED request never had anything physically
+// handed out.
+async function buildAmenityUtilisationReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (!canViewAmenityUtilisationReport(actor.roles)) {
+    throw new ApiError(
+      403,
+      'FORBIDDEN',
+      'Amenity utilisation is restricted to oversight roles (SYSTEM_ADMIN, RESORT_MANAGER, and amenity-managing POCs).',
+    );
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const requests = await prisma.amenityRequest.findMany({
+    where: { deletedAt: null, createdAt: { gte: from, lt: toEndExclusive } },
+    include: { unit: { select: { code: true } }, amenityItem: { select: { name: true } } },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  const rows: AmenityUtilisationRow[] = requests.map((request) => ({
+    id: request.id,
+    referenceNo: request.referenceNo,
+    itemName: request.amenityItemName ?? request.amenityItem?.name ?? '(deleted item)',
+    unitCode: request.unit?.code ?? null,
+    qty: request.qty,
+    status: request.status as AmenityRequestStatusKey,
+    requestedAt: request.createdAt.toISOString(),
+    issuedAt: request.issuedAt?.toISOString() ?? null,
+    returnedAt: request.returnedAt?.toISOString() ?? null,
+    conditionOnReturn: request.conditionOnReturn,
+  }));
+
+  const byItemMap = new Map<
+    string,
+    { itemName: string; requestCount: number; qtyIssued: number; lostDamagedCount: number }
+  >();
+  for (const row of rows) {
+    const existing = byItemMap.get(row.itemName) ?? {
+      itemName: row.itemName,
+      requestCount: 0,
+      qtyIssued: 0,
+      lostDamagedCount: 0,
+    };
+    existing.requestCount += 1;
+    if (row.issuedAt) existing.qtyIssued += row.qty;
+    if (row.status === 'LOST_DAMAGED') existing.lostDamagedCount += 1;
+    byItemMap.set(row.itemName, existing);
+  }
+  const byItem = [...byItemMap.values()].sort((a, b) => b.requestCount - a.requestCount);
+
+  const summary = {
+    totalRequests: rows.length,
+    totalQtyIssued: rows.reduce((sum, row) => (row.issuedAt ? sum + row.qty : sum), 0),
+    lostDamagedCount: rows.filter((row) => row.status === 'LOST_DAMAGED').length,
+    byItem,
+  };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'referenceNo', label: 'Reference' },
+      { key: 'itemName', label: 'Item' },
+      { key: 'unitCode', label: 'Unit' },
+      { key: 'qty', label: 'Qty' },
+      { key: 'status', label: 'Status' },
+      { key: 'requestedAt', label: 'Requested' },
+      { key: 'issuedAt', label: 'Issued' },
+      { key: 'returnedAt', label: 'Returned' },
+      { key: 'conditionOnReturn', label: 'Condition on return' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
   if (key === 'housekeeping') return buildHousekeepingReport(query, actor);
   if (key === 'maintenance-log') return buildMaintenanceLogReport(query, actor);
   if (key === 'fnb-orders') return buildFnbOrderReport(query, actor);
+  if (key === 'amenity-utilisation') return buildAmenityUtilisationReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 

@@ -1,4 +1,6 @@
 import type { PermissionKey } from './permissions.js';
+import { ROLE_PERMISSIONS } from './rolePermissions.js';
+import type { RoleKey } from './roles.js';
 
 // Spec §7.4's amenity request lifecycle:
 //   REQUESTED -> APPROVED -> ISSUED -> RETURNED
@@ -89,4 +91,49 @@ export function allowedAmenityRequestTransitions(
   permissions: Partial<Record<PermissionKey, unknown>>,
 ): AmenityRequestStatusKey[] {
   return (AMENITY_REQUEST_TRANSITIONS[from] ?? []).filter((t) => permissions[t.permission]).map((t) => t.to);
+}
+
+// Client decision, 2026-08-26: the amenity utilisation & loss/damage
+// report (spec §8.4 item 8) needs its own oversight-role gate, not
+// report:view's ordinary ALL/DEPARTMENT scope split. Amenities aren't
+// owned by one department the way housekeeping/maintenance/F&B are —
+// `amenity:*` permissions span front desk, cashier, housekeeping, and
+// resort staff (whoever is physically handing out a towel or kayak), so
+// "which department does this belong to" has no clean answer, and
+// scoping by *who can operate* amenities would let in everyone who
+// hands items out, not just the people responsible for monitoring
+// stock. The client's call, in their own words: "SYSTEM_ADMIN,
+// RESORT_MANAGER, and any amenity-relevant POC."
+//
+// "POC" here means the same trio workOrder.ts's own header comment
+// already names as "the department POC" (POC_HOUSEKEEPING,
+// POC_MAINTENANCE, RESTAURANT_MANAGER) — not literally "any role that
+// happens to hold amenity:manage/amenity:approve," which would also
+// sweep in CASHIER (an existing, unrelated amenity:approve grant — a
+// cashier isn't a department POC). "Amenity-relevant" is checked
+// dynamically against ROLE_PERMISSIONS for just that trio, so this stays
+// in sync automatically if their amenity grants ever change — today only
+// POC_HOUSEKEEPING qualifies; POC_MAINTENANCE and RESTAURANT_MANAGER
+// hold neither `amenity:manage` nor `amenity:approve` and are excluded.
+// Refused for everyone else who holds report:view, including
+// OWNER/OPS_SAFETY_SUPERVISOR/ADMIN_HEAD/CASHIER despite their own
+// ALL-scope report:view — same narrow, documented-exception pattern as
+// workOrder.ts's canVerifyWorkOrder and unitStatus.ts's
+// canOverrideAutomaticTransition: a policy decision about which role's
+// authority reaches, not a resource-permission check (report:view
+// itself, still enforced separately by the API).
+const AMENITY_REPORT_ALWAYS_ALLOWED_ROLES: ReadonlySet<RoleKey> = new Set(['SYSTEM_ADMIN', 'RESORT_MANAGER']);
+const AMENITY_REPORT_ELIGIBLE_POC_ROLES: ReadonlySet<RoleKey> = new Set([
+  'POC_HOUSEKEEPING',
+  'POC_MAINTENANCE',
+  'RESTAURANT_MANAGER',
+]);
+
+export function canViewAmenityUtilisationReport(roles: readonly RoleKey[]): boolean {
+  return roles.some(
+    (role) =>
+      AMENITY_REPORT_ALWAYS_ALLOWED_ROLES.has(role) ||
+      (AMENITY_REPORT_ELIGIBLE_POC_ROLES.has(role) &&
+        (Boolean(ROLE_PERMISSIONS[role]?.['amenity:manage']) || Boolean(ROLE_PERMISSIONS[role]?.['amenity:approve']))),
+  );
 }

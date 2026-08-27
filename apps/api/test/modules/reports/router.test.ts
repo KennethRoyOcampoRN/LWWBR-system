@@ -7,6 +7,7 @@ const mockPrisma = {
   unitStatusEvent: { findMany: vi.fn() },
   workOrder: { findMany: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
+  amenityRequest: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -472,6 +473,104 @@ describe('GET /api/v1/reports/:key', () => {
       topItems: [],
     });
   });
+
+  // Client decision, 2026-08-26: this report is gated by oversight role
+  // (SYSTEM_ADMIN, RESORT_MANAGER, or any role holding amenity:manage/
+  // amenity:approve), not the ordinary report:view ALL/DEPARTMENT split
+  // — amenities have no single owning department. POC_HOUSEKEEPING holds
+  // amenity:approve, so it's allowed even though its report:view is only
+  // DEPARTMENT-scoped; RESTAURANT_MANAGER and POC_MAINTENANCE hold
+  // neither amenity:manage nor amenity:approve and are refused despite
+  // holding report:view.
+  it('allows amenity utilisation for SYSTEM_ADMIN, RESORT_MANAGER, and POC_HOUSEKEEPING (amenity:approve holder)', async () => {
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([]);
+
+    for (const role of ['SYSTEM_ADMIN', 'RESORT_MANAGER', 'POC_HOUSEKEEPING']) {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(role, { department: 'HOUSEKEEPING' }));
+      const res = await request(createApp())
+        .get('/api/v1/reports/amenity-utilisation?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('refuses amenity utilisation for report:view holders without an amenity oversight role', async () => {
+    for (const [role, department] of [
+      ['RESTAURANT_MANAGER', 'RESTAURANT'],
+      ['POC_MAINTENANCE', 'MAINTENANCE'],
+      ['OWNER', 'MANAGEMENT'],
+      ['CASHIER', 'FRONT_OFFICE'],
+    ] as const) {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(role, { department }));
+      const res = await request(createApp())
+        .get('/api/v1/reports/amenity-utilisation?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('builds the amenity utilisation report: qty issued only counts requests that were actually issued, loss/damage tracked per item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([
+      {
+        id: 'am_1',
+        referenceNo: 'LWW-AM-0001',
+        amenityItemName: 'Beach towel',
+        amenityItem: { name: 'Beach towel' },
+        unit: { code: 'R01' },
+        qty: 2,
+        status: 'RETURNED',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        issuedAt: new Date('2026-08-24T09:05:00+08:00'),
+        returnedAt: new Date('2026-08-24T18:00:00+08:00'),
+        conditionOnReturn: 'Good',
+      },
+      {
+        id: 'am_2',
+        referenceNo: 'LWW-AM-0002',
+        amenityItemName: 'Kayak',
+        amenityItem: { name: 'Kayak' },
+        unit: { code: 'R02' },
+        qty: 1,
+        status: 'LOST_DAMAGED',
+        createdAt: new Date('2026-08-24T10:00:00+08:00'),
+        issuedAt: new Date('2026-08-24T10:05:00+08:00'),
+        returnedAt: null,
+        conditionOnReturn: 'Paddle lost',
+      },
+      {
+        id: 'am_3',
+        referenceNo: 'LWW-AM-0003',
+        amenityItemName: 'Beach towel',
+        amenityItem: { name: 'Beach towel' },
+        unit: { code: 'R03' },
+        qty: 3,
+        status: 'CANCELLED',
+        createdAt: new Date('2026-08-24T11:00:00+08:00'),
+        issuedAt: null,
+        returnedAt: null,
+        conditionOnReturn: null,
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/amenity-utilisation?from=2026-08-24&to=2026-08-25')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    const { summary, rows } = res.body.report;
+    expect(summary.totalRequests).toBe(3);
+    expect(summary.totalQtyIssued).toBe(3); // 2 (returned) + 1 (lost) — the cancelled 3 never issued
+    expect(summary.lostDamagedCount).toBe(1);
+    expect(summary.byItem).toEqual(
+      expect.arrayContaining([
+        { itemName: 'Beach towel', requestCount: 2, qtyIssued: 2, lostDamagedCount: 0 },
+        { itemName: 'Kayak', requestCount: 1, qtyIssued: 1, lostDamagedCount: 1 },
+      ]),
+    );
+    const cancelled = rows.find((r: { id: string }) => r.id === 'am_3');
+    expect(cancelled.issuedAt).toBeNull();
+  });
 });
 
 describe('GET /api/v1/reports/:key/export', () => {
@@ -592,5 +691,41 @@ describe('GET /api/v1/reports/:key/export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Reference,Type,Status');
     expect(res.text).toContain('FNB-001,DINE_IN,SERVED');
+  });
+
+  it('exports the amenity utilisation report as CSV, gated by the same oversight-role check', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.amenityRequest.findMany.mockResolvedValue([
+      {
+        id: 'am_1',
+        referenceNo: 'LWW-AM-0001',
+        amenityItemName: 'Beach towel',
+        amenityItem: { name: 'Beach towel' },
+        unit: { code: 'R01' },
+        qty: 2,
+        status: 'RETURNED',
+        createdAt: new Date('2026-08-24T09:00:00+08:00'),
+        issuedAt: new Date('2026-08-24T09:05:00+08:00'),
+        returnedAt: new Date('2026-08-24T18:00:00+08:00'),
+        conditionOnReturn: 'Good',
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/reports/amenity-utilisation/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Reference,Item,Unit');
+    expect(res.text).toContain('LWW-AM-0001,Beach towel,R01');
+  });
+
+  it('refuses the amenity utilisation CSV export for report:export holders without an amenity oversight role', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER', { department: 'RESTAURANT' }));
+    const res = await request(createApp())
+      .get('/api/v1/reports/amenity-utilisation/export?from=2026-08-24&to=2026-08-25&format=csv')
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
   });
 });

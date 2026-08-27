@@ -106,12 +106,39 @@ interface FnbOrderSummary {
   topItems: { itemName: string; qty: number }[];
 }
 
+interface AmenityUtilisationRow {
+  id: string;
+  referenceNo: string;
+  itemName: string;
+  unitCode: string | null;
+  qty: number;
+  status: string;
+  requestedAt: string;
+  issuedAt: string | null;
+  returnedAt: string | null;
+  conditionOnReturn: string | null;
+}
+
+interface AmenityUtilisationSummary {
+  totalRequests: number;
+  totalQtyIssued: number;
+  lostDamagedCount: number;
+  byItem: { itemName: string; requestCount: number; qtyIssued: number; lostDamagedCount: number }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
   | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
   | { key: 'housekeeping'; from: string; to: string; summary: HousekeepingSummary; rows: HousekeepingRow[] }
   | { key: 'maintenance-log'; from: string; to: string; summary: MaintenanceLogSummary; rows: MaintenanceLogRow[] }
-  | { key: 'fnb-orders'; from: string; to: string; summary: FnbOrderSummary; rows: FnbOrderRow[] };
+  | { key: 'fnb-orders'; from: string; to: string; summary: FnbOrderSummary; rows: FnbOrderRow[] }
+  | {
+      key: 'amenity-utilisation';
+      from: string;
+      to: string;
+      summary: AmenityUtilisationSummary;
+      rows: AmenityUtilisationRow[];
+    };
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -289,6 +316,7 @@ export function ReportsPage() {
       {report?.key === 'housekeeping' && <HousekeepingReportView report={report} />}
       {report?.key === 'maintenance-log' && <MaintenanceLogReportView report={report} />}
       {report?.key === 'fnb-orders' && <FnbOrderReportView report={report} />}
+      {report?.key === 'amenity-utilisation' && <AmenityUtilisationReportView report={report} />}
     </div>
   );
 }
@@ -679,6 +707,88 @@ function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key:
                   <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
                   <td className="py-2 pr-4">{formatMinutes(row.prepTimeMinutes)}</td>
                   <td className="py-2 pr-4">{formatPeso(row.subtotal)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Spec §8.4 item 8: "Amenity utilisation and loss/damage." Access to
+// this report is restricted server-side to oversight roles (SYSTEM_ADMIN,
+// RESORT_MANAGER, and amenity-managing POCs) rather than the ordinary
+// report:view ALL/DEPARTMENT split — see the API's canViewAmenityUtilisationReport
+// for the full reasoning (amenities have no single owning department the
+// way housekeeping/maintenance/F&B do). A caller without that role gets
+// a 403 from the API like any other permission refusal; nothing extra to
+// render here for that case. "Loss/damage" is the real LOST_DAMAGED
+// status already wired into the amenity request lifecycle, not a new
+// concept.
+function AmenityUtilisationReportView({ report }: { report: Extract<ReportResponse, { key: 'amenity-utilisation' }> }) {
+  const { summary, rows } = report;
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Requests</p>
+          <p className="text-2xl font-semibold">{summary.totalRequests}</p>
+        </div>
+        <div className="rounded border border-gray-200 p-3">
+          <p className="text-xs font-medium uppercase text-gray-500">Qty issued</p>
+          <p className="text-2xl font-semibold">{summary.totalQtyIssued}</p>
+        </div>
+        <div className="rounded border border-red-200 bg-red-50 p-3">
+          <p className="text-xs font-medium uppercase text-red-700">Lost / damaged</p>
+          <p className="text-2xl font-semibold text-red-900">{summary.lostDamagedCount}</p>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">By item</h2>
+        {summary.byItem.length === 0 && <p className="text-sm text-gray-500">No amenity requests in range.</p>}
+        {summary.byItem.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {summary.byItem.map((item) => (
+              <li key={item.itemName} className="flex justify-between border-b border-gray-100 py-1">
+                <span>{item.itemName}</span>
+                <span className="font-medium">
+                  {item.requestCount} requests · {item.qtyIssued} issued
+                  {item.lostDamagedCount > 0 ? ` · ${item.lostDamagedCount} lost/damaged` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-gray-700">Requests in range</h2>
+        <div className="max-h-96 overflow-auto rounded border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <th className="py-2 pr-4 pl-2">Reference</th>
+                <th className="py-2 pr-4">Item</th>
+                <th className="py-2 pr-4">Unit</th>
+                <th className="py-2 pr-4">Qty</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2 pr-4">Requested</th>
+                <th className="py-2 pr-4">Condition on return</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row) => (
+                <tr key={row.id} className={row.status === 'LOST_DAMAGED' ? 'bg-red-50' : undefined}>
+                  <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
+                  <td className="py-2 pr-4">{row.itemName}</td>
+                  <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
+                  <td className="py-2 pr-4">{row.qty}</td>
+                  <td className="py-2 pr-4">{row.status}</td>
+                  <td className="py-2 pr-4">{new Date(row.requestedAt).toLocaleString()}</td>
+                  <td className="py-2 pr-4">{row.conditionOnReturn ?? '—'}</td>
                 </tr>
               ))}
             </tbody>

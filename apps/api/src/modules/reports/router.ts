@@ -22,6 +22,7 @@ reportsRouter.get(
     const report = await getReport(key, query, {
       department: req.authUser!.department,
       permissions: req.authUser!.permissions,
+      roles: req.authUser!.roles,
     });
     res.status(200).json({ report: { key, from: query.from, to: query.to, ...report } });
   }),
@@ -36,6 +37,7 @@ reportsRouter.get(
     const csv = await getReportCsv(key, query, {
       department: req.authUser!.department,
       permissions: req.authUser!.permissions,
+      roles: req.authUser!.roles,
     });
     res.status(200);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
