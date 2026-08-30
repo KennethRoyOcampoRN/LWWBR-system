@@ -395,6 +395,35 @@ describe('ReportsPage', () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/reports/occupancy/export'), expect.anything());
   });
 
+  // Real bug found live-testing, 2026-08-30: both occupancy tables
+  // rendered headers-only with a blank body on a zero-row date range —
+  // this was invisible to the earlier loading/empty-state sweep because
+  // that sweep searched for existing "No X yet." text to replace, and
+  // these two tables never had any empty-state text to find.
+  it('runs the occupancy report for a zero-data range and shows an empty state in both tables, not a blank body', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/reports/occupancy?')) {
+        return jsonResponse(200, {
+          report: { key: 'occupancy', from: '2026-08-24', to: '2026-08-25', summary: { byDay: [] }, rows: [] },
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Run report' }));
+
+    await waitFor(() => expect(screen.getByText('No occupancy data in range.')).toBeInTheDocument());
+    expect(screen.getByText('No unit status history in range.')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
   it('a DEPARTMENT-scoped report:view holder sees no Export CSV button and no department filter for occupancy', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();

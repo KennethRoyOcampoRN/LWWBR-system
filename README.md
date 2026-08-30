@@ -4779,3 +4779,60 @@ UI-only slice), `npm run test -w packages/shared` — 76/76 passing,
 live-browser check (and, once the client is testing against the real
 Supabase database, a real render of each converted loading/empty spot) is
 worth doing before calling this fully closed.
+
+### Real bug found live-testing: OccupancyReportView had no empty-state handling at all; caught as a methodology gap across all of ReportsPage (2026-08-30)
+
+Client live-tested the Occupancy report against a date range with no
+data and got two headers-only tables with a blank body underneath — no
+`EmptyState`, no message, nothing. The earlier loading/empty-state sweep
+missed this because that sweep worked by finding existing ad hoc
+`<p>No X yet.</p>` text and replacing it with `EmptyState` — a
+search-and-replace of text that was already there. Occupancy's two
+tables never had any empty-state text to find in the first place, so the
+method itself couldn't see the gap. Client asked for a second pass over
+every report view checking zero-row behavior directly, not just
+searching for existing strings — flagging it correctly as a methodology
+problem, not a one-file bug.
+
+Re-audited `ReportsPage.tsx` line by line: every `.map()` over a
+list/table across all 7 report views, checked for a zero-length branch
+regardless of whether ad hoc text existed to find. Found 11 more gaps
+beyond the 2 reported, spread across every view except Maintenance log
+(already fully covered from the earlier sweep):
+
+- **Occupancy** — Daily occupancy table (`summary.byDay`), Unit status
+  history table (`rows`) — the 2 originally reported.
+- **Work orders** — "By type" list, "By department" list, "Tickets in
+  range" table.
+- **Housekeeping** — "Cleans in range" table.
+- **F&B orders** — "Orders in range" table.
+- **Amenity utilisation** — "Requests in range" table.
+- **Audit extract** — "By action" list, "By entity" list, "Events in
+  range" table.
+
+All 13 spots now use the same dual-conditional pattern already
+established elsewhere in this file (`{x.length === 0 && <EmptyState
+message="..." />}` / `{x.length > 0 && <table>/<ul>...}`), each with a
+message matching its section's existing local convention rather than one
+generic string. Also tidied Audit extract's "Top actors" list, which
+already had the `EmptyState` check but rendered an empty `<ul>`
+alongside it regardless — now uses the same dual-conditional as every
+other spot, for consistency, not because the old version was visibly
+broken (an empty `<ul>` renders nothing).
+
+New regression test in `ReportsPage.test.tsx`: runs the occupancy report
+with an empty `summary.byDay`/`rows` response and asserts both empty-state
+messages render and no `<table>` is in the document — this is the exact
+case that reached the client live and had no test coverage before now.
+Existing test suite otherwise untouched; all still-populated-data
+assertions in the other 8 tests continue to pass since they only added a
+sibling branch, not a behavior change to the populated case.
+
+Verification: `npm run typecheck` clean, `npm run lint` clean,
+`npm run test -w apps/web` — 76/76 passing (up from 75, the one new
+regression test), `npm run build` clean across all three packages. Single
+file touched (plus its test file), no schema change, no new dependency.
+Sandbox-verified only — recommend the client re-run the same zero-data
+occupancy range that surfaced this, plus spot-check a couple of the other
+11 fixed spots (e.g. an empty-range work-orders or audit-extract run),
+against the real Supabase database.

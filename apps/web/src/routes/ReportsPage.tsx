@@ -362,56 +362,62 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
     <div className="flex flex-col gap-6">
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Daily occupancy</h2>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead>
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4">Date</th>
-                <th className="py-2 pr-4">Occupied</th>
-                <th className="py-2 pr-4">Total units</th>
-                <th className="py-2 pr-4">Occupancy rate</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {report.summary.byDay.map((day) => (
-                <tr key={day.date}>
-                  <td className="py-2 pr-4 font-medium">{day.date}</td>
-                  <td className="py-2 pr-4">{day.occupiedCount}</td>
-                  <td className="py-2 pr-4">{day.totalUnits}</td>
-                  <td className="py-2 pr-4">{formatPercent(day.occupancyRate)}</td>
+        {report.summary.byDay.length === 0 && <EmptyState message="No occupancy data in range." />}
+        {report.summary.byDay.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead>
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Occupied</th>
+                  <th className="py-2 pr-4">Total units</th>
+                  <th className="py-2 pr-4">Occupancy rate</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {report.summary.byDay.map((day) => (
+                  <tr key={day.date}>
+                    <td className="py-2 pr-4 font-medium">{day.date}</td>
+                    <td className="py-2 pr-4">{day.occupiedCount}</td>
+                    <td className="py-2 pr-4">{day.totalUnits}</td>
+                    <td className="py-2 pr-4">{formatPercent(day.occupancyRate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Unit status history — by day, by unit</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Date</th>
-                <th className="py-2 pr-4">Group</th>
-                <th className="py-2 pr-4">Unit</th>
-                <th className="py-2 pr-4">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {report.rows.map((row) => (
-                <tr key={`${row.date}-${row.unitId}`}>
-                  <td className="py-2 pr-4 pl-2">{row.date}</td>
-                  <td className="py-2 pr-4 text-xs text-gray-500">{row.group}</td>
-                  <td className="py-2 pr-4">
-                    {row.unitCode} — {row.unitName}
-                  </td>
-                  <td className="py-2 pr-4">{UNIT_STATUS_LABELS[row.status] ?? row.status}</td>
+        {report.rows.length === 0 && <EmptyState message="No unit status history in range." />}
+        {report.rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Date</th>
+                  <th className="py-2 pr-4">Group</th>
+                  <th className="py-2 pr-4">Unit</th>
+                  <th className="py-2 pr-4">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {report.rows.map((row) => (
+                  <tr key={`${row.date}-${row.unitId}`}>
+                    <td className="py-2 pr-4 pl-2">{row.date}</td>
+                    <td className="py-2 pr-4 text-xs text-gray-500">{row.group}</td>
+                    <td className="py-2 pr-4">
+                      {row.unitCode} — {row.unitName}
+                    </td>
+                    <td className="py-2 pr-4">{UNIT_STATUS_LABELS[row.status] ?? row.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -439,25 +445,31 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">By type</h2>
-          <ul className="flex flex-col gap-1 text-sm">
-            {summary.byType.map((row) => (
-              <li key={row.type} className="flex justify-between border-b border-gray-100 py-1">
-                <span>{row.type}</span>
-                <span className="font-medium">{row.count}</span>
-              </li>
-            ))}
-          </ul>
+          {summary.byType.length === 0 && <EmptyState message="No tickets in range." />}
+          {summary.byType.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {summary.byType.map((row) => (
+                <li key={row.type} className="flex justify-between border-b border-gray-100 py-1">
+                  <span>{row.type}</span>
+                  <span className="font-medium">{row.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">By department</h2>
-          <ul className="flex flex-col gap-1 text-sm">
-            {summary.byDepartment.map((row) => (
-              <li key={row.department} className="flex justify-between border-b border-gray-100 py-1">
-                <span>{DEPARTMENT_LABELS[row.department as DepartmentKey] ?? row.department}</span>
-                <span className="font-medium">{row.count}</span>
-              </li>
-            ))}
-          </ul>
+          {summary.byDepartment.length === 0 && <EmptyState message="No tickets in range." />}
+          {summary.byDepartment.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {summary.byDepartment.map((row) => (
+                <li key={row.department} className="flex justify-between border-b border-gray-100 py-1">
+                  <span>{DEPARTMENT_LABELS[row.department as DepartmentKey] ?? row.department}</span>
+                  <span className="font-medium">{row.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
 
@@ -480,36 +492,41 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Tickets in range</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Reference</th>
-                <th className="py-2 pr-4">Type</th>
-                <th className="py-2 pr-4">Department</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2 pr-4">Unit</th>
-                <th className="py-2 pr-4">Created</th>
-                <th className="py-2 pr-4">SLA</th>
-                <th className="py-2 pr-4">Time to close</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
-                  <td className="py-2 pr-4">{row.type}</td>
-                  <td className="py-2 pr-4">{DEPARTMENT_LABELS[row.department as DepartmentKey] ?? row.department}</td>
-                  <td className="py-2 pr-4">{row.status}</td>
-                  <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
-                  <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{row.slaBreached ? 'Breached' : '—'}</td>
-                  <td className="py-2 pr-4">{formatMinutes(row.timeToCloseMinutes)}</td>
+        {rows.length === 0 && <EmptyState message="No tickets in range." />}
+        {rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Reference</th>
+                  <th className="py-2 pr-4">Type</th>
+                  <th className="py-2 pr-4">Department</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Unit</th>
+                  <th className="py-2 pr-4">Created</th>
+                  <th className="py-2 pr-4">SLA</th>
+                  <th className="py-2 pr-4">Time to close</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
+                    <td className="py-2 pr-4">{row.type}</td>
+                    <td className="py-2 pr-4">
+                      {DEPARTMENT_LABELS[row.department as DepartmentKey] ?? row.department}
+                    </td>
+                    <td className="py-2 pr-4">{row.status}</td>
+                    <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
+                    <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{row.slaBreached ? 'Breached' : '—'}</td>
+                    <td className="py-2 pr-4">{formatMinutes(row.timeToCloseMinutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -559,32 +576,35 @@ function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { 
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Cleans in range</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Unit</th>
-                <th className="py-2 pr-4">Attendant</th>
-                <th className="py-2 pr-4">Cleaning started</th>
-                <th className="py-2 pr-4">Cleaned</th>
-                <th className="py-2 pr-4">Clean time</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={`${row.unitId}-${row.cleanedAt}`}>
-                  <td className="py-2 pr-4 pl-2 font-medium">
-                    {row.unitCode} — {row.unitName}
-                  </td>
-                  <td className="py-2 pr-4">{row.attendantName}</td>
-                  <td className="py-2 pr-4">{new Date(row.cleaningStartedAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{new Date(row.cleanedAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{formatMinutes(row.cleanTimeMinutes)}</td>
+        {rows.length === 0 && <EmptyState message="No completed cleans in range." />}
+        {rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Unit</th>
+                  <th className="py-2 pr-4">Attendant</th>
+                  <th className="py-2 pr-4">Cleaning started</th>
+                  <th className="py-2 pr-4">Cleaned</th>
+                  <th className="py-2 pr-4">Clean time</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={`${row.unitId}-${row.cleanedAt}`}>
+                    <td className="py-2 pr-4 pl-2 font-medium">
+                      {row.unitCode} — {row.unitName}
+                    </td>
+                    <td className="py-2 pr-4">{row.attendantName}</td>
+                    <td className="py-2 pr-4">{new Date(row.cleaningStartedAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{new Date(row.cleanedAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{formatMinutes(row.cleanTimeMinutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -720,34 +740,37 @@ function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key:
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Orders in range</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Reference</th>
-                <th className="py-2 pr-4">Type</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2 pr-4">Unit</th>
-                <th className="py-2 pr-4">Created</th>
-                <th className="py-2 pr-4">Prep time</th>
-                <th className="py-2 pr-4">Subtotal</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
-                  <td className="py-2 pr-4">{row.type}</td>
-                  <td className="py-2 pr-4">{row.status}</td>
-                  <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
-                  <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{formatMinutes(row.prepTimeMinutes)}</td>
-                  <td className="py-2 pr-4">{formatPeso(row.subtotal)}</td>
+        {rows.length === 0 && <EmptyState message="No orders in range." />}
+        {rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Reference</th>
+                  <th className="py-2 pr-4">Type</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Unit</th>
+                  <th className="py-2 pr-4">Created</th>
+                  <th className="py-2 pr-4">Prep time</th>
+                  <th className="py-2 pr-4">Subtotal</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
+                    <td className="py-2 pr-4">{row.type}</td>
+                    <td className="py-2 pr-4">{row.status}</td>
+                    <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
+                    <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{formatMinutes(row.prepTimeMinutes)}</td>
+                    <td className="py-2 pr-4">{formatPeso(row.subtotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -802,34 +825,37 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Requests in range</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Reference</th>
-                <th className="py-2 pr-4">Item</th>
-                <th className="py-2 pr-4">Unit</th>
-                <th className="py-2 pr-4">Qty</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2 pr-4">Requested</th>
-                <th className="py-2 pr-4">Condition on return</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={row.id} className={row.status === 'LOST_DAMAGED' ? 'bg-red-50' : undefined}>
-                  <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
-                  <td className="py-2 pr-4">{row.itemName}</td>
-                  <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
-                  <td className="py-2 pr-4">{row.qty}</td>
-                  <td className="py-2 pr-4">{row.status}</td>
-                  <td className="py-2 pr-4">{new Date(row.requestedAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{row.conditionOnReturn ?? '—'}</td>
+        {rows.length === 0 && <EmptyState message="No amenity requests in range." />}
+        {rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Reference</th>
+                  <th className="py-2 pr-4">Item</th>
+                  <th className="py-2 pr-4">Unit</th>
+                  <th className="py-2 pr-4">Qty</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Requested</th>
+                  <th className="py-2 pr-4">Condition on return</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={row.id} className={row.status === 'LOST_DAMAGED' ? 'bg-red-50' : undefined}>
+                    <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
+                    <td className="py-2 pr-4">{row.itemName}</td>
+                    <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
+                    <td className="py-2 pr-4">{row.qty}</td>
+                    <td className="py-2 pr-4">{row.status}</td>
+                    <td className="py-2 pr-4">{new Date(row.requestedAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{row.conditionOnReturn ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -854,81 +880,92 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">By action</h2>
-          <ul className="flex flex-col gap-1 text-sm">
-            {summary.byAction.map((row) => (
-              <li key={row.action} className="flex justify-between border-b border-gray-100 py-1">
-                <span>{row.action}</span>
-                <span className="font-medium">{row.count}</span>
-              </li>
-            ))}
-          </ul>
+          {summary.byAction.length === 0 && <EmptyState message="No events in range." />}
+          {summary.byAction.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {summary.byAction.map((row) => (
+                <li key={row.action} className="flex justify-between border-b border-gray-100 py-1">
+                  <span>{row.action}</span>
+                  <span className="font-medium">{row.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">By entity</h2>
-          <ul className="flex flex-col gap-1 text-sm">
-            {summary.byEntity.map((row) => (
-              <li key={row.entity} className="flex justify-between border-b border-gray-100 py-1">
-                <span>{row.entity}</span>
-                <span className="font-medium">{row.count}</span>
-              </li>
-            ))}
-          </ul>
+          {summary.byEntity.length === 0 && <EmptyState message="No events in range." />}
+          {summary.byEntity.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {summary.byEntity.map((row) => (
+                <li key={row.entity} className="flex justify-between border-b border-gray-100 py-1">
+                  <span>{row.entity}</span>
+                  <span className="font-medium">{row.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">Top actors</h2>
           {summary.topActors.length === 0 && <EmptyState message="No events in range." />}
-          <ul className="flex flex-col gap-1 text-sm">
-            {summary.topActors.map((row) => (
-              <li key={row.actorId ?? 'system'} className="flex justify-between border-b border-gray-100 py-1">
-                <span>{row.actorName}</span>
-                <span className="font-medium">{row.count}</span>
-              </li>
-            ))}
-          </ul>
+          {summary.topActors.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {summary.topActors.map((row) => (
+                <li key={row.actorId ?? 'system'} className="flex justify-between border-b border-gray-100 py-1">
+                  <span>{row.actorName}</span>
+                  <span className="font-medium">{row.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Events in range</h2>
-        <div className="max-h-96 overflow-auto rounded border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
-                <th className="py-2 pr-4 pl-2">Timestamp</th>
-                <th className="py-2 pr-4">Actor</th>
-                <th className="py-2 pr-4">Action</th>
-                <th className="py-2 pr-4">Entity</th>
-                <th className="py-2 pr-4">Entity ID</th>
-                <th className="py-2 pr-4">IP</th>
-                <th className="py-2 pr-4">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="py-2 pr-4 pl-2">{new Date(row.createdAt).toLocaleString()}</td>
-                  <td className="py-2 pr-4">{row.actorName}</td>
-                  <td className="py-2 pr-4 font-medium">{row.action}</td>
-                  <td className="py-2 pr-4">{row.entity}</td>
-                  <td className="py-2 pr-4 font-mono text-xs">{row.entityId}</td>
-                  <td className="py-2 pr-4">{row.ip ?? '—'}</td>
-                  <td className="py-2 pr-4">
-                    {(row.before || row.after) && (
-                      <details>
-                        <summary className="cursor-pointer text-xs text-blue-700">before/after</summary>
-                        <pre className="mt-1 max-w-xs overflow-auto whitespace-pre-wrap text-xs text-gray-600">
-                          {row.before ? `before: ${row.before}\n` : ''}
-                          {row.after ? `after: ${row.after}` : ''}
-                        </pre>
-                      </details>
-                    )}
-                    {!row.before && !row.after && '—'}
-                  </td>
+        {rows.length === 0 && <EmptyState message="No events in range." />}
+        {rows.length > 0 && (
+          <div className="max-h-96 overflow-auto rounded border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                  <th className="py-2 pr-4 pl-2">Timestamp</th>
+                  <th className="py-2 pr-4">Actor</th>
+                  <th className="py-2 pr-4">Action</th>
+                  <th className="py-2 pr-4">Entity</th>
+                  <th className="py-2 pr-4">Entity ID</th>
+                  <th className="py-2 pr-4">IP</th>
+                  <th className="py-2 pr-4">Details</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-2 pr-4 pl-2">{new Date(row.createdAt).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{row.actorName}</td>
+                    <td className="py-2 pr-4 font-medium">{row.action}</td>
+                    <td className="py-2 pr-4">{row.entity}</td>
+                    <td className="py-2 pr-4 font-mono text-xs">{row.entityId}</td>
+                    <td className="py-2 pr-4">{row.ip ?? '—'}</td>
+                    <td className="py-2 pr-4">
+                      {(row.before || row.after) && (
+                        <details>
+                          <summary className="cursor-pointer text-xs text-blue-700">before/after</summary>
+                          <pre className="mt-1 max-w-xs overflow-auto whitespace-pre-wrap text-xs text-gray-600">
+                            {row.before ? `before: ${row.before}\n` : ''}
+                            {row.after ? `after: ${row.after}` : ''}
+                          </pre>
+                        </details>
+                      )}
+                      {!row.before && !row.after && '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
