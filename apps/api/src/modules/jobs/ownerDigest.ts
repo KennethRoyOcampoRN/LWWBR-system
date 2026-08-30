@@ -74,9 +74,9 @@ function workOrderDeepLink(id: string): string {
 // math); arrivals mirrors getUnitsDashboard's own checkinsToday
 // definition (READY -> OCCUPIED UnitStatusEvent rows), just for
 // yesterday instead of today and with real Asia/Manila boundaries
-// (getUnitsDashboard's own checkinsToday uses the server's local
-// midnight, not TZDate — a pre-existing gap, out of scope for this
-// slice, not repeated here). Incidents count every IncidentType created
+// (getUnitsDashboard's own checkinsToday has since been fixed to use the
+// same TZDate approach — see units/service.ts's todayStartInManila).
+// Incidents count every IncidentType created
 // yesterday (not just SAFETY — that's the narrower, real-time exception
 // alert; this is the broader daily count spec's glance card asks for).
 // The SLA-breach list is *not* "yesterday"-scoped — it's whichever
