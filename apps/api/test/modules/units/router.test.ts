@@ -1,3 +1,4 @@
+import { TZDate } from '@date-fns/tz';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -814,10 +815,28 @@ describe('GET /api/v1/units/dashboard', () => {
   // assumed a date-based internal reservation system this app no longer
   // has (see the Check-in/Check-out redesign) — counts real
   // UnitStatusEvent rows created today instead.
-  it('counts check-ins and check-outs logged today from UnitStatusEvent, scoped to midnight', async () => {
+  // Spec §3.2: "'today'... resolve[s] against Asia/Manila regardless of
+  // where the browser sits." Same principle applies server-side (a
+  // Netlify function's process TZ is not guaranteed to be PHT) — this
+  // pins the boundary to real Asia/Manila midnight, not just "midnight in
+  // whatever TZ the test runner happens to be in," which `getHours() ===
+  // 0` alone can't distinguish. Same UTC-offset-comparison approach as
+  // jobs/ownerDigest.test.ts's "yesterday" boundary tests.
+  it('counts check-ins and check-outs logged today from UnitStatusEvent, scoped to Asia/Manila midnight', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.unit.findMany.mockResolvedValue([]);
     mockPrisma.unitStatusEvent.count.mockResolvedValueOnce(5).mockResolvedValueOnce(4);
+
+    const now = new Date();
+    const nowInManila = new TZDate(now, 'Asia/Manila');
+    const expectedStartOfToday = new TZDate(
+      nowInManila.getFullYear(),
+      nowInManila.getMonth(),
+      nowInManila.getDate(),
+      0,
+      0,
+      'Asia/Manila',
+    );
 
     const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
     expect(res.status).toBe(200);
@@ -826,9 +845,9 @@ describe('GET /api/v1/units/dashboard', () => {
 
     const calls = mockPrisma.unitStatusEvent.count.mock.calls;
     expect(calls[0]![0]).toMatchObject({ where: { fromStatus: 'READY', toStatus: 'OCCUPIED' } });
-    expect(calls[0]![0].where.createdAt.gte.getHours()).toBe(0);
+    expect(calls[0]![0].where.createdAt.gte.getTime()).toBe(expectedStartOfToday.getTime());
     expect(calls[1]![0]).toMatchObject({ where: { fromStatus: 'OCCUPIED', toStatus: 'VACANT_DIRTY' } });
-    expect(calls[1]![0].where.createdAt.gte.getHours()).toBe(0);
+    expect(calls[1]![0].where.createdAt.gte.getTime()).toBe(expectedStartOfToday.getTime());
   });
 
   // Real gap found live-testing, 2026-08-25: this KPI card said "Coming in

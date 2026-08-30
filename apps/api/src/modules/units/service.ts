@@ -1,3 +1,4 @@
+import { TZDate } from '@date-fns/tz';
 import {
   canOverrideAutomaticTransition,
   getTransition,
@@ -6,6 +7,7 @@ import {
   type RoleKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
+import { format } from 'date-fns';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
@@ -340,6 +342,25 @@ export async function deleteUnit(id: string) {
 // timestamps already in the database.
 export const DIRTY_ATTENTION_THRESHOLD_MINUTES = 180;
 
+// Spec §3.2: "Never use the viewer's device timezone... 'today'...
+// resolve[s] against Asia/Manila regardless of where the browser sits."
+// This is server-side, not the device-timezone case that sentence is
+// primarily about, but the same principle holds: a Netlify function's
+// process timezone is not guaranteed to be PHT, so `new Date();
+// setHours(0,0,0,0)` (the old approach here) silently used whatever TZ
+// the process happened to be running in. Same TZDate pattern as
+// reports/service.ts's resolveDate and jobs/ownerDigest.ts's
+// yesterdayBounds — real gap found 2026-08-26 while building the latter,
+// which deliberately did not reuse this then-broken pattern.
+const RESORT_TIMEZONE = 'Asia/Manila';
+
+function todayStartInManila(now: Date = new Date()): Date {
+  const nowInManila = new TZDate(now, RESORT_TIMEZONE);
+  const dateLabel = format(nowInManila, 'yyyy-MM-dd');
+  const [year, month, day] = dateLabel.split('-').map(Number) as [number, number, number];
+  return new TZDate(year, month - 1, day, 0, 0, RESORT_TIMEZONE);
+}
+
 export interface DirtyRoom {
   id: string;
   code: string;
@@ -441,8 +462,7 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
   const slaBreachedWorkOrders = await listSlaBreachedWorkOrders();
   kpi.urgentOpenWorkOrders = await countUrgentOpenWorkOrders();
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = todayStartInManila();
   const [checkinsToday, checkoutsToday] = await Promise.all([
     prisma.unitStatusEvent.count({
       where: { fromStatus: 'READY', toStatus: 'OCCUPIED', createdAt: { gte: startOfToday } },
