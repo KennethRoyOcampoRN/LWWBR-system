@@ -12,6 +12,9 @@ import {
 } from '@lwwbr/shared';
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { EmptyState } from '../components/EmptyState.js';
+import { ErrorBoundary, WidgetError } from '../components/ErrorBoundary.js';
+import { Skeleton, SkeletonList } from '../components/Skeleton.js';
 import { useAuth, type CurrentUser } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import {
@@ -464,7 +467,8 @@ function WorkOrderDetailDrawer({
   if (workOrder === 'loading') {
     return (
       <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
-        <p className="text-sm text-gray-500">Loading…</p>
+        <Skeleton className="h-6 w-2/3" />
+        <SkeletonList />
       </div>
     );
   }
@@ -577,7 +581,7 @@ function WorkOrderDetailDrawer({
 
       <div>
         <p className="mb-1 text-xs text-gray-500">Photos</p>
-        {workOrder.photos.length === 0 && <p className="text-sm text-gray-500">No photos attached.</p>}
+        {workOrder.photos.length === 0 && <EmptyState message="No photos attached." />}
         {workOrder.photos.length > 0 && (
           <div className="grid grid-cols-2 gap-2">
             {workOrder.photos.map((photo) => (
@@ -620,7 +624,7 @@ function WorkOrderDetailDrawer({
           )}
           {assigning && (
             <>
-              {assignableUsers === 'loading' && <p className="text-xs text-gray-500">Loading staff…</p>}
+              {assignableUsers === 'loading' && <Skeleton className="h-7 w-40" />}
               {assignableUsers === 'error' && <p role="alert" className="text-xs text-red-600">Could not load staff.</p>}
               {Array.isArray(assignableUsers) && (
                 <select
@@ -830,7 +834,7 @@ function WorkOrderListRow({ wo, onSelect }: { wo: WorkOrderRow; onSelect: (id: s
 
 function WorkOrderList({ workOrders, onSelect, emptyMessage }: { workOrders: WorkOrderRow[]; onSelect: (id: string) => void; emptyMessage: string }) {
   if (workOrders.length === 0) {
-    return <p className="text-sm text-gray-500">{emptyMessage}</p>;
+    return <EmptyState message={emptyMessage} />;
   }
   return (
     <ul className="flex flex-col gap-2">
@@ -955,7 +959,7 @@ export function WorkOrdersPage() {
         <NewWorkOrderForm units={units} onCreated={handleCreated} />
       )}
 
-      {workOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {workOrders === 'loading' && <SkeletonList />}
       {workOrders === 'error' && <p role="alert">Could not load work orders.</p>}
 
       {Array.isArray(workOrders) && mode === 'MY_TASKS' && (
@@ -972,7 +976,7 @@ export function WorkOrdersPage() {
       {(mode === 'FULL_LIST' || mode === 'DEPARTMENT_QUEUE') && (
         <section>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
-          {myWorkOrders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+          {myWorkOrders === 'loading' && <SkeletonList />}
           {myWorkOrders === 'error' && <p role="alert">Could not load your assigned tickets.</p>}
           {Array.isArray(myWorkOrders) && (
             <WorkOrderList
@@ -1008,8 +1012,17 @@ export function WorkOrdersPage() {
         </section>
       )}
 
+      {/* Spec §11 M6: the drawer renders as an overlay on top of an
+          already-independent list — isolating a crash here means the
+          list underneath stays usable. resetKey={selectedId}: picking a
+          different ticket clears any prior error automatically. */}
       {selectedId && (
-        <WorkOrderDetailDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={handleDetailChanged} />
+        <ErrorBoundary
+          resetKey={selectedId}
+          fallback={(_error, reset) => <WidgetError label="Ticket detail" reset={reset} />}
+        >
+          <WorkOrderDetailDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={handleDetailChanged} />
+        </ErrorBoundary>
       )}
     </div>
   );

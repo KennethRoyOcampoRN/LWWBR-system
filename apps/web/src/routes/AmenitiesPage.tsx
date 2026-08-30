@@ -1,5 +1,7 @@
 import { AMENITY_CATEGORY_KEYS, type AmenityCategoryKey, type AmenityRequestStatusKey } from '@lwwbr/shared';
 import { Fragment, useEffect, useState, type FormEvent } from 'react';
+import { EmptyState } from '../components/EmptyState.js';
+import { SkeletonList, SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { AMENITY_REQUEST_STATUS_CLASSES, AMENITY_REQUEST_STATUS_LABELS } from '../lib/amenityRequestStyle.js';
 import { api, ApiRequestError } from '../lib/api.js';
@@ -294,11 +296,15 @@ export function AmenitiesPage() {
       </div>
 
       {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
-      {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-      {items === 'error' && <p role="alert">Could not load the amenity catalogue.</p>}
-      {Array.isArray(items) && items.length === 0 && (
-        <p className="text-sm text-gray-500">No amenity items yet.</p>
+      {items === 'loading' && (
+        <table className="min-w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={4} columns={7} />
+          </tbody>
+        </table>
       )}
+      {items === 'error' && <p role="alert">Could not load the amenity catalogue.</p>}
+      {Array.isArray(items) && items.length === 0 && <EmptyState message="No amenity items yet." />}
       {Array.isArray(items) && items.length > 0 && (
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -562,11 +568,9 @@ export function AmenitiesPage() {
       <div className="border-t border-gray-200 pt-6">
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Requests</h2>
 
-        {requests === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {requests === 'loading' && <SkeletonList />}
         {requests === 'error' && <p role="alert">Could not load amenity requests.</p>}
-        {Array.isArray(requests) && requests.length === 0 && (
-          <p className="text-sm text-gray-500">No amenity requests yet.</p>
-        )}
+        {Array.isArray(requests) && requests.length === 0 && <EmptyState message="No amenity requests yet." />}
         {Array.isArray(requests) && requests.length > 0 && (
           <ul className="flex flex-col gap-2">
             {requests.map((req) => (

@@ -13,6 +13,8 @@ import {
   type UnitStatusKey,
 } from '@lwwbr/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { EmptyState } from '../components/EmptyState.js';
+import { Skeleton, SkeletonCard, SkeletonList } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
@@ -541,10 +543,10 @@ function UnitDetailDrawer({
           whether a booking exists. */}
       <div className="flex flex-col gap-1 rounded border border-gray-200 p-3">
         <p className="text-sm font-medium">Bookings</p>
-        {upcomingBookings === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {upcomingBookings === 'loading' && <SkeletonList items={2} />}
         {upcomingBookings === 'error' && <p role="alert" className="text-sm text-red-600">Could not load bookings.</p>}
         {Array.isArray(upcomingBookings) && upcomingBookings.length === 0 && (
-          <p className="text-sm text-gray-500">No current or upcoming bookings for this unit.</p>
+          <EmptyState message="No current or upcoming bookings for this unit." />
         )}
         {Array.isArray(upcomingBookings) && upcomingBookings.length > 0 && (
           <ul className="flex flex-col gap-2">
@@ -604,7 +606,7 @@ function UnitDetailDrawer({
                       from GET /bookings/group, not this one row alone. */}
                   {showChecklist && (
                     <div className="flex flex-col gap-2 rounded border border-blue-300 bg-blue-50 p-2 text-xs text-blue-900">
-                      {checkOutChecklist === 'loading' && <p>Loading rooms…</p>}
+                      {checkOutChecklist === 'loading' && <Skeleton className="h-4 w-32" />}
                       {checkOutChecklist === 'error' && (
                         <p role="alert" className="text-red-700">
                           Could not load the rooms for this booking.
@@ -763,11 +765,9 @@ function UnitDetailDrawer({
 
       <div>
         <p className="mb-2 text-sm font-medium">Timeline</p>
-        {timeline === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {timeline === 'loading' && <SkeletonList />}
         {timeline === 'error' && <p role="alert">Could not load timeline.</p>}
-        {Array.isArray(timeline) && timeline.length === 0 && (
-          <p className="text-sm text-gray-500">No status changes recorded yet.</p>
-        )}
+        {Array.isArray(timeline) && timeline.length === 0 && <EmptyState message="No status changes recorded yet." />}
         {Array.isArray(timeline) && (
           <ul className="flex flex-col gap-2">
             {timeline.map((event) => (
@@ -1281,7 +1281,13 @@ export function UnitsPage() {
         )}
       </div>
 
-      {units === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {units === 'loading' && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+          {Array.from({ length: 12 }, (_, i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+      )}
       {units === 'error' && <p role="alert">Could not load units.</p>}
 
       {/* Client decision, 2026-08-25: three-way grouping — Rooms &
@@ -1299,7 +1305,7 @@ export function UnitsPage() {
               <h2 className="text-sm font-semibold text-gray-700">
                 {UNIT_KIND_GROUP_LABELS[group]} ({groupUnits.length})
               </h2>
-              {groupUnits.length === 0 && <p className="text-xs text-gray-400">None yet.</p>}
+              {groupUnits.length === 0 && <EmptyState message="None yet." />}
               {groupUnits.length > 0 && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                   {groupUnits.map((unit) => (

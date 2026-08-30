@@ -8,6 +8,8 @@ import {
   type FnbSettlementKey,
 } from '@lwwbr/shared';
 import { useEffect, useState, type FormEvent } from 'react';
+import { EmptyState } from '../components/EmptyState.js';
+import { SkeletonList, SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { FNB_ORDER_STATUS_LABELS, FNB_ORDER_TYPE_LABELS } from '../lib/fnbOrderStyle.js';
@@ -362,7 +364,7 @@ export function FnbPage() {
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Kitchen board</h2>
 
-        {orders === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {orders === 'loading' && <SkeletonList />}
         {orders === 'error' && <p role="alert">Could not load orders.</p>}
         {Array.isArray(orders) && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -375,7 +377,7 @@ export function FnbPage() {
                   <h3 className="text-xs font-semibold uppercase text-gray-500">
                     {FNB_ORDER_STATUS_LABELS[status]} ({columnOrders.length})
                   </h3>
-                  {columnOrders.length === 0 && <p className="text-xs text-gray-400">No tickets.</p>}
+                  {columnOrders.length === 0 && <EmptyState message="No tickets." />}
                   {columnOrders.map((order) => {
                     const minutes = minutesSince(order.createdAt, now);
                     const urgency = orderUrgency(minutes);
@@ -676,11 +678,15 @@ export function FnbPage() {
           </button>
         </div>
 
-        {history === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-        {history === 'error' && <p role="alert">Could not load order history.</p>}
-        {Array.isArray(history) && visibleHistory.length === 0 && (
-          <p className="text-sm text-gray-500">No matching orders.</p>
+        {history === 'loading' && (
+          <table className="min-w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={4} columns={7} />
+            </tbody>
+          </table>
         )}
+        {history === 'error' && <p role="alert">Could not load order history.</p>}
+        {Array.isArray(history) && visibleHistory.length === 0 && <EmptyState message="No matching orders." />}
         {Array.isArray(history) && visibleHistory.length > 0 && (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -737,9 +743,15 @@ export function FnbPage() {
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Menu</h2>
         {deleteError && <p role="alert" className="mb-2 text-sm text-red-700">{deleteError}</p>}
 
-        {items === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+        {items === 'loading' && (
+          <table className="min-w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={4} columns={4} />
+            </tbody>
+          </table>
+        )}
         {items === 'error' && <p role="alert">Could not load the menu.</p>}
-        {Array.isArray(items) && items.length === 0 && <p className="text-sm text-gray-500">No menu items yet.</p>}
+        {Array.isArray(items) && items.length === 0 && <EmptyState message="No menu items yet." />}
         {Array.isArray(items) && items.length > 0 && (
           <div className="flex flex-col gap-6">
             {menuCategories.map((cat) => (

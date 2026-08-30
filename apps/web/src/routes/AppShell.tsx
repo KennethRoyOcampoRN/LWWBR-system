@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import { useAuth } from '../context/AuthContext.js';
 import { NotificationBell } from './NotificationBell.js';
 
@@ -46,6 +47,7 @@ const NAV_ITEMS: {
 
 export function AppShell() {
   const { user, logout } = useAuth();
+  const location = useLocation();
 
   const visibleItems = NAV_ITEMS.filter((item) => !item.permission || user?.permissions[item.permission]);
 
@@ -79,7 +81,16 @@ export function AppShell() {
         </div>
       </nav>
       <main className="flex-1 p-4 md:p-6">
-        <Outlet />
+        {/* Spec §11 M6: the boundary that actually protects the 9
+            authenticated pages day to day — a crash in any single page
+            shows a real error screen here instead of white-screening
+            the whole app, and the nav above stays usable throughout.
+            resetKey={location.pathname} means navigating to a different
+            page after a crash recovers automatically, no manual reload
+            needed. */}
+        <ErrorBoundary resetKey={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

@@ -1,5 +1,6 @@
 import { PERMISSION_SCOPES, type PermissionKey, type PermissionScope } from '@lwwbr/shared';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { SkeletonList } from '../components/Skeleton.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
 interface RoleRow {
@@ -207,7 +208,7 @@ export function RolesPage() {
 
       <NewRoleForm onCreated={handleRoleCreated} />
 
-      {roles === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {roles === 'loading' && <SkeletonList />}
       {roles === 'error' && <p role="alert">Could not load roles.</p>}
 
       {Array.isArray(roles) && (

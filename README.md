@@ -4667,3 +4667,115 @@ live in a headless browser against the built app (mocked
 overdue-amenity row renders with real data, the empty-state text renders
 when the list is empty, and zero dashed-border stub elements remain
 anywhere on the page.
+
+### Error boundaries + consistent loading/empty states (spec §11 M6 line) — verified in sandbox only, not live-tested (2026-08-26)
+
+Client's exact request: "empty states, loading skeletons, error
+boundaries" from the M6 line of spec §11, flagging that this was handled
+ad hoc per page with no shared pattern and that there was no React error
+boundary anywhere in the app — an unhandled render error white-screened
+the whole app with no recovery path. Explicit foundation slice ahead of
+PWA/offline work, which will need to layer an "offline" state on top of
+whatever loading/empty pattern exists — client wanted this consistent now
+rather than retrofitted twice. Plan (three new shared components plus a
+full sweep of every ad hoc loading/empty spot found by audit) presented
+and approved verbatim ("proceed as planned").
+
+**New module**: `apps/web/src/components/`, the app's first shared UI
+component location (everything previously lived in `routes/` or `lib/`).
+
+**`ErrorBoundary.tsx`** — a hand-rolled class component (React 19 still
+has no hook-based way to catch a render error;
+`getDerivedStateFromError`/`componentDidCatch` are class-only, so this is
+a small local component rather than a new dependency per spec §12 rule 3).
+Two modes: no `fallback` prop renders a full-screen "Something went
+wrong" block with a Reload button (the safest universal recovery when
+state may be genuinely corrupted); a `fallback` render-prop
+`(error, reset) => ReactNode` gives a lighter, widget-scoped recovery via
+`reset()`, which just clears the caught error and remounts the children.
+An optional `resetKey` prop clears a caught error automatically when it
+changes, so a boundary can auto-recover on navigation without a manual
+reload. Also exports `WidgetError` — a small compact fallback ("`{label}`
+failed to load." + Try again) reused by every widget-level boundary
+rather than each call site hand-writing the same JSX.
+
+Three-layer placement, decided by which pages actually render multiple
+simultaneous independent widgets (the only case where a nested boundary
+adds real isolation beyond the next layer up):
+- **`App.tsx`** — outermost, wraps `<AuthProvider><Routes>`, no
+  `resetKey`. Last-resort net if something above the router itself
+  breaks.
+- **`AppShell.tsx`** — around `<Outlet />`, `resetKey={location.pathname}`
+  via `useLocation()`. This is the primary boundary protecting all 9
+  authenticated pages: a crash in any one page shows the fallback instead
+  of white-screening the whole shell, and navigating away clears it
+  automatically.
+- **Targeted widget-level boundaries**, only where justified:
+  `DashboardPage`'s three simultaneous widgets (Property status /
+  Attention queue / Live activity), each independently wrapped so one
+  broken widget doesn't take the other two down with it; and
+  `WorkOrdersPage`'s detail drawer (`resetKey={selectedId}`), an overlay
+  on top of an otherwise-unaffected list. Deliberately **not**
+  `ReportsPage` — it renders exactly one report view at a time, so a
+  nested boundary there would add no protection beyond the Outlet-level
+  one already covering it.
+
+**`Skeleton.tsx`** — matches the three actual visual shapes found across
+the app rather than one generic placeholder: `Skeleton` (an atomic
+pulsing bar, sized via `className`), `SkeletonTableRows({ rows, columns })`
+(real `<tr>`/`<td>` rows, meant to sit inside a real
+`<table><tbody>`), `SkeletonList({ items })` (`<li>` rows inside its own
+`<ul>`), and `SkeletonCard()` (a bordered two-line card matching the
+KPI-tile shape). Each ad hoc "Loading…" spot got the primitive matching
+its real rendered shape once data arrives — table rows for tables (with
+the real column count read off that table's own `<thead>`), `SkeletonList`
+for `<ul>` lists, repeated `SkeletonCard` for card/KPI grids, and a single
+sized `Skeleton` bar for small inline transient loads (a dropdown's staff
+list, a checkout checklist, the boot-time auth check) that aren't a
+list/table shape at all.
+
+**`EmptyState.tsx`** — `{ message, action? }`, renders the message in the
+exact pre-existing `text-sm text-gray-500` styling every ad hoc empty
+state already used (so nothing changes visually, just centralizes it)
+plus an optional action slot.
+
+**Full sweep, not partial** — client had flagged the specific risk of
+"leaving both patterns running side by side," so every ad hoc loading/
+empty spot found in the audit (10 files, one per route page plus
+`RequireAuth.tsx`) was converted rather than a high-traffic subset:
+`DashboardPage`, `WorkOrdersPage`, `AmenitiesPage`, `FnbPage`,
+`RolesPage`, `SessionsPage`, `UsersPage`, `UnitsPage`, `ReportsPage`,
+`RequireAuth`. Behavior is unchanged everywhere — same conditional
+branches, only the rendered markup changed.
+
+**One real gap found and fixed along the way**: `ReportsPage`'s results
+pane had no loading indicator at all before this slice — only the "Run
+report" button's own label changed to "Running…" while the pane below it
+sat static. Added a `SkeletonTableRows` placeholder there, matched to a
+representative report's column count.
+
+New tests: `apps/web/test/ErrorBoundary.test.tsx` (5 — renders children
+normally; default fallback + Reload button calls
+`window.location.reload()`; custom `fallback` render-prop and its
+`reset()`; `resetKey` change auto-recovers on a simulated navigation;
+`WidgetError` renders its label and calls `reset`), `Skeleton.test.tsx`
+(6, covering all four primitives and their default/custom counts),
+`EmptyState.test.tsx` (3, message/action/no-action). Per the client's
+scope note, these cover the shared components themselves, not full
+coverage of every page that now uses them — each edited page's own
+existing test suite (`App.smoke.test.tsx`, `WorkOrdersPage.test.tsx`,
+`AmenitiesPage.test.tsx`, `FnbPage.test.tsx`, `UnitsPage.test.tsx`) was
+re-run after its edits and confirmed no regressions, since the swap
+preserved every conditional branch.
+
+No schema change, no new dependency. Verification: `npm run typecheck`
+clean (both packages), `npm run lint` clean, `npm run test -w apps/web` —
+75/75 passing (11 files), `npm run test -w apps/api` — 391/394 passing,
+the same 3 pre-existing Supabase-round-trip failures every run this
+session hits (no network access from this sandbox; unrelated to this
+UI-only slice), `npm run test -w packages/shared` — 76/76 passing,
+`npm run build` clean across all three packages. Verified in sandbox only
+— this is a broad UI-only change touching every route page, so a
+live-browser check (and, once the client is testing against the real
+Supabase database, a real render of each converted loading/empty spot) is
+worth doing before calling this fully closed.

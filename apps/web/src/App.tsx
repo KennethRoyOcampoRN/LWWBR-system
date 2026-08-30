@@ -1,4 +1,5 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { AuthProvider } from './context/AuthContext.js';
 import { AmenitiesPage } from './routes/AmenitiesPage.js';
 import { AppShell } from './routes/AppShell.js';
@@ -19,76 +20,86 @@ import { WorkOrdersPage } from './routes/WorkOrdersPage.js';
 export function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route element={<RequireAuth />}>
-            <Route path="/change-password" element={<ChangePasswordPage />} />
-            <Route element={<RequirePasswordChange />}>
-              <Route element={<AppShell />}>
-                <Route index element={<DashboardPage />} />
-                <Route
-                  path="/units"
-                  element={
-                    <RequirePermission permission="unit:read">
-                      <UnitsPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/work-orders"
-                  element={
-                    <RequirePermission permission="workorder:read">
-                      <WorkOrdersPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/users"
-                  element={
-                    <RequirePermission permission="user:read">
-                      <UsersPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/roles"
-                  element={
-                    <RequirePermission permission="role:manage">
-                      <RolesPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/amenities"
-                  element={
-                    <RequirePermission permission="amenity:read">
-                      <AmenitiesPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/restaurant"
-                  element={
-                    <RequirePermission permission="fnb:read">
-                      <FnbPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route
-                  path="/reports"
-                  element={
-                    <RequirePermission permission="report:view">
-                      <ReportsPage />
-                    </RequirePermission>
-                  }
-                />
-                <Route path="/sessions" element={<SessionsPage />} />
+      {/* Spec §11 M6: outermost, last-resort net — catches a crash
+          anywhere, including AppShell's own nav or the login/change-
+          password screens outside it. AppShell's own boundary around
+          its <Outlet /> is what actually protects the 9 authenticated
+          pages day to day (see AppShell.tsx); this one is a backstop,
+          not the primary line of defense, so it has no resetKey — a
+          crash this high up is rare enough that a manual reload is an
+          acceptable ask. */}
+      <ErrorBoundary>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route element={<RequireAuth />}>
+              <Route path="/change-password" element={<ChangePasswordPage />} />
+              <Route element={<RequirePasswordChange />}>
+                <Route element={<AppShell />}>
+                  <Route index element={<DashboardPage />} />
+                  <Route
+                    path="/units"
+                    element={
+                      <RequirePermission permission="unit:read">
+                        <UnitsPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/work-orders"
+                    element={
+                      <RequirePermission permission="workorder:read">
+                        <WorkOrdersPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/users"
+                    element={
+                      <RequirePermission permission="user:read">
+                        <UsersPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/roles"
+                    element={
+                      <RequirePermission permission="role:manage">
+                        <RolesPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/amenities"
+                    element={
+                      <RequirePermission permission="amenity:read">
+                        <AmenitiesPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/restaurant"
+                    element={
+                      <RequirePermission permission="fnb:read">
+                        <FnbPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/reports"
+                    element={
+                      <RequirePermission permission="report:view">
+                        <ReportsPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route path="/sessions" element={<SessionsPage />} />
+                </Route>
               </Route>
             </Route>
-          </Route>
-        </Routes>
-      </AuthProvider>
+          </Routes>
+        </AuthProvider>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

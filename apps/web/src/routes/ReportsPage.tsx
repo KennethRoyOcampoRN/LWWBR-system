@@ -1,5 +1,7 @@
 import { DEPARTMENT_KEYS, REPORT_KEYS, REPORT_LABELS, type DepartmentKey, type ReportKey } from '@lwwbr/shared';
 import { useState, type FormEvent } from 'react';
+import { EmptyState } from '../components/EmptyState.js';
+import { SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { DEPARTMENT_LABELS } from '../lib/workOrderStyle.js';
@@ -333,6 +335,17 @@ export function ReportsPage() {
       {loadError && <p role="alert" className="text-sm text-red-700">{loadError}</p>}
       {exportError && <p role="alert" className="text-sm text-red-700">{exportError}</p>}
 
+      {/* Real gap found in the loading/empty-state audit, 2026-08-26: this
+          results pane previously had no loading indicator at all — only
+          the "Run report" button's own label changed to "Running…". */}
+      {loading && (
+        <table className="min-w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={5} columns={5} />
+          </tbody>
+        </table>
+      )}
+
       {report?.key === 'occupancy' && <OccupancyReportView report={report} />}
       {report?.key === 'work-orders' && <WorkOrderReportView report={report} />}
       {report?.key === 'housekeeping' && <HousekeepingReportView report={report} />}
@@ -450,7 +463,7 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Top recurring units</h2>
-        {summary.topRecurringUnits.length === 0 && <p className="text-sm text-gray-500">No unit-linked tickets in range.</p>}
+        {summary.topRecurringUnits.length === 0 && <EmptyState message="No unit-linked tickets in range." />}
         {summary.topRecurringUnits.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
             {summary.topRecurringUnits.map((row) => (
@@ -529,7 +542,7 @@ function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { 
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">By attendant</h2>
-        {summary.byAttendant.length === 0 && <p className="text-sm text-gray-500">No completed cleans in range.</p>}
+        {summary.byAttendant.length === 0 && <EmptyState message="No completed cleans in range." />}
         {summary.byAttendant.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
             {summary.byAttendant.map((row) => (
@@ -612,7 +625,7 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">By day</h2>
-        {summary.byDay.length === 0 && <p className="text-sm text-gray-500">No maintenance tickets in range.</p>}
+        {summary.byDay.length === 0 && <EmptyState message="No maintenance tickets in range." />}
         {summary.byDay.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
             {summary.byDay.map((day) => (
@@ -651,7 +664,7 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
               </div>
             </div>
           ))}
-          {rows.length === 0 && <p className="text-sm text-gray-500">No maintenance tickets in range.</p>}
+          {rows.length === 0 && <EmptyState message="No maintenance tickets in range." />}
         </div>
       </div>
     </div>
@@ -692,7 +705,7 @@ function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key:
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">Top items</h2>
-        {summary.topItems.length === 0 && <p className="text-sm text-gray-500">No fulfilled orders in range.</p>}
+        {summary.topItems.length === 0 && <EmptyState message="No fulfilled orders in range." />}
         {summary.topItems.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
             {summary.topItems.map((item) => (
@@ -771,7 +784,7 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">By item</h2>
-        {summary.byItem.length === 0 && <p className="text-sm text-gray-500">No amenity requests in range.</p>}
+        {summary.byItem.length === 0 && <EmptyState message="No amenity requests in range." />}
         {summary.byItem.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
             {summary.byItem.map((item) => (
@@ -863,7 +876,7 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
         </div>
         <div>
           <h2 className="mb-2 text-sm font-semibold text-gray-700">Top actors</h2>
-          {summary.topActors.length === 0 && <p className="text-sm text-gray-500">No events in range.</p>}
+          {summary.topActors.length === 0 && <EmptyState message="No events in range." />}
           <ul className="flex flex-col gap-1 text-sm">
             {summary.topActors.map((row) => (
               <li key={row.actorId ?? 'system'} className="flex justify-between border-b border-gray-100 py-1">

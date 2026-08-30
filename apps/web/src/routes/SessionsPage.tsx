@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SkeletonTableRows } from '../components/Skeleton.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
 interface SessionRow {
@@ -51,7 +52,13 @@ export function SessionsPage() {
         using right now, so double-check the IP/device details before revoking.
       </p>
 
-      {sessions === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {sessions === 'loading' && (
+        <table className="w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={2} columns={5} />
+          </tbody>
+        </table>
+      )}
       {sessions === 'error' && <p role="alert">Could not load sessions.</p>}
       {error && (
         <p role="alert" className="text-sm text-red-600">

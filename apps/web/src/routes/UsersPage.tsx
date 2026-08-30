@@ -1,5 +1,6 @@
 import { DEPARTMENT_KEYS, ROLE_KEYS, ROLE_LABELS, type DepartmentKey, type RoleKey } from '@lwwbr/shared';
 import { useEffect, useState, type FormEvent } from 'react';
+import { SkeletonTableRows } from '../components/Skeleton.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
 interface UserRow {
@@ -264,7 +265,13 @@ export function UsersPage() {
 
       <NewUserForm onCreated={handleCreated} />
 
-      {users === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
+      {users === 'loading' && (
+        <table className="w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={4} columns={6} />
+          </tbody>
+        </table>
+      )}
       {users === 'error' && <p role="alert">Could not load users.</p>}
       {Array.isArray(users) && (
         <table className="w-full text-left text-sm">

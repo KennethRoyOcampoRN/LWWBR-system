@@ -1,5 +1,8 @@
 import type { AnyUnitStatusKey } from '@lwwbr/shared';
 import { useCallback, useEffect, useState } from 'react';
+import { EmptyState } from '../components/EmptyState.js';
+import { ErrorBoundary, WidgetError } from '../components/ErrorBoundary.js';
+import { SkeletonCard, SkeletonList } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api } from '../lib/api.js';
 import { subscribeToUnitStatusChanges } from '../lib/realtime.js';
@@ -163,115 +166,135 @@ export function CommandCenter() {
         <p className="text-sm text-gray-500">Every card here is live from real data.</p>
       </div>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Property status</h2>
-        {dashboard === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-        {dashboard === 'error' && <p role="alert">Could not load the KPI strip.</p>}
-        {typeof dashboard === 'object' && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiCard label="Occupied" value={dashboard.kpi.occupied} accentClass="border-purple-300 bg-purple-50 text-purple-900" />
-            <KpiCard label="Ready" value={dashboard.kpi.ready} accentClass="border-green-300 bg-green-50 text-green-900" />
-            <KpiCard label="Dirty" value={dashboard.kpi.dirty} accentClass="border-amber-300 bg-amber-50 text-amber-900" />
-            <KpiCard label="Out of order" value={dashboard.kpi.outOfOrder} accentClass="border-red-300 bg-red-50 text-red-900" />
-            <KpiCard
-              label="Open urgent work orders"
-              value={dashboard.kpi.urgentOpenWorkOrders}
-              accentClass="border-red-300 bg-red-50 text-red-900"
-            />
-            <KpiCard
-              label="Check-ins today"
-              value={dashboard.kpi.checkinsToday}
-              accentClass="border-blue-300 bg-blue-50 text-blue-900"
-            />
-            <KpiCard
-              label="Check-outs today"
-              value={dashboard.kpi.checkoutsToday}
-              accentClass="border-blue-300 bg-blue-50 text-blue-900"
-            />
-            <KpiCard
-              label="Open F&B tickets"
-              value={dashboard.kpi.openFnbOrders}
-              accentClass="border-orange-300 bg-orange-50 text-orange-900"
-            />
-          </div>
-        )}
-      </section>
+      {/* Spec §11 M6: three genuinely simultaneous, independent widgets
+          on one screen — the strongest case in this app for per-widget
+          error isolation, so a crash in one (e.g. a malformed feed
+          timestamp) doesn't take the other two down with it. */}
+      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Property status" reset={reset} />}>
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Property status</h2>
+          {dashboard === 'loading' && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {Array.from({ length: 8 }, (_, i) => (
+                <SkeletonCard key={i} />
+              ))}
+            </div>
+          )}
+          {dashboard === 'error' && <p role="alert">Could not load the KPI strip.</p>}
+          {typeof dashboard === 'object' && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <KpiCard label="Occupied" value={dashboard.kpi.occupied} accentClass="border-purple-300 bg-purple-50 text-purple-900" />
+              <KpiCard label="Ready" value={dashboard.kpi.ready} accentClass="border-green-300 bg-green-50 text-green-900" />
+              <KpiCard label="Dirty" value={dashboard.kpi.dirty} accentClass="border-amber-300 bg-amber-50 text-amber-900" />
+              <KpiCard label="Out of order" value={dashboard.kpi.outOfOrder} accentClass="border-red-300 bg-red-50 text-red-900" />
+              <KpiCard
+                label="Open urgent work orders"
+                value={dashboard.kpi.urgentOpenWorkOrders}
+                accentClass="border-red-300 bg-red-50 text-red-900"
+              />
+              <KpiCard
+                label="Check-ins today"
+                value={dashboard.kpi.checkinsToday}
+                accentClass="border-blue-300 bg-blue-50 text-blue-900"
+              />
+              <KpiCard
+                label="Check-outs today"
+                value={dashboard.kpi.checkoutsToday}
+                accentClass="border-blue-300 bg-blue-50 text-blue-900"
+              />
+              <KpiCard
+                label="Open F&B tickets"
+                value={dashboard.kpi.openFnbOrders}
+                accentClass="border-orange-300 bg-orange-50 text-orange-900"
+              />
+            </div>
+          )}
+        </section>
+      </ErrorBoundary>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Attention queue</h2>
-        <ul className="flex flex-col gap-2">
-          {typeof dashboard === 'object' &&
-            dashboard.dirtyRooms.map((room) => (
-              <li
-                key={room.id}
-                className="flex items-center justify-between rounded border border-amber-300 bg-amber-50 px-3 py-2"
-              >
-                <span className="text-sm font-medium text-amber-900">
-                  {room.code} — {room.name} still dirty
-                </span>
-                <span className="text-xs font-semibold text-amber-800">{formatDuration(room.dirtyMinutes)}</span>
-              </li>
-            ))}
-          {typeof dashboard === 'object' && dashboard.dirtyRooms.length === 0 && (
-            <li className="text-sm text-gray-500">No rooms dirty past the 3-hour threshold.</li>
+      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Attention queue" reset={reset} />}>
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Attention queue</h2>
+          {dashboard === 'loading' && <SkeletonList />}
+          {typeof dashboard === 'object' && (
+            <ul className="flex flex-col gap-2">
+              {dashboard.dirtyRooms.map((room) => (
+                <li
+                  key={room.id}
+                  className="flex items-center justify-between rounded border border-amber-300 bg-amber-50 px-3 py-2"
+                >
+                  <span className="text-sm font-medium text-amber-900">
+                    {room.code} — {room.name} still dirty
+                  </span>
+                  <span className="text-xs font-semibold text-amber-800">{formatDuration(room.dirtyMinutes)}</span>
+                </li>
+              ))}
+              {dashboard.dirtyRooms.length === 0 && (
+                <li>
+                  <EmptyState message="No rooms dirty past the 3-hour threshold." />
+                </li>
+              )}
+              {dashboard.slaBreachedWorkOrders.map((wo) => (
+                <li
+                  key={wo.id}
+                  className="flex items-center justify-between rounded border border-red-300 bg-red-50 px-3 py-2"
+                >
+                  <span className="text-sm font-medium text-red-900">
+                    {wo.referenceNo} — {wo.title}
+                    {wo.unitCode ? ` (${wo.unitCode})` : ''} past due
+                  </span>
+                  <span className="text-xs font-semibold text-red-800">{formatDuration(wo.overdueMinutes)}</span>
+                </li>
+              ))}
+              {dashboard.slaBreachedWorkOrders.length === 0 && (
+                <li>
+                  <EmptyState message="No work orders past their SLA due date." />
+                </li>
+              )}
+              {dashboard.overdueAmenityRequests.map((req) => (
+                <li
+                  key={req.id}
+                  className="flex items-center justify-between rounded border border-orange-300 bg-orange-50 px-3 py-2"
+                >
+                  <span className="text-sm font-medium text-orange-900">
+                    {req.referenceNo} — {req.itemName}
+                    {req.unitCode ? ` (${req.unitCode})` : ''} overdue
+                  </span>
+                  <span className="text-xs font-semibold text-orange-800">{formatDuration(req.overdueMinutes)}</span>
+                </li>
+              ))}
+              {dashboard.overdueAmenityRequests.length === 0 && (
+                <li>
+                  <EmptyState message="No amenity requests past their due-back time." />
+                </li>
+              )}
+            </ul>
           )}
-          {typeof dashboard === 'object' &&
-            dashboard.slaBreachedWorkOrders.map((wo) => (
-              <li
-                key={wo.id}
-                className="flex items-center justify-between rounded border border-red-300 bg-red-50 px-3 py-2"
-              >
-                <span className="text-sm font-medium text-red-900">
-                  {wo.referenceNo} — {wo.title}
-                  {wo.unitCode ? ` (${wo.unitCode})` : ''} past due
-                </span>
-                <span className="text-xs font-semibold text-red-800">{formatDuration(wo.overdueMinutes)}</span>
-              </li>
-            ))}
-          {typeof dashboard === 'object' && dashboard.slaBreachedWorkOrders.length === 0 && (
-            <li className="text-sm text-gray-500">No work orders past their SLA due date.</li>
-          )}
-          {typeof dashboard === 'object' &&
-            dashboard.overdueAmenityRequests.map((req) => (
-              <li
-                key={req.id}
-                className="flex items-center justify-between rounded border border-orange-300 bg-orange-50 px-3 py-2"
-              >
-                <span className="text-sm font-medium text-orange-900">
-                  {req.referenceNo} — {req.itemName}
-                  {req.unitCode ? ` (${req.unitCode})` : ''} overdue
-                </span>
-                <span className="text-xs font-semibold text-orange-800">{formatDuration(req.overdueMinutes)}</span>
-              </li>
-            ))}
-          {typeof dashboard === 'object' && dashboard.overdueAmenityRequests.length === 0 && (
-            <li className="text-sm text-gray-500">No amenity requests past their due-back time.</li>
-          )}
-        </ul>
-      </section>
+        </section>
+      </ErrorBoundary>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Live activity</h2>
-        {feed === 'loading' && <p className="text-sm text-gray-500">Loading…</p>}
-        {feed === 'error' && <p role="alert">Could not load recent activity.</p>}
-        {Array.isArray(feed) && feed.length === 0 && (
-          <p className="text-sm text-gray-500">No status changes recorded yet.</p>
-        )}
-        {Array.isArray(feed) && feed.length > 0 && (
-          <ul className="flex flex-col gap-2">
-            {feed.map((event) => (
-              <li key={event.id} className="border-l-2 border-gray-200 pl-3 text-sm">
-                <p>{event.line}</p>
-                <p className="text-xs text-gray-500">
-                  {event.actorName ? `${event.actorName} · ` : ''}
-                  {new Date(event.at).toLocaleString()}
-                </p>
-                {event.note && <p className="text-xs text-gray-600">"{event.note}"</p>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Live activity" reset={reset} />}>
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-gray-700">Live activity</h2>
+          {feed === 'loading' && <SkeletonList />}
+          {feed === 'error' && <p role="alert">Could not load recent activity.</p>}
+          {Array.isArray(feed) && feed.length === 0 && <EmptyState message="No status changes recorded yet." />}
+          {Array.isArray(feed) && feed.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {feed.map((event) => (
+                <li key={event.id} className="border-l-2 border-gray-200 pl-3 text-sm">
+                  <p>{event.line}</p>
+                  <p className="text-xs text-gray-500">
+                    {event.actorName ? `${event.actorName} · ` : ''}
+                    {new Date(event.at).toLocaleString()}
+                  </p>
+                  {event.note && <p className="text-xs text-gray-600">"{event.note}"</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </ErrorBoundary>
     </div>
   );
 }
