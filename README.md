@@ -4578,6 +4578,35 @@ spec §3.1's "plain HTTP job endpoints" requirement for both new jobs).
 real OWNER email set, and real Netlify Scheduled Functions wired up at
 M7 launch, once the client is back at their PC.
 
+### Client decision: no owner digest email, ever — Command Center is the sole channel (2026-08-26)
+
+Client decision, documented as decision 8 in spec.md §13 (same pattern
+as decision 7): the owner will monitor everything live through the
+Command Center / Owner dashboard instead of a scheduled 8:00 AM PHT
+email summary. This reverses §8.3's own "Send a summary at 8:00 AM PHT"
+line — not a deprioritization, not "email later": no digest send of any
+kind unless this decision is itself revisited.
+
+Per instruction, the digest's own code stays exactly as built —
+`sendOwnerDigest`, `computeDigestContent`, `renderDigestEmail`
+(`apps/api/src/modules/jobs/ownerDigest.ts`), `POST
+/api/v1/jobs/owner-digest`, and all of the prior slice's tests are
+untouched. Only `netlify.toml`'s `[functions."owner-digest"]` schedule
+entry was removed, so the endpoint is never actually triggered in
+production — re-adding it later, if this is revisited, is a one-line
+config change, not a rebuild. The Incident module, both real exception
+alerts (SLA-breach and safety-incident), and the `WorkOrdersPage`
+`?id=` deep-link are all unaffected — none of them depended on the
+digest schedule.
+
+No code change beyond the `netlify.toml` edit; no schema change.
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 394 tests, 391 passing (same 3
+pre-existing network-blocked failures, unchanged — the digest's own
+tests call the Express route directly via supertest, bypassing Netlify
+scheduling entirely, so removing the schedule entry doesn't affect
+them), `npm run build` clean across all three packages.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

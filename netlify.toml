@@ -31,8 +31,14 @@
 [functions."amenity-overdue"]
   schedule = "*/15 * * * *"
 
-[functions."owner-digest"]
-  schedule = "0 0 * * *"
+# No owner-digest schedule entry here — client decision 8 (spec.md §13):
+# the owner monitors live through the Command Center / Owner dashboard
+# instead of a scheduled email summary, so POST /api/v1/jobs/owner-digest
+# is never wired to fire in production. The endpoint and its supporting
+# code (sendOwnerDigest, computeDigestContent, renderDigestEmail) stay in
+# the codebase, tested and working — only this schedule registration is
+# withheld. Re-adding it later, if decision 8 is revisited, is a single
+# entry here, not a rebuild.
 
 # SLA breach is a time-threshold condition, not a user action — same
 # 15-minute cadence as amenity-overdue for the same reason (the only way
