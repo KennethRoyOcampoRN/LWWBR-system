@@ -6,7 +6,9 @@ const mockPrisma = {
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
-const { countUrgentOpenWorkOrders, listSlaBreachedWorkOrders } = await import('../../../src/modules/workorders/service.js');
+const { countUrgentOpenWorkOrders, listSlaBreachedWorkOrders, listUrgentSlaBreachedWorkOrders } = await import(
+  '../../../src/modules/workorders/service.js'
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -97,5 +99,45 @@ describe('countUrgentOpenWorkOrders', () => {
         status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] },
       },
     });
+  });
+});
+
+// Spec §8.3's owner exception-alert trigger: "an urgent work order open
+// past its SLA." Same breach definition as listSlaBreachedWorkOrders,
+// narrowed to URGENT — see jobs/service.ts's runExceptionAlertsSweep for
+// the dedup logic that consumes this (not this function's concern; it
+// just answers "which tickets are breached right now").
+describe('listUrgentSlaBreachedWorkOrders', () => {
+  it('queries for URGENT priority, dueAt in the past, and excludes DONE/VERIFIED/CANCELLED', async () => {
+    mockPrisma.workOrder.findMany.mockResolvedValue([]);
+
+    await listUrgentSlaBreachedWorkOrders();
+
+    expect(mockPrisma.workOrder.findMany).toHaveBeenCalledTimes(1);
+    const call = mockPrisma.workOrder.findMany.mock.calls[0]![0];
+    expect(call.where.deletedAt).toBeNull();
+    expect(call.where.priority).toBe('URGENT');
+    expect(call.where.dueAt.lt).toBeInstanceOf(Date);
+    expect(call.where.status.notIn).toEqual(['DONE', 'VERIFIED', 'CANCELLED']);
+  });
+
+  it('maps a breached ticket to overdueMinutes and unit fields, same shape as listSlaBreachedWorkOrders', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    mockPrisma.workOrder.findMany.mockResolvedValue([
+      {
+        id: 'wo_1',
+        referenceNo: 'WO-260826-0001',
+        title: 'Generator down',
+        department: 'MAINTENANCE',
+        dueAt: twoHoursAgo,
+        unit: { id: 'unit_5', code: 'GEN', name: 'Generator Room' },
+      },
+    ]);
+
+    const result = await listUrgentSlaBreachedWorkOrders();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: 'wo_1', referenceNo: 'WO-260826-0001', unitCode: 'GEN' });
+    expect(result[0]!.overdueMinutes).toBeGreaterThanOrEqual(119);
   });
 });

@@ -598,4 +598,31 @@ describe('WorkOrderDetailDrawer', () => {
 
     await waitFor(() => expect(assignCallBody).toEqual({ assignedToId: 'user_3', version: 3 }));
   });
+
+  // Added 2026-08-26 for the owner daily digest's deep links (spec
+  // §8.3): previously this page had no URL-addressable way to open a
+  // specific ticket at all — a link into it always landed on the bare
+  // list. `?id=` is read once on mount to auto-open the drawer, without
+  // requiring a click on the row first.
+  it('opens the detail drawer directly from a ?id= query param, with no row click', async () => {
+    const listRow = fakeListRow();
+    const detail = fakeDetail();
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: currentUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [listRow] });
+      if (url.endsWith('/work-orders/wo_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { workOrder: detail });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    window.history.pushState({}, '', '/work-orders?id=wo_1');
+    render(<App />);
+
+    expect(await screen.findByText('Faucet in the master bath keeps dripping.')).toBeInTheDocument();
+  });
 });

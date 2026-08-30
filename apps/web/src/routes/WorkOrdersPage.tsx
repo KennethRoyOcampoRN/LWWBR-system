@@ -11,6 +11,7 @@ import {
   type WorkOrderTypeKey,
 } from '@lwwbr/shared';
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth, type CurrentUser } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import {
@@ -874,7 +875,17 @@ export function WorkOrdersPage() {
   // "mine").
   const [myWorkOrders, setMyWorkOrders] = useState<WorkOrderRow[] | 'loading' | 'error'>('loading');
   const [units, setUnits] = useState<UnitOption[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // `?id=` deep-link support, added 2026-08-26 for the owner daily
+  // digest (spec §8.3: "include a deep link straight into the relevant
+  // record"). Previously `selectedId` was local-only state with no
+  // URL-addressable way to open a specific ticket — a link to this page
+  // landed on the list, never the record. Read once on mount only (not
+  // a two-way sync with selectedId) — this page's own controls
+  // (row click, drawer close) already work the way they did before;
+  // this just adds one more way in, without changing anything for a
+  // visitor who arrives without `?id=`.
+  const [searchParams] = useSearchParams();
+  const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get('id'));
 
   useEffect(() => {
     setWorkOrders('loading');

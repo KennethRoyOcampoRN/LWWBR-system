@@ -17,6 +17,16 @@ const envSchema = z.object({
   // with SHA-256 (not argon2 — they're already high-entropy secrets, not
   // low-entropy user passwords) before being stored in Session.
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
+  // Owner daily digest (spec §8.3, M6). Optional at the schema level,
+  // same pattern as JOB_SECRET — checked explicitly at the point the
+  // digest actually tries to send, so the app still boots without them
+  // and every other endpoint is unaffected if they're never configured.
+  RESEND_API_KEY: z.string().min(1).optional(),
+  OWNER_DIGEST_FROM_EMAIL: z.string().email().optional(),
+  // Base URL for the deep links the digest embeds (e.g.
+  // `${WEB_BASE_URL}/work-orders?id=...`) — the API has no other way to
+  // know its own web app's public origin.
+  WEB_BASE_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

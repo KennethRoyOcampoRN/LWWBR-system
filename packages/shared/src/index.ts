@@ -13,3 +13,4 @@ export * from './amenity.js';
 export * from './amenityRequest.js';
 export * from './fnbOrder.js';
 export * from './report.js';
+export * from './incident.js';

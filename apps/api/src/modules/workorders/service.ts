@@ -234,6 +234,41 @@ export async function listSlaBreachedWorkOrders(): Promise<SlaBreachedWorkOrder[
   }));
 }
 
+// Spec §8.3: "Push immediately only for: an urgent work order open past
+// its SLA..." Same breach definition as listSlaBreachedWorkOrders above,
+// narrowed to priority URGENT (that report's own list is deliberately
+// all-priority, for the general attention queue; this one is
+// specifically the owner exception-alert trigger, which spec scopes to
+// URGENT only). Consumed by the jobs/exception-alerts sweep — see that
+// module for the dedup logic (this function just answers "which tickets
+// are breached right now," not "which of those haven't been alerted
+// yet").
+export async function listUrgentSlaBreachedWorkOrders(): Promise<SlaBreachedWorkOrder[]> {
+  const now = Date.now();
+  const workOrders = await prisma.workOrder.findMany({
+    where: {
+      deletedAt: null,
+      priority: 'URGENT',
+      dueAt: { lt: new Date(now) },
+      status: { notIn: ['DONE', 'VERIFIED', 'CANCELLED'] as WorkOrderStatusKey[] },
+    },
+    include: { unit: { select: { id: true, code: true, name: true } } },
+    orderBy: [{ dueAt: 'asc' }],
+  });
+
+  return workOrders.map((wo) => ({
+    id: wo.id,
+    referenceNo: wo.referenceNo,
+    title: wo.title,
+    department: wo.department as DepartmentKey,
+    unitId: wo.unit?.id ?? null,
+    unitCode: wo.unit?.code ?? null,
+    unitName: wo.unit?.name ?? null,
+    dueAt: wo.dueAt!.toISOString(),
+    overdueMinutes: Math.floor((now - wo.dueAt!.getTime()) / 60_000),
+  }));
+}
+
 // Spec §8.2 KPI strip: "Open urgent work orders." Same "open" definition
 // as listSlaBreachedWorkOrders above (status not in DONE/VERIFIED/
 // CANCELLED — REOPENED counts as open, same reasoning) filtered to

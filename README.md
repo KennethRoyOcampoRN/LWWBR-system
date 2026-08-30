@@ -4448,6 +4448,136 @@ Front/Function Hall/CRs/Restaurant no longer appear, and that the
 occupancy-rate percentage now looks right) once they're back at their
 PC.
 
+### Owner daily digest + exception alerts (spec §8.3) — verified in sandbox only, not live-tested (2026-08-26)
+
+**Before writing any code**: investigated what the digest/exception-alert
+content actually needs, found that most of it (revenue, payment
+verification queue, forced-checkout balance, cash variance) depends on
+Payment/Folio/CashCount tracking that turned out to be completely
+unbuilt — zero code anywhere touches those models. This wasn't a gap
+noticed and silently worked around; it's now written into the spec
+itself as **decision 7** in spec.md §13's Confirmed Decisions table
+(plus a plainly-stated consequences bullet in §13.1), per client
+instruction, before any of this slice's code was written: Cashier's
+whole spec'd role is currently unimplemented, M4's stated acceptance
+criteria doesn't hold against what was actually built, and the Owner
+dashboard/digest will never show revenue, a payment queue, folio
+balances, or cash variance until that's revisited.
+
+Client confirmed proceeding on that basis. What shipped:
+
+**Minimal Incident module** (new — `Incident` was scaffolded in the
+schema since M0 but had zero code touching it): `POST /incidents`
+(`incident:create`, seeded on essentially every role) and `GET
+/incidents` (`incident:read`, oversight roles only). Not the full §8.3
+incident/policy log — just enough for a real safety-incident trigger and
+a real digest count. `packages/shared/src/incident.ts` holds the
+type/severity/status key lists, same convention as every other domain
+enum in this package.
+
+**Exception alerts** (spec §8.3: "push immediately for" four specific
+triggers) — two of the four are real, two are explicitly out of scope
+for the reason above:
+- **Urgent work order past SLA**: real. This is a time-threshold
+  condition, not something a user action fires, so there's no event to
+  hook — same reasoning as the amenity-overdue sweep. New
+  `listUrgentSlaBreachedWorkOrders` (URGENT-priority-narrowed version of
+  the existing `listSlaBreachedWorkOrders`) feeds a new
+  `POST /api/v1/jobs/exception-alerts` sweep (`jobs/service.ts`'s
+  `runExceptionAlertsSweep`), registered in `netlify.toml` on the same
+  15-minute cadence as amenity-overdue. Dedup: before alerting, checks
+  whether a `WORKORDER_SLA_BREACHED` Notification already exists for
+  that ticket — no schema change, reuses the same rows the alert itself
+  writes, so a still-breached ticket doesn't re-alert on every sweep.
+- **Safety incident**: real, event-driven — fires on `Incident` creation
+  with `type: 'SAFETY'` specifically (spec's literal phrase), no
+  severity threshold (spec doesn't gate this one by severity).
+- **Forced check-out with outstanding balance** and **cash variance
+  beyond a threshold**: omitted — no balance/variance data exists to
+  check against, and (per your own flag) no threshold value exists
+  anywhere in spec.md for the latter even if it did.
+
+All alerts reuse the existing Notification model (`notifyUser`, from
+M3) — no second notification path. Recipients for every exception alert
+= active users holding `OWNER` (spec places this whole bullet under the
+Owner dashboard section specifically).
+
+**Daily digest** — `POST /api/v1/jobs/owner-digest`, same
+`requireJobSecret` shape as amenity-overdue. The Netlify Scheduled
+Function *file* itself stays deferred to M7 launch config, same as
+amenity-overdue's own — `netlify.toml` already had the `owner-digest`
+entry at `0 0 * * *` (= 8:00 AM PHT) from M0; only the API endpoint
+shipped this slice.
+- Content: occupancy % (reuses `buildOccupancyReport`'s exact logic for
+  a single day — no duplicated math, and gets the "exclude common
+  areas" fix above for free), arrivals (mirrors `getUnitsDashboard`'s
+  own `checkinsToday` definition — READY→OCCUPIED `UnitStatusEvent`
+  rows — for yesterday instead of today), incidents (all types, not
+  just SAFETY — that's the narrower real-time alert; this is the
+  broader daily count), and a live list of currently-open URGENT/
+  SLA-breached work orders, each with a real deep link. Revenue and the
+  payment verification queue are explicit "not tracked — pricing/
+  payments are out of scope (spec.md §13 decision 7)" lines in the email
+  body, not silent omissions.
+- **"Yesterday" boundary**: real Asia/Manila calendar-day math via
+  `@date-fns/tz`'s `TZDate` (same pattern as `reports/service.ts`'s
+  `resolveDate`), computed relative to whenever the job actually runs —
+  the job itself is time-agnostic; 8:00 AM PHT is entirely the
+  scheduler's responsibility. Found, in passing, that the *existing*
+  `checkinsToday`/`checkoutsToday` KPI on the Command Center uses the
+  server process's local midnight instead of a real Asia/Manila
+  boundary — a real, pre-existing gap against spec §3.2, out of scope
+  for this slice since fixing it touches different code with its own
+  test to update. Filed as a separate suggested follow-up task rather
+  than folded in here or silently left unmentioned.
+- **Channel**: new `Setting` key `ownerDigest.channel`, default
+  `'email'` (same read-live-row/fallback pattern as
+  `fnb.advanceOrderLeadMinutes`/`workOrder.photoRequirements`). Any
+  other value is logged and skipped, not an error — only email is
+  built (MVP).
+- **Recipients**: active `OWNER`-role users with a non-null email.
+  Real, live caveat: no seeded user in this app has an email set today
+  (login is by employee code) — the job correctly reports 0 recipients
+  rather than erroring, but produces nothing useful in practice until an
+  OWNER account's email is actually set.
+- Sends via `resend` (new dependency, pre-approved by spec.md §12 rule
+  3 — installed, no need to ask).
+
+**One small addition beyond the original ask, flagged rather than done
+silently**: while building the digest's "deep link straight into the
+relevant record" requirement, found `WorkOrdersPage` had no
+URL-addressable way to open a specific ticket at all — `selectedId` was
+local React state only, so a link into this page always landed on the
+bare list. Added minimal `?id=` support (read once on mount via
+`useSearchParams`, auto-opens the drawer) — small, additive, doesn't
+change any existing behavior for a visitor who arrives without it.
+Confirmed live in a headless browser: visiting `/work-orders?id=wo_1`
+directly (no row click) opens the correct ticket's detail drawer.
+`Incident` deep links are not implemented — no frontend page exists for
+incidents at all yet (out of the "minimal module" scope); the digest
+shows a count only for those.
+
+No schema change — `Incident`'s table has existed since M0's initial
+migration; this slice only wired real code to it for the first time.
+
+Verification: `npm run typecheck` clean (both packages), `npm run lint`
+clean, `npm run test -w apps/api` — 394 tests, 391 passing (same 3
+pre-existing network-blocked failures), `npm run test -w apps/web` —
+61/61 passing, `npm run test -w packages/shared` — 76/76 passing (new
+tests cover: incident creation + the SAFETY-only alert trigger + read
+permission gating; the SLA-breach sweep's alert/dedup/no-op paths and
+the missing/wrong `x-job-secret` rejection; a dedicated
+`listUrgentSlaBreachedWorkOrders` where-clause test; the digest's
+Asia/Manila boundary math with an explicit UTC-vs-PHT-mismatch case,
+its revenue/payment "not tracked" labelling, its deep-link rendering,
+and its own `x-job-secret` rejection; the `WorkOrdersPage` `?id=`
+deep-link). `npm run build` clean across all three packages;
+`scripts/check-serverless-safety.sh` clean (no `setInterval`, matching
+spec §3.1's "plain HTTP job endpoints" requirement for both new jobs).
+**Not live-tested** — needs a real pass with a real Resend API key, a
+real OWNER email set, and real Netlify Scheduled Functions wired up at
+M7 launch, once the client is back at their PC.
+
 ### Two more stale "Coming in M5" placeholders, closed out; full Command Center sweep (2026-08-25)
 
 Second round of the exact same bug as "KPI strip: the last three stale

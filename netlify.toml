@@ -33,3 +33,10 @@
 
 [functions."owner-digest"]
   schedule = "0 0 * * *"
+
+# SLA breach is a time-threshold condition, not a user action — same
+# 15-minute cadence as amenity-overdue for the same reason (the only way
+# to detect "just crossed dueAt" in a serverless app is to check
+# periodically). See jobs/service.ts's runExceptionAlertsSweep.
+[functions."exception-alerts"]
+  schedule = "*/15 * * * *"
