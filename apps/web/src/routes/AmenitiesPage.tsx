@@ -32,7 +32,18 @@ interface AmenityRequestRow {
   // amenityRequestToJson.
   itemName: string;
   amenityItem: { id: string; name: string; requiresDeposit: boolean; depositAmount: number } | null;
+  // Already returned by the API (AMENITY_REQUEST_INCLUDE has always
+  // selected it) — just never captured or shown here until the
+  // unit-picker fix, 2026-08-31.
+  unit: { id: string; code: string; name: string } | null;
   requestedBy: { fullName: string };
+}
+
+interface OccupiedUnitOption {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
 }
 
 const CATEGORY_LABELS: Record<AmenityCategoryKey, string> = {
@@ -141,9 +152,29 @@ export function AmenitiesPage() {
   const [requests, setRequests] = useState<AmenityRequestRow[] | 'loading' | 'error'>('loading');
   const [requestFormError, setRequestFormError] = useState<string | null>(null);
   const [requestItemId, setRequestItemId] = useState('');
+  const [requestUnitId, setRequestUnitId] = useState('');
   const [requestQty, setRequestQty] = useState('1');
   const [requestNotes, setRequestNotes] = useState('');
   const [requestSubmitting, setRequestSubmitting] = useState(false);
+
+  // Real gap found live-testing, 2026-08-31: the request form had no way
+  // to say which room/guest a request was for — unitId already exists on
+  // the schema, this was purely a missing picker. Filtered to OCCUPIED
+  // only: a unit-tied request only makes sense when someone's actually
+  // there to receive the item (unlike a work order, which is legitimate
+  // for an empty VACANT_DIRTY room needing a repair). This also excludes
+  // COMMON_AREA/FACILITY units for free, since those kinds never carry
+  // OCCUPIED status — no separate carve-out needed for them. Leaving no
+  // unit selected stays a fully legitimate choice (e.g. staff borrowing
+  // an item for property use, not tied to any guest room).
+  const [occupiedUnits, setOccupiedUnits] = useState<OccupiedUnitOption[]>([]);
+
+  useEffect(() => {
+    api
+      .get<{ units: OccupiedUnitOption[] }>('/units')
+      .then((res) => setOccupiedUnits(res.units.filter((u) => u.status === 'OCCUPIED')))
+      .catch(() => setOccupiedUnits([]));
+  }, []);
 
   // Which row currently has an inline sub-form open (Issue needs a
   // due-back date + deposit confirmation; Return/Lost-damaged needs a
@@ -232,10 +263,12 @@ export function AmenitiesPage() {
     try {
       await api.post('/amenity-requests', {
         amenityItemId: requestItemId,
+        unitId: requestUnitId || undefined,
         qty: Number(requestQty),
         notes: requestNotes.trim() || undefined,
       });
       setRequestItemId('');
+      setRequestUnitId('');
       setRequestQty('1');
       setRequestNotes('');
       await fetchRequests();
@@ -578,6 +611,7 @@ export function AmenitiesPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="font-medium">{req.referenceNo}</span> — {req.itemName} x{req.qty}
+                    {req.unit && <span className="ml-2 text-xs text-gray-500">for {req.unit.code}</span>}
                     <span className="ml-2 text-xs text-gray-500">requested by {req.requestedBy.fullName}</span>
                   </div>
                   <span
@@ -760,6 +794,21 @@ export function AmenitiesPage() {
                   onChange={(e) => setRequestQty(e.target.value)}
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                Room (optional — leave blank for property use)
+                <select
+                  value={requestUnitId}
+                  onChange={(e) => setRequestUnitId(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                >
+                  <option value="">None — property use</option>
+                  {occupiedUnits.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.code} — {unit.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="flex flex-col gap-1 text-xs font-medium text-gray-600 sm:col-span-2">
                 Notes (optional)

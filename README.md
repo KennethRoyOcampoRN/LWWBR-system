@@ -4836,3 +4836,44 @@ Sandbox-verified only — recommend the client re-run the same zero-data
 occupancy range that surfaced this, plus spot-check a couple of the other
 11 fixed spots (e.g. an empty-range work-orders or audit-extract run),
 against the real Supabase database.
+
+### Bug fix: amenity requests had no way to record which room they were for (2026-08-31)
+
+Real gap found live-testing: `AmenitiesPage.tsx`'s request-creation form
+only captured Item, Quantity, and Notes. `createAmenityRequestSchema`
+already supported an optional `unitId` (and `bookingId`) — the backend
+was ready, the frontend just never exposed it — so there was no way to
+know which room/guest a request was for except free-text in Notes, which
+isn't validated and doesn't show up anywhere structured (the amenity
+utilisation report's `unitCode` column rendered blank for every request
+made through this form).
+
+**Unit picker, filtered to `OCCUPIED` units, optional.** `unitId` stays
+optional server-side (so does `bookingId`, untouched — no picker exists
+for it anywhere in the app, and nothing depends on it: amenity deposits
+are informational-only, never posted to a folio). Requiring a unit would
+have blocked the legitimate unattached case — staff borrowing an item for
+property use, not tied to any guest room. The picker itself only offers
+`OCCUPIED` units: a unit-tied request only makes operational sense when
+someone's actually there to receive the item, unlike a work order (valid
+for an empty `VACANT_DIRTY` room needing a repair). This also excludes
+`COMMON_AREA`/`FACILITY` units for free, since those kinds never carry
+`OCCUPIED` status — no separate carve-out needed.
+
+**Bonus fix, same root cause:** the requests list on this page showed
+*zero* unit info per request, even though the API has always returned
+`unit: {id, code, name}` in every response (`AMENITY_REQUEST_INCLUDE`
+already selected it) — the frontend's `AmenityRequestRow` type just never
+captured it. Without this the newly-picked unit would still have been
+invisible in the one place staff actually look. Now shown inline
+("for R01") next to the requester's name.
+
+New test in `AmenityPage.test.tsx`: submits with a unit selected from a
+mixed-status fixture (`OCCUPIED`/`VACANT_DIRTY`/`READY`), asserts the
+picker offers only the `OCCUPIED` one, that `unitId` reaches the POST
+body, and that the created row renders it.
+
+No schema change (the field already existed), no new dependency.
+Verification: `npm run typecheck` clean, `npm run lint` clean,
+`npm run test -w apps/web` — 7/7 passing on `AmenitiesPage.test.tsx` (up
+from 6). Sandbox-verified only.

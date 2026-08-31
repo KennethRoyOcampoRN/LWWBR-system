@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -296,6 +296,71 @@ describe('AmenitiesPage', () => {
 
     await waitFor(() => expect(screen.getByRole('cell', { name: '5' })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+  });
+
+  // Real gap found live-testing, 2026-08-31: the request form had no way
+  // to say which room a request was for. Confirms the picker only offers
+  // OCCUPIED units (not VACANT_DIRTY/COMMON_AREA ones from a mixed-status
+  // fixture), that the selected unitId reaches the API, and that the
+  // resulting row shows it — previously invisible even after picking one.
+  it('lets a requester attach an occupied room to a request, offering only OCCUPIED units', async () => {
+    const user = userEvent.setup();
+    let amenityRequests: Record<string, unknown>[] = [];
+
+    const units = [
+      { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' },
+      { id: 'unit_2', code: 'R02', name: 'Room 2', status: 'VACANT_DIRTY' },
+      { id: 'unit_3', code: 'CA1', name: 'Clubhouse', status: 'READY' },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: fullAccessUser });
+      if (url.endsWith('/amenity-items')) return jsonResponse(200, { amenityItems: [kayak] });
+      if (url.endsWith('/units')) return jsonResponse(200, { units });
+
+      if (url.endsWith('/amenity-requests') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityRequests });
+      }
+      if (url.endsWith('/amenity-requests') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toMatchObject({ amenityItemId: 'amenity_1', unitId: 'unit_1', qty: 1 });
+        const created = {
+          id: 'request_1',
+          referenceNo: 'AR-260831-0001',
+          qty: 1,
+          status: 'REQUESTED',
+          dueBackAt: null,
+          notes: null,
+          itemName: 'Kayak',
+          amenityItem: { id: 'amenity_1', name: 'Kayak', requiresDeposit: true, depositAmount: 1000 },
+          unit: { id: 'unit_1', code: 'R01', name: 'Room 1' },
+          requestedBy: { fullName: 'Resort Manager (Demo)' },
+        };
+        amenityRequests = [created];
+        return jsonResponse(201, { amenityRequest: created });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Amenities' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Kayak').length).toBeGreaterThan(0));
+
+    const roomPicker = await screen.findByLabelText(/Room \(optional/);
+    // Only the OCCUPIED unit is offered — R02 (VACANT_DIRTY) and CA1
+    // (READY) are excluded, plus the "None — property use" default.
+    const options = within(roomPicker).getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual(['None — property use', 'R01 — Room 1']);
+
+    await user.selectOptions(screen.getByLabelText('Item'), 'amenity_1');
+    await user.selectOptions(roomPicker, 'unit_1');
+    await user.click(screen.getByRole('button', { name: 'Submit request' }));
+
+    await waitFor(() => expect(screen.getByText('AR-260831-0001')).toBeInTheDocument());
+    expect(screen.getByText('for R01')).toBeInTheDocument();
   });
 
   // Client decision, 2026-08-25 (Option B): Delete is only offered once
