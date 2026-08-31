@@ -5487,3 +5487,112 @@ quotation tests all pass), `npm run test -w apps/web` — 110/110 (up
 from 103; 7 new tests across both pages), `npm run build` clean across
 all three packages. Not live-tested against the real database, per the
 sandbox network block above — needs `npx prisma db push` first.
+
+### Payment verification + Quotations on Command Center (2026-08-31)
+
+Client-directed feature: both new modules from the previous slice now
+also show up on Command Center — two more KPI cards ("Pending payment
+verifications", "Pending quotations") and two more attention-queue row
+types, alongside the existing 8 KPI cards and 3 queue row types.
+
+**Permission scoping — the real design problem here.** Every existing
+Command Center field only needs `unit:read` to justify seeing, since
+`unit:read` is the floor every role holds (see `getUnitsDashboard`'s own
+long-standing doc comment). These two are the first exception: a
+Housekeeping-only role holds `unit:read` but not `remittance:read`/
+`quotation:read`, and has no other route to that data. Handled it as a
+genuine authorization boundary, not a frontend-only hide:
+
+- `getUnitsDashboard()` now takes the caller's full permission set
+  (`EffectivePermissions`, already loaded fresh by `requirePermission`
+  and attached to `req.authUser` — no new query needed) and only
+  computes/attaches `kpi.pendingRemittances`/`pendingQuotations` and the
+  `remittanceRequests`/`quotationRequests` arrays when the matching
+  permission is actually held.
+- **Response shape**: those four fields are omitted from the JSON
+  entirely for an unauthorized caller — not `0`/`[]`. A `0` is
+  indistinguishable on the wire from "the real count is zero," which
+  could let a future frontend bug render a truthful-looking card to
+  someone with no business seeing the number at all; omission makes "no
+  data for you" structurally different from "the true count is zero."
+  This is the first Command Center field that isn't a plain
+  always-present number/array — everything else on this page still is.
+- The two gates are independent, not bundled behind one check: a caller
+  could in principle hold one without the other (no role in the current
+  seed actually does — see below), and the code doesn't assume otherwise.
+- Frontend mirrors this with its own `canViewRemittances`/
+  `canViewQuotations` checks (belt-and-suspenders on top of the
+  backend's omission, same standard already applied to the F&B KPI
+  card's `canViewFnb` check) — a card or row only renders when both the
+  viewer's own permission is held *and* the field is actually present.
+- Only unresolved items count, same standard as the existing
+  dirty-room/SLA-breach/overdue-amenity logic: `FOR_VERIFICATION`
+  remittances and `PENDING` quotations only, computed from the same
+  `listPendingRemittances`/`listPendingQuotations` query the count and
+  the queue rows both read, so the number and the rows can never
+  disagree. Each row uses a "how long has this been waiting"
+  `waitingMinutes` framing (from `createdAt`, since neither model has an
+  SLA/due-back field of its own to compare against) — same idea as
+  `overdueMinutes` elsewhere, different source timestamp.
+- Icons: reused `IconAlertTriangle` for both new rows/cards rather than
+  growing the icon set for two more — distinguished by color (warning
+  tint for payment verification, accent tint for quotations) and by
+  their own text, same as the existing danger/accent rows already are.
+- Each new KPI card and each new queue row is a real `Link` to its own
+  page (`/payment-verification`, `/quotations`), not just styled text —
+  same as the KPI cards already do; the existing three queue row types
+  are plain text today; these are the first attention-queue rows built
+  as links.
+
+**Test plan for the permission scoping, specifically:**
+- Backend: a viewer holding neither permission (POC_HOUSEKEEPING, real
+  seed role) gets a response where all four fields are asserted
+  `undefined` via `'key' in body` — not just falsy-checked — with real
+  non-empty mocked data behind them, confirming the omission is a
+  genuine gate and not a coincidence of empty fixtures. A viewer holding
+  both (ADMIN_STAFF, real seed role) gets all four, correctly populated.
+  A dedicated test confirms only `FOR_VERIFICATION`/`PENDING` rows are
+  counted. The **independent-gate** case (remittance:read without
+  quotation:read, or vice versa) has no real role to exercise it
+  through — every role in the actual seed that holds either key holds
+  both — so that's tested by calling `getUnitsDashboard()` directly with
+  a hand-built `EffectivePermissions` object rather than skipping the
+  case or inventing a fake role; this is the one place in this slice
+  that steps outside the router-level testing convention, and it's
+  called out in the test file's own comment for why.
+- Frontend: a viewer without either permission sees neither card nor
+  either row type — even when the mocked `/units/dashboard` response is
+  deliberately made to include the data anyway, to prove the frontend's
+  own gate (not just the backend's real omission) is what keeps it off
+  screen. A viewer with both sees both cards with the real counts and
+  both row types, and clicking each (card and row alike) navigates to
+  the right page.
+
+New/changed files: `remittances/service.ts` and `quotations/service.ts`
+each gained a `listPending*` query (own tests in their respective
+router test files, same convention as `amenities/service.test.ts`'s
+`listOverdueAmenityRequests`); `units/service.ts`'s `UnitsDashboard`
+interface and `getUnitsDashboard` now take/thread the permission check;
+`units/router.ts` passes `req.authUser.permissions` through;
+`DashboardPage.tsx` gets two new `KpiCard`s and two new queue-row
+blocks, gated the same way.
+
+No schema change this time — both new query functions read the existing
+`RemittanceRequest`/`QuotationRequest` tables from the previous slice.
+
+Verification: `npm run typecheck` clean (both apps), `npm run lint`
+clean, `npm run test -w apps/api` — 445/448 (up from 435; same 3
+pre-existing sandbox-network-only failures; 13 new tests: 4 new
+`listPendingRemittances`/`listPendingQuotations` tests, 6 new dashboard
+permission-scoping tests including the 3 direct-call independent-gate
+tests, 1 existing dashboard-KPI test updated for the two new keys),
+`npm run test -w apps/web` — 112/112 (up from 110; 2 new permission-
+scoping tests), `npm run test -w packages/shared` — 81/81 (unchanged —
+no shared-package changes this slice), `npm run build` clean across all
+three packages. Also verified live in a headless browser against the
+built app, with the API mocked (no schema change to push, so this
+needed no live database): desktop (1440px) and mobile (375px)
+screenshots with both new cards/rows populated for a viewer holding
+both permissions, plus a third screenshot confirming a viewer holding
+neither sees no trace of either card or row type. Sent all three to the
+client for a look.

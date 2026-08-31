@@ -2,6 +2,7 @@ import { TZDate } from '@date-fns/tz';
 import {
   canOverrideAutomaticTransition,
   getTransition,
+  type EffectivePermissions,
   type PermissionKey,
   type PermissionScope,
   type RoleKey,
@@ -28,6 +29,8 @@ import { prisma } from '../../lib/prisma.js';
 // parallel copy of "what counts as open/overdue" in this file.
 import { listOverdueAmenityRequests, type OverdueAmenityRequest } from '../amenities/service.js';
 import { countOpenFnbOrders } from '../fnb/service.js';
+import { listPendingQuotations, type PendingQuotation } from '../quotations/service.js';
+import { listPendingRemittances, type PendingRemittance } from '../remittances/service.js';
 import {
   countUrgentOpenWorkOrders,
   createWorkOrder,
@@ -384,6 +387,21 @@ export interface DirtyRoom {
 // verifications was removed outright (not a placeholder): payment
 // tracking is out of scope for this app entirely (client decision,
 // 2026-08-24), not a later milestone.
+// Client-directed feature, 2026-08-31: two more attention-queue/KPI
+// sources, remittance:*/quotation:* (see remittances/quotations
+// modules). Unlike every field above — which only needs unit:read to
+// justify seeing, since unit:read is the floor every role holds — these
+// two are the first Command Center data that genuinely isn't universally
+// visible: a Housekeeping-only role holds unit:read but not
+// remittance:read/quotation:read, and has no other route to that data.
+// So `pendingRemittances`/`pendingQuotations`/`remittanceRequests`/
+// `quotationRequests` are all optional keys, entirely OMITTED from the
+// JSON (not 0/[]) when the caller lacks the matching permission — see
+// getUnitsDashboard below. A `0` would be indistinguishable on the wire
+// from "the real count is zero," which could let a frontend bug render a
+// truthful-looking card to someone with no business seeing the number at
+// all; omission makes "no data for you" structurally different from
+// "the true count is zero."
 export interface UnitsDashboard {
   kpi: {
     occupied: number;
@@ -394,13 +412,17 @@ export interface UnitsDashboard {
     checkinsToday: number;
     checkoutsToday: number;
     openFnbOrders: number;
+    pendingRemittances?: number;
+    pendingQuotations?: number;
   };
   dirtyRooms: DirtyRoom[];
   slaBreachedWorkOrders: SlaBreachedWorkOrder[];
   overdueAmenityRequests: OverdueAmenityRequest[];
+  remittanceRequests?: PendingRemittance[];
+  quotationRequests?: PendingQuotation[];
 }
 
-export async function getUnitsDashboard(): Promise<UnitsDashboard> {
+export async function getUnitsDashboard(permissions: EffectivePermissions): Promise<UnitsDashboard> {
   const units = await prisma.unit.findMany({
     where: { deletedAt: null },
     select: { id: true, code: true, name: true, status: true, createdAt: true },
@@ -476,7 +498,24 @@ export async function getUnitsDashboard(): Promise<UnitsDashboard> {
   kpi.openFnbOrders = await countOpenFnbOrders();
   const overdueAmenityRequests = await listOverdueAmenityRequests();
 
-  return { kpi, dirtyRooms, slaBreachedWorkOrders, overdueAmenityRequests };
+  const dashboard: UnitsDashboard = { kpi, dirtyRooms, slaBreachedWorkOrders, overdueAmenityRequests };
+
+  // Independent gates, deliberately not bundled behind a single check:
+  // Admin Staff holds remittance:read but not quotation:read (see
+  // rolePermissions.ts), so each field is computed and attached only
+  // when its own permission is actually held.
+  if (permissions['remittance:read']) {
+    const remittanceRequests = await listPendingRemittances();
+    dashboard.kpi.pendingRemittances = remittanceRequests.length;
+    dashboard.remittanceRequests = remittanceRequests;
+  }
+  if (permissions['quotation:read']) {
+    const quotationRequests = await listPendingQuotations();
+    dashboard.kpi.pendingQuotations = quotationRequests.length;
+    dashboard.quotationRequests = quotationRequests;
+  }
+
+  return dashboard;
 }
 
 export interface UnitActivityEvent {

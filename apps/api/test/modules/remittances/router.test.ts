@@ -18,6 +18,7 @@ vi.mock('../../../src/adapters/storage/index.js', () => ({
 
 const { createApp } = await import('../../../src/app.js');
 const { signAccessToken } = await import('../../../src/modules/auth/tokens.js');
+const { listPendingRemittances } = await import('../../../src/modules/remittances/service.js');
 
 function userWithRole(roleKey: string, overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -258,5 +259,39 @@ describe('POST /api/v1/remittance-requests/:id/status', () => {
       .send({ toStatus: 'VERIFIED' });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// Command Center attention-queue/KPI source (2026-08-31) — this function
+// has no HTTP route of its own (called internally from units/service.ts's
+// getUnitsDashboard; see that module's router test for the end-to-end,
+// permission-gated response shape), so this pins the Prisma where-clause
+// and mapping directly, same convention as amenities/service.test.ts's
+// listOverdueAmenityRequests.
+describe('listPendingRemittances', () => {
+  it('queries for FOR_VERIFICATION status only, oldest first', async () => {
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([]);
+
+    await listPendingRemittances();
+
+    expect(mockPrisma.remittanceRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, status: 'FOR_VERIFICATION' },
+        orderBy: [{ createdAt: 'asc' }],
+      }),
+    );
+  });
+
+  it('maps a pending request to waitingMinutes', async () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([
+      { id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', createdAt: oneHourAgo },
+    ]);
+
+    const result = await listPendingRemittances();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz' });
+    expect(result[0]!.waitingMinutes).toBeGreaterThanOrEqual(59);
   });
 });

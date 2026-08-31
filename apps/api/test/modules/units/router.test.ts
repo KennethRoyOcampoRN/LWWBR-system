@@ -13,6 +13,8 @@ const mockPrisma = {
   fnbOrder: { count: vi.fn() },
   inspection: { count: vi.fn() },
   setting: { findUnique: vi.fn() },
+  remittanceRequest: { findMany: vi.fn() },
+  quotationRequest: { findMany: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -75,6 +77,8 @@ beforeEach(() => {
   mockPrisma.fnbOrder.count.mockResolvedValue(0);
   mockPrisma.amenityRequest.findMany.mockResolvedValue([]);
   mockPrisma.setting.findUnique.mockResolvedValue(null);
+  mockPrisma.remittanceRequest.findMany.mockResolvedValue([]);
+  mockPrisma.quotationRequest.findMany.mockResolvedValue([]);
   mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
@@ -738,6 +742,11 @@ describe('GET /api/v1/units/dashboard', () => {
       checkinsToday: 0,
       checkoutsToday: 0,
       openFnbOrders: 0,
+      // RESORT_MANAGER holds both remittance:read and quotation:read in
+      // the real seed, so both keys are present here (see the dedicated
+      // permission-scoping tests below for the omitted-vs-present cases).
+      pendingRemittances: 0,
+      pendingQuotations: 0,
     });
     expect(res.body.dirtyRooms).toHaveLength(1);
     expect(res.body.dirtyRooms[0]).toMatchObject({ id: 'unit_dirty_long', code: '102' });
@@ -917,6 +926,141 @@ describe('GET /api/v1/units/dashboard', () => {
     const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
     expect(res.status).toBe(200);
     expect(res.body.overdueAmenityRequests).toEqual([]);
+  });
+
+  // Client-directed feature, 2026-08-31: the first Command Center data
+  // that isn't universally visible to every unit:read holder (see
+  // getUnitsDashboard's own doc comment). POC_HOUSEKEEPING holds
+  // unit:read but neither remittance:read nor quotation:read — this
+  // pins that the two fields (and both queue arrays) are OMITTED from
+  // the JSON entirely, not present as 0/[], since a 0 would be
+  // indistinguishable on the wire from "the real count is zero."
+  it('omits pendingRemittances/pendingQuotations and both queue arrays for a viewer without remittance:read/quotation:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([{ id: 'remit_1', referenceNo: 'RM-1', name: 'x', createdAt: new Date() }]);
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([{ id: 'quote_1', referenceNo: 'QT-1', name: 'y', createdAt: new Date() }]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.pendingRemittances).toBeUndefined();
+    expect(res.body.kpi.pendingQuotations).toBeUndefined();
+    expect(res.body.remittanceRequests).toBeUndefined();
+    expect(res.body.quotationRequests).toBeUndefined();
+    expect('pendingRemittances' in res.body.kpi).toBe(false);
+    expect('remittanceRequests' in res.body).toBe(false);
+    // Confirms the omission is a genuine permission gate, not just an
+    // empty result — the mocked data above is real and non-empty; a
+    // caller without the permission must never see it, in any shape.
+    expect(mockPrisma.remittanceRequest.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.quotationRequest.findMany).not.toHaveBeenCalled();
+  });
+
+  // ADMIN_STAFF holds both remittance:read and quotation:read in the
+  // real seed (rolePermissions.ts) — confirms the fields are actually
+  // wired end to end for a caller who does hold both.
+  it('includes pendingRemittances/pendingQuotations and both queue arrays for a viewer with both permissions', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    const now = new Date();
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([
+      { id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', createdAt: now },
+    ]);
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([
+      { id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', createdAt: now },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.pendingRemittances).toBe(1);
+    expect(res.body.kpi.pendingQuotations).toBe(1);
+    expect(res.body.remittanceRequests).toHaveLength(1);
+    expect(res.body.remittanceRequests[0]).toMatchObject({ id: 'remit_1', referenceNo: 'RM-260831-0001' });
+    expect(res.body.quotationRequests).toHaveLength(1);
+    expect(res.body.quotationRequests[0]).toMatchObject({ id: 'quote_1', referenceNo: 'QT-260831-0001' });
+  });
+
+  // Only unresolved items count — same standard as dirty-room/SLA-breach/
+  // overdue-amenity logic above. listPendingRemittances/
+  // listPendingQuotations' own where-clauses (status FOR_VERIFICATION /
+  // PENDING only) are pinned directly in their own service tests; this
+  // confirms that filtering actually reaches the Command Center response.
+  it('counts only FOR_VERIFICATION remittances and PENDING quotations, not VERIFIED/DONE ones', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    // The service's own where-clause already excludes VERIFIED/DONE rows
+    // at the query level, so the mock reflects that — this test's job is
+    // to confirm the dashboard doesn't add a second, looser filter on
+    // top that would let a resolved item back in.
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([]);
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.pendingRemittances).toBe(0);
+    expect(res.body.kpi.pendingQuotations).toBe(0);
+    expect(res.body.remittanceRequests).toEqual([]);
+    expect(res.body.quotationRequests).toEqual([]);
+    expect(mockPrisma.remittanceRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null, status: 'FOR_VERIFICATION' } }),
+    );
+    expect(mockPrisma.quotationRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null, status: 'PENDING' } }),
+    );
+  });
+});
+
+// The independent-gate case — held only for remittance:read, or only for
+// quotation:read — has no real role to exercise it through: every role in
+// the actual seed (rolePermissions.ts) that holds either key holds both.
+// Rather than skip the case or fake a role that doesn't exist, this calls
+// getUnitsDashboard directly with a hand-built permissions object, the
+// same EffectivePermissions shape the router passes through from
+// req.authUser.permissions — a true unit test of the gating logic itself,
+// decoupled from what any current role happens to grant.
+describe('getUnitsDashboard permission gating (direct)', () => {
+  it('includes only the remittance fields when permissions hold remittance:read but not quotation:read', async () => {
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.remittanceRequest.findMany.mockResolvedValue([
+      { id: 'remit_1', referenceNo: 'RM-1', name: 'x', createdAt: new Date() },
+    ]);
+
+    const { getUnitsDashboard } = await import('../../../src/modules/units/service.js');
+    const dashboard = await getUnitsDashboard({ 'remittance:read': 'ALL' });
+
+    expect(dashboard.kpi.pendingRemittances).toBe(1);
+    expect(dashboard.remittanceRequests).toHaveLength(1);
+    expect(dashboard.kpi.pendingQuotations).toBeUndefined();
+    expect(dashboard.quotationRequests).toBeUndefined();
+    expect(mockPrisma.quotationRequest.findMany).not.toHaveBeenCalled();
+  });
+
+  it('includes only the quotation fields when permissions hold quotation:read but not remittance:read', async () => {
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([
+      { id: 'quote_1', referenceNo: 'QT-1', name: 'y', createdAt: new Date() },
+    ]);
+
+    const { getUnitsDashboard } = await import('../../../src/modules/units/service.js');
+    const dashboard = await getUnitsDashboard({ 'quotation:read': 'ALL' });
+
+    expect(dashboard.kpi.pendingQuotations).toBe(1);
+    expect(dashboard.quotationRequests).toHaveLength(1);
+    expect(dashboard.kpi.pendingRemittances).toBeUndefined();
+    expect(dashboard.remittanceRequests).toBeUndefined();
+    expect(mockPrisma.remittanceRequest.findMany).not.toHaveBeenCalled();
+  });
+
+  it('includes neither when permissions hold neither key', async () => {
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+
+    const { getUnitsDashboard } = await import('../../../src/modules/units/service.js');
+    const dashboard = await getUnitsDashboard({});
+
+    expect(dashboard.kpi.pendingRemittances).toBeUndefined();
+    expect(dashboard.kpi.pendingQuotations).toBeUndefined();
+    expect(dashboard.remittanceRequests).toBeUndefined();
+    expect(dashboard.quotationRequests).toBeUndefined();
   });
 });
 

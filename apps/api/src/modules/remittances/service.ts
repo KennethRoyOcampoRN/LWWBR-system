@@ -82,6 +82,37 @@ export async function listRemittanceRequests(query: ListRemittanceRequestsQuery)
   return Promise.all(requests.map(remittanceRequestToJson));
 }
 
+export interface PendingRemittance {
+  id: string;
+  referenceNo: string;
+  name: string;
+  waitingMinutes: number;
+}
+
+// Command Center attention-queue row, 2026-08-31: same "how long has this
+// been sitting" framing as listOverdueAmenityRequests' overdueMinutes,
+// computed from createdAt since a remittance request has no SLA/due-back
+// field of its own to compare against — it's either FOR_VERIFICATION or
+// it isn't. Deliberately does NOT reuse listRemittanceRequests (which
+// returns the full row including a signed proof-photo URL): the
+// dashboard only needs a light summary, and generating a signed URL for
+// every pending request on every Command Center load would be wasted
+// work for data the queue row never displays.
+export async function listPendingRemittances(): Promise<PendingRemittance[]> {
+  const now = Date.now();
+  const requests = await prisma.remittanceRequest.findMany({
+    where: { deletedAt: null, status: 'FOR_VERIFICATION' },
+    select: { id: true, referenceNo: true, name: true, createdAt: true },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+  return requests.map((request) => ({
+    id: request.id,
+    referenceNo: request.referenceNo,
+    name: request.name,
+    waitingMinutes: Math.floor((now - request.createdAt.getTime()) / 60_000),
+  }));
+}
+
 // Bidirectional: OWNER (the only remittance:verify holder) can mark
 // VERIFIED or revert to FOR_VERIFICATION — both directions are the same
 // write, gated by the same single permission, so there's no transition

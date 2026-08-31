@@ -39,6 +39,17 @@ interface DashboardData {
     checkinsToday: number;
     checkoutsToday: number;
     openFnbOrders: number;
+    // Client-directed feature, 2026-08-31: the first Command Center data
+    // that isn't universally visible to every unit:read holder — the
+    // backend (getUnitsDashboard) omits these two keys entirely, not 0,
+    // for a caller without remittance:read/quotation:read. Optional here
+    // for the same reason: `canViewRemittances`/`canViewQuotations` below
+    // gate rendering on the viewer's own permission, never on whether the
+    // key happens to be present, but keeping them optional in the type
+    // keeps that omission honest end to end rather than papering over it
+    // with a `?? 0` that could paint a real-looking zero.
+    pendingRemittances?: number;
+    pendingQuotations?: number;
   };
   dirtyRooms: { id: string; code: string; name: string; dirtyMinutes: number }[];
   slaBreachedWorkOrders: {
@@ -55,6 +66,8 @@ interface DashboardData {
     unitCode: string | null;
     overdueMinutes: number;
   }[];
+  remittanceRequests?: { id: string; referenceNo: string; name: string; waitingMinutes: number }[];
+  quotationRequests?: { id: string; referenceNo: string; name: string; waitingMinutes: number }[];
 }
 
 interface RawActivityEvent {
@@ -227,6 +240,15 @@ export function CommandCenter() {
   // orders has no equivalent check: workorder:read is the one
   // permission every role holds.
   const canViewFnb = Boolean(user?.permissions['fnb:read']);
+  // Same reasoning, extended: gate on the viewer's own permission, not on
+  // whether the backend happened to include the field — the backend
+  // already omits pendingRemittances/pendingQuotations and both queue
+  // arrays for a caller without the matching permission (see
+  // getUnitsDashboard's own doc comment), so these two checks are belt
+  // and suspenders against ever rendering a card/row this viewer has no
+  // other access to justify seeing.
+  const canViewRemittances = Boolean(user?.permissions['remittance:read']);
+  const canViewQuotations = Boolean(user?.permissions['quotation:read']);
   const [dashboard, setDashboard] = useState<DashboardData | 'loading' | 'error'>('loading');
   const [feed, setFeed] = useState<FeedItem[] | 'loading' | 'error'>('loading');
   // Spec §3 / §11 M6: "cache the last-known board read-only so a staff
@@ -404,6 +426,28 @@ export function CommandCenter() {
                 icon={IconUtensils}
                 to={canViewFnb ? '/restaurant' : undefined}
               />
+              {/* Reuses IconAlertTriangle rather than growing the icon
+                  set for two more cards — the warning/accent tint pair
+                  already distinguishes them from each other and from the
+                  danger-tier "needs attention now" cards above. */}
+              {canViewRemittances && dashboard.kpi.pendingRemittances !== undefined && (
+                <KpiCard
+                  label="Pending payment verifications"
+                  value={dashboard.kpi.pendingRemittances}
+                  variant="warning"
+                  icon={IconAlertTriangle}
+                  to="/payment-verification"
+                />
+              )}
+              {canViewQuotations && dashboard.kpi.pendingQuotations !== undefined && (
+                <KpiCard
+                  label="Pending quotations"
+                  value={dashboard.kpi.pendingQuotations}
+                  variant="accent"
+                  icon={IconAlertTriangle}
+                  to="/quotations"
+                />
+              )}
             </div>
           )}
         </section>
@@ -486,6 +530,61 @@ export function CommandCenter() {
                 {dashboard.overdueAmenityRequests.length === 0 && (
                   <li>
                     <EmptyState message="No amenity requests past their due-back time." />
+                  </li>
+                )}
+                {/* Client-directed feature, 2026-08-31: pending
+                    remittances/quotations, gated the same way as the KPI
+                    cards above — the backend already omits these arrays
+                    entirely for a caller without the matching permission,
+                    and canViewRemittances/canViewQuotations here is
+                    belt-and-suspenders on the frontend. Each row is a real
+                    Link (not just a styled li) to its own page. */}
+                {canViewRemittances &&
+                  dashboard.remittanceRequests?.map((req) => (
+                    <li key={req.id}>
+                      <Link
+                        to="/payment-verification"
+                        className="flex items-center justify-between rounded-xl bg-warning-50 px-4 py-3 transition-shadow hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                      >
+                        <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-warning-600">
+                            <IconAlertTriangle className="h-4 w-4" />
+                          </span>
+                          {req.referenceNo} — {req.name} awaiting verification
+                        </span>
+                        <span className="text-xs font-semibold text-warning-600">
+                          {formatDuration(req.waitingMinutes)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                {canViewRemittances && dashboard.remittanceRequests?.length === 0 && (
+                  <li>
+                    <EmptyState message="No payment verifications pending." />
+                  </li>
+                )}
+                {canViewQuotations &&
+                  dashboard.quotationRequests?.map((req) => (
+                    <li key={req.id}>
+                      <Link
+                        to="/quotations"
+                        className="flex items-center justify-between rounded-xl bg-accent-50 px-4 py-3 transition-shadow hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                      >
+                        <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-accent-600">
+                            <IconAlertTriangle className="h-4 w-4" />
+                          </span>
+                          {req.referenceNo} — {req.name} awaiting quotation
+                        </span>
+                        <span className="text-xs font-semibold text-accent-600">
+                          {formatDuration(req.waitingMinutes)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                {canViewQuotations && dashboard.quotationRequests?.length === 0 && (
+                  <li>
+                    <EmptyState message="No quotations pending." />
                   </li>
                 )}
               </ul>

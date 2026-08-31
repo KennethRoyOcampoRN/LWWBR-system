@@ -114,13 +114,19 @@ unitsRouter.get(
 // Unit/UnitStatusEvent/WorkOrder data. Deliberately unit:read-gated, not
 // workorder:read — see getUnitsDashboard's own doc comment for why that's
 // not a permission leak in practice, and for what's still deliberately NOT
-// here (amenities — M5 — is the only remaining un-built item; payments is
-// permanently out of scope, not deferred) and why.
+// here (payments is permanently out of scope, not deferred) and why.
+//
+// remittance:*/quotation:* fields (2026-08-31) are the first exception to
+// "unit:read alone justifies every field" — requirePermission already
+// loads the caller's full permission set fresh via getMe() and attaches
+// it to req.authUser, so passing it through costs no extra query;
+// getUnitsDashboard uses it to omit those fields entirely for a caller
+// who doesn't hold the matching permission (see its own doc comment).
 unitsRouter.get(
   '/units/dashboard',
   requirePermission('unit:read'),
-  asyncHandler(async (_req, res) => {
-    res.status(200).json(await getUnitsDashboard());
+  asyncHandler(async (req, res) => {
+    res.status(200).json(await getUnitsDashboard(req.authUser!.permissions));
   }),
 );
 

@@ -43,6 +43,32 @@ export async function listQuotationRequests(query: ListQuotationRequestsQuery) {
   });
 }
 
+export interface PendingQuotation {
+  id: string;
+  referenceNo: string;
+  name: string;
+  waitingMinutes: number;
+}
+
+// Command Center attention-queue row, 2026-08-31 — same "how long has
+// this been sitting" framing as remittances/service.ts's
+// listPendingRemittances (which see for why this is a light summary, not
+// a reuse of listQuotationRequests' full row).
+export async function listPendingQuotations(): Promise<PendingQuotation[]> {
+  const now = Date.now();
+  const requests = await prisma.quotationRequest.findMany({
+    where: { deletedAt: null, status: 'PENDING' },
+    select: { id: true, referenceNo: true, name: true, createdAt: true },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+  return requests.map((request) => ({
+    id: request.id,
+    referenceNo: request.referenceNo,
+    name: request.name,
+    waitingMinutes: Math.floor((now - request.createdAt.getTime()) / 60_000),
+  }));
+}
+
 // Just two states — PENDING/DONE, gated by the single
 // quotation:update_status permission (SYSTEM_ADMIN only). No transition
 // table needed for a straight two-way toggle.

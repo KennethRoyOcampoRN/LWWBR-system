@@ -12,6 +12,7 @@ vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 
 const { createApp } = await import('../../../src/app.js');
 const { signAccessToken } = await import('../../../src/modules/auth/tokens.js');
+const { listPendingQuotations } = await import('../../../src/modules/quotations/service.js');
 
 function userWithRole(roleKey: string, overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -176,5 +177,39 @@ describe('POST /api/v1/quotation-requests/:id/status', () => {
       .send({ toStatus: 'DONE' });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// Command Center attention-queue/KPI source (2026-08-31) — this function
+// has no HTTP route of its own (called internally from units/service.ts's
+// getUnitsDashboard; see that module's router test for the end-to-end,
+// permission-gated response shape), so this pins the Prisma where-clause
+// and mapping directly, same convention as amenities/service.test.ts's
+// listOverdueAmenityRequests.
+describe('listPendingQuotations', () => {
+  it('queries for PENDING status only, oldest first', async () => {
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([]);
+
+    await listPendingQuotations();
+
+    expect(mockPrisma.quotationRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, status: 'PENDING' },
+        orderBy: [{ createdAt: 'asc' }],
+      }),
+    );
+  });
+
+  it('maps a pending quotation to waitingMinutes', async () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    mockPrisma.quotationRequest.findMany.mockResolvedValue([
+      { id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', createdAt: oneHourAgo },
+    ]);
+
+    const result = await listPendingQuotations();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos' });
+    expect(result[0]!.waitingMinutes).toBeGreaterThanOrEqual(59);
   });
 });

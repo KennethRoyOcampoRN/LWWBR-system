@@ -737,6 +737,126 @@ describe('App', () => {
     expect(screen.queryByRole('link', { name: /Open F&B tickets/ })).not.toBeInTheDocument();
   });
 
+  // Client-directed feature, 2026-08-31: the first Command Center data
+  // that isn't universally visible to every unit:read holder (see
+  // getUnitsDashboard's own doc comment). This is the frontend half of
+  // that gate — a viewer without remittance:read/quotation:read must see
+  // neither card nor either queue row type, even if the mocked backend
+  // response were to (hypothetically) include the fields, since the real
+  // backend never actually would. Testing the frontend gate itself, not
+  // just that the backend omitted the data, so a future refactor on
+  // either side can't reintroduce a leak without this catching it.
+  it('a viewer without remittance:read/quotation:read sees neither KPI card nor queue rows, even if the payload includes the data', async () => {
+    const housekeepingUser = {
+      ...currentUser,
+      roles: ['POC_HOUSEKEEPING'],
+      permissions: { 'unit:read': 'ALL' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: housekeepingUser });
+      if (url.includes('/units/dashboard')) {
+        return jsonResponse(200, {
+          kpi: {
+            occupied: 0,
+            ready: 0,
+            dirty: 0,
+            outOfOrder: 0,
+            urgentOpenWorkOrders: 0,
+            checkinsToday: 0,
+            checkoutsToday: 0,
+            openFnbOrders: 0,
+            // A real backend response would never include these two keys
+            // for this permission set — present here anyway, to prove
+            // the frontend's own gate (not just the backend's omission)
+            // is what keeps them off screen.
+            pendingRemittances: 3,
+            pendingQuotations: 2,
+          },
+          dirtyRooms: [],
+          slaBreachedWorkOrders: [],
+          overdueAmenityRequests: [],
+          remittanceRequests: [{ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', waitingMinutes: 30 }],
+          quotationRequests: [{ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', waitingMinutes: 20 }],
+        });
+      }
+      if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Occupied')).toBeInTheDocument());
+
+    expect(screen.queryByText('Pending payment verifications')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pending quotations')).not.toBeInTheDocument();
+    expect(screen.queryByText(/RM-260831-0001/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/QT-260831-0001/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /payment verification/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /quotation/i })).not.toBeInTheDocument();
+  });
+
+  // A viewer with both permissions sees both cards with the real counts
+  // and both queue row types, and each — card and row alike — is a real
+  // link to its own page.
+  it('a viewer with remittance:read and quotation:read sees both KPI cards and queue rows, each navigating to its own page', async () => {
+    const user = userEvent.setup();
+    const adminStaffUser = {
+      ...currentUser,
+      roles: ['ADMIN_STAFF'],
+      permissions: { 'unit:read': 'ALL', 'remittance:read': 'ALL', 'quotation:read': 'ALL' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
+      if (url.includes('/units/dashboard')) {
+        return jsonResponse(200, {
+          kpi: {
+            occupied: 0,
+            ready: 0,
+            dirty: 0,
+            outOfOrder: 0,
+            urgentOpenWorkOrders: 0,
+            checkinsToday: 0,
+            checkoutsToday: 0,
+            openFnbOrders: 0,
+            pendingRemittances: 1,
+            pendingQuotations: 1,
+          },
+          dirtyRooms: [],
+          slaBreachedWorkOrders: [],
+          overdueAmenityRequests: [],
+          remittanceRequests: [{ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', waitingMinutes: 30 }],
+          quotationRequests: [{ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', waitingMinutes: 20 }],
+        });
+      }
+      if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
+      if (url.endsWith('/remittance-requests')) return jsonResponse(200, { remittanceRequests: [] });
+      if (url.endsWith('/quotation-requests')) return jsonResponse(200, { quotationRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Pending payment verifications')).toBeInTheDocument());
+    expect(screen.getByText('Pending payment verifications').parentElement).toHaveTextContent('1');
+    expect(screen.getByText('Pending quotations').parentElement).toHaveTextContent('1');
+    expect(screen.getByText(/RM-260831-0001 — Juan Dela Cruz awaiting verification/i)).toBeInTheDocument();
+    expect(screen.getByText(/QT-260831-0001 — Maria Santos awaiting quotation/i)).toBeInTheDocument();
+
+    const kpiLink = screen.getByRole('link', { name: /Pending payment verifications/ });
+    expect(kpiLink).toHaveAttribute('href', '/payment-verification');
+    const rowLink = screen.getByRole('link', { name: /RM-260831-0001 — Juan Dela Cruz awaiting verification/i });
+    expect(rowLink).toHaveAttribute('href', '/payment-verification');
+
+    await user.click(screen.getByRole('link', { name: /Pending quotations/ }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Quotations' })).toBeInTheDocument());
+  });
+
   // Real feature, this slice: clicking either hero KPI card navigates.
   // Open F&B tickets only links when the viewer holds fnb:read — this
   // fixture grants it (mirroring the real fix landing alongside this
