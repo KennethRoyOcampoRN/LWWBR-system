@@ -53,11 +53,13 @@ export function SessionsPage() {
       </p>
 
       {sessions === 'loading' && (
-        <table className="w-full text-sm">
-          <tbody>
-            <SkeletonTableRows rows={2} columns={5} />
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={2} columns={5} />
+            </tbody>
+          </table>
+        </div>
       )}
       {sessions === 'error' && <p role="alert">Could not load sessions.</p>}
       {error && (
@@ -66,39 +68,46 @@ export function SessionsPage() {
         </p>
       )}
 
+      {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
+          M6): this table had no overflow-x-auto wrapper — on a real
+          phone viewport the unbroken "Signed in"/"Expires" locale
+          datetime strings pushed the whole page 651px wide inside a
+          375px window instead of scrolling within its own bounds. */}
       {Array.isArray(sessions) && (
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 text-gray-500">
-              <th className="py-2 pr-4 font-medium">IP</th>
-              <th className="py-2 pr-4 font-medium">Device</th>
-              <th className="py-2 pr-4 font-medium">Signed in</th>
-              <th className="py-2 pr-4 font-medium">Expires</th>
-              <th className="py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.map((session) => (
-              <tr key={session.id} className="border-b border-gray-100">
-                <td className="py-2 pr-4">{session.ip ?? '—'}</td>
-                <td className="max-w-xs truncate py-2 pr-4" title={session.userAgent ?? undefined}>
-                  {session.userAgent ?? '—'}
-                </td>
-                <td className="py-2 pr-4">{new Date(session.createdAt).toLocaleString()}</td>
-                <td className="py-2 pr-4">{new Date(session.expiresAt).toLocaleString()}</td>
-                <td className="py-2">
-                  <button
-                    onClick={() => void revoke(session.id)}
-                    disabled={revokingId === session.id}
-                    className="text-sm text-red-700 hover:underline disabled:opacity-50"
-                  >
-                    {revokingId === session.id ? 'Revoking…' : 'Revoke'}
-                  </button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-gray-500">
+                <th className="py-2 pr-4 font-medium">IP</th>
+                <th className="py-2 pr-4 font-medium">Device</th>
+                <th className="py-2 pr-4 font-medium">Signed in</th>
+                <th className="py-2 pr-4 font-medium">Expires</th>
+                <th className="py-2 font-medium">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sessions.map((session) => (
+                <tr key={session.id} className="border-b border-gray-100">
+                  <td className="py-2 pr-4">{session.ip ?? '—'}</td>
+                  <td className="max-w-xs truncate py-2 pr-4" title={session.userAgent ?? undefined}>
+                    {session.userAgent ?? '—'}
+                  </td>
+                  <td className="whitespace-nowrap py-2 pr-4">{new Date(session.createdAt).toLocaleString()}</td>
+                  <td className="whitespace-nowrap py-2 pr-4">{new Date(session.expiresAt).toLocaleString()}</td>
+                  <td className="py-2">
+                    <button
+                      onClick={() => void revoke(session.id)}
+                      disabled={revokingId === session.id}
+                      className="text-sm text-red-700 hover:underline disabled:opacity-50"
+                    >
+                      {revokingId === session.id ? 'Revoking…' : 'Revoke'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

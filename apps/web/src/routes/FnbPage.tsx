@@ -679,11 +679,13 @@ export function FnbPage() {
         </div>
 
         {history === 'loading' && (
-          <table className="min-w-full text-sm">
-            <tbody>
-              <SkeletonTableRows rows={4} columns={7} />
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <tbody>
+                <SkeletonTableRows rows={4} columns={7} />
+              </tbody>
+            </table>
+          </div>
         )}
         {history === 'error' && <p role="alert">Could not load order history.</p>}
         {Array.isArray(history) && visibleHistory.length === 0 && <EmptyState message="No matching orders." />}
@@ -744,11 +746,13 @@ export function FnbPage() {
         {deleteError && <p role="alert" className="mb-2 text-sm text-red-700">{deleteError}</p>}
 
         {items === 'loading' && (
-          <table className="min-w-full text-sm">
-            <tbody>
-              <SkeletonTableRows rows={4} columns={4} />
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <tbody>
+                <SkeletonTableRows rows={4} columns={4} />
+              </tbody>
+            </table>
+          </div>
         )}
         {items === 'error' && <p role="alert">Could not load the menu.</p>}
         {Array.isArray(items) && items.length === 0 && <EmptyState message="No menu items yet." />}

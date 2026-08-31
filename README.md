@@ -5003,3 +5003,126 @@ install the app from a phone browser and confirm it opens standalone;
 mode and reload — confirm the cached board and offline banner appear;
 (3) confirm normal pages still work correctly once back online, i.e. the
 offline banner clears and the SW isn't serving anything stale.
+
+### M6 slice: mobile pass across every screen + Lighthouse mobile performance (spec §11 M6 acceptance line) (2026-08-31)
+
+Two parts of the same acceptance line, verified differently: the layout
+pass is fully testable in this sandbox (a real phone viewport doesn't
+need a live backend); the Lighthouse number is sandbox-verified against
+the production build but may shift slightly once actually deployed
+(HTTPS, real network conditions) — same caveat already noted for the PWA
+install prompt.
+
+**Nav — the concrete bug client found live-testing, plan approved before
+building.** `AppShell.tsx`'s mobile nav (`<md`) used to render every item
+as one horizontal row of plain text links with no wrap control — tight
+enough that "Command Center" (the longest label) broke onto two lines.
+Tracing it surfaced a second, more serious gap: "Sign out" lived in a
+`hidden md:flex` block with no mobile equivalent at all — **unreachable
+on a real phone viewport**, contradicting `NotificationBell.tsx`'s own
+comment that it's shown everywhere "same reasoning as the Sign out
+button's placement."
+
+Fix: below `md`, the nav collapses to a slim top bar (brand +
+`InstallButton` + `NotificationBell` + a hamburger toggle) that expands
+into the *same* vertical `NavLink` list desktop already renders — full
+width, one item per line — now including Sign out. Tapping any link
+closes the menu. At `md` and up, nothing changed: same always-visible
+left sidebar as before. Chose this over a bottom icon tab bar (the other
+common mobile pattern, arguably closer to spec's literal "Left/bottom
+nav" phrasing) because this app has up to 9 nav items depending on role —
+a bottom bar forces an overflow "More" menu anyway, plus a new
+icon-library dependency per item, for no smaller a change than reusing
+markup that already existed.
+
+New `test/AppShell.test.tsx` (3 tests): the hamburger's `aria-expanded`
+and accessible name flip correctly; clicking a nav link closes the menu;
+Sign out is present and actually calls `POST /auth/logout`. The toggle
+is a pure CSS (`hidden`/`flex`) class swap, never a conditional unmount —
+every existing "click the Units link" test across the suite keeps working
+without first opening the menu, since Tailwind's responsive classes have
+no effect in jsdom's non-layout-engine DOM anyway (only in a real
+browser, which is what the visual check below actually exercises).
+
+**Full sweep, all 9 authenticated routes + login, real 375px-viewport
+Playwright pass against the production build** (mocked API responses,
+not the dev server — same "don't score/measure a dev build" discipline
+as the Lighthouse run below). Automated a horizontal-overflow check
+(`document.documentElement.scrollWidth > clientWidth`) on every route
+first, then screenshotted each and the two forms named in scope (work
+order creation, amenity request creation) plus the Unit/Roles detail
+panels.
+
+**Two real, confirmed bugs found, both fixed:** `UsersPage.tsx` and
+`SessionsPage.tsx` were the only two data tables in the entire app with
+**no `overflow-x-auto` wrapper** — every other table (Amenities, F&B,
+Reports) already used it. On a real 375px viewport this wasn't a
+contained, swipeable table; it was the *whole page* stretching to
+527px (Users) and 651px (Sessions) inside a 375px window, cutting the
+rightmost column off entirely rather than making it reachable by
+scroll. Fixed by wrapping both tables (loading-skeleton state and
+loaded state) in the same `overflow-x-auto` div every other table
+already uses, plus `whitespace-nowrap` on Sessions' two datetime
+columns (was the single biggest width contributor, wrapping onto 3
+lines per cell). Also wrapped 4 more loading-skeleton tables
+(Amenities items, F&B history, F&B menu, Reports results pane) that
+happened not to overflow at their current column counts but had the
+same missing-wrapper gap as their already-fixed loaded-state siblings —
+fixed for consistency/robustness rather than because they were caught
+actually overflowing.
+
+**Everything else already adapted correctly** — confirmed, not assumed:
+Units' card grid, Work Orders' card list and its "New ticket" form
+(`grid-cols-1 sm:grid-cols-2` already stacks to one column below `sm`),
+the Amenities request form (including this session's own new Room
+picker), the F&B kitchen board's three status columns, the Login screen,
+and the Unit/Roles detail drawers (`w-full max-w-sm`/`max-w-md` is
+already the correct responsive drawer pattern — full-width on a phone,
+capped on desktop) — zero horizontal overflow, zero cramped tap targets
+found on any of these in the automated sweep.
+
+**Reports page, checked as specifically requested — not further
+changed.** Every result table there already used the correct contained-
+scroll pattern (`max-h-96 overflow-auto` per section, one already using
+`overflow-x-auto` for the summary table) before this slice — confirmed
+via a populated run of the work-orders report at 375px: zero body-level
+overflow, tables scroll within their own bounds exactly as designed. The
+8-column "Tickets in range" table is genuinely dense on a phone (visibly
+cut off without a scroll affordance in the screenshot) — but that's an
+inherent property of that much tabular data at that width, not a bug the
+way the Users/Sessions gap was. Trimming which columns show below a
+breakpoint is a real product decision (which columns matter most per
+report) that the client should make, not one to guess at silently — flagging it as a candidate for a future slice rather than changing it now.
+
+**Lighthouse mobile performance.** Ran `npx lighthouse` (mobile
+form-factor/screen emulation, simulated throttling) against `vite
+preview` serving the real `npm run build` output — not the dev server,
+which scores artificially low. **Score: 99/100** (target: ≥85). FCP 1.6s,
+LCP 1.9s, TBT 0ms, CLS 0, Speed Index 1.6s, TTI 1.9s. Measured against
+`/` (the login screen, since no backend exists in this sandbox to
+authenticate through) rather than an authenticated page — reasoned this
+is still a fair measurement of real shipped performance, not a
+shortcut: the app has no route-level code-splitting (confirmed via the
+build output — one JS bundle, `dist/assets/index-*.js`, currently
+~384KB/106KB gzipped), so every route loads the identical JS/CSS payload
+regardless of which page renders, and Lighthouse's performance score is
+driven by that load, not page-specific content. One non-blocking
+diagnostic: ~66 KiB of "unused JavaScript" flagged (expected — the login
+screen alone doesn't exercise every route's code in a single-bundle
+app) — not worth chasing given the score already clears the target by 14
+points.
+
+No schema change, no new dependency. Verification: `npm run typecheck`
+clean, `npm run lint` clean, `npm run test -w apps/web` — 101/101 passing
+(15 files, up from 98/14 — the new `AppShell.test.tsx`), `npm run test -w
+apps/api` — 391/394 (same 3 pre-existing sandbox-network-only failures
+every run this session hits), `npm run test -w packages/shared` —
+76/76, `npm run build` clean across all three packages. The mobile
+layout pass itself is fully sandbox-verified (real 375px Playwright
+screenshots against the actual production build, not a resized desktop
+browser). Lighthouse score is sandbox-verified only in the sense noted
+above — recommend a re-run against the real deployed HTTPS URL once M7
+launch happens, to confirm the number holds (it should — nothing about
+this app's payload changes between local and deployed, only network
+conditions do, and those should only improve on a real CDN vs. this
+sandbox's `vite preview`).

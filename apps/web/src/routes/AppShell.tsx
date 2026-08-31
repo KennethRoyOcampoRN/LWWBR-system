@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import { InstallButton } from '../components/InstallButton.js';
@@ -49,40 +50,89 @@ const NAV_ITEMS: {
 export function AppShell() {
   const { user, logout } = useAuth();
   const location = useLocation();
+  // Mobile-only: the nav below md renders as a collapsed top bar with
+  // this toggling a slide-down menu, rather than the wrapping horizontal
+  // row of text links it used to be — see the file-level comment above
+  // the <nav> for the real bug this replaced. Purely a CSS
+  // (hidden/flex) toggle, never a conditional unmount, so every link
+  // stays in the DOM at all times — this is what keeps every existing
+  // "click the Units link" test working without first opening the menu;
+  // Tailwind's responsive classes have no effect in jsdom anyway (no
+  // real layout engine), only in an actual browser.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const visibleItems = NAV_ITEMS.filter((item) => !item.permission || user?.permissions[item.permission]);
 
+  function closeMobileNav() {
+    setMobileNavOpen(false);
+  }
+
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <nav className="flex shrink-0 flex-row items-center gap-1 border-b border-gray-200 bg-white p-2 md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:p-4">
-        <div className="hidden items-center justify-between gap-2 md:flex">
-          <p className="px-2 pb-2 text-sm font-semibold text-gray-500">Lucky Waku-Waku</p>
-          <div className="flex items-center gap-2 pb-2">
+      {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
+          M6): on an actual phone viewport this used to render every nav
+          item as one horizontal row of text links with no wrap control —
+          tight enough that "Command Center" (the longest label) wrapped
+          onto two lines. Below md, the brand/notification/install row
+          collapses to a slim top bar with a hamburger toggle; the actual
+          links (shared with desktop, same markup) render as a full-width
+          vertical list when open, one item per line, same as desktop's
+          always-visible sidebar. At md and up this is all just the
+          plain always-visible left sidebar it always was. */}
+      <nav className="flex shrink-0 flex-col border-b border-gray-200 bg-white md:w-56 md:border-b-0 md:border-r">
+        <div className="flex items-center justify-between gap-2 p-2 md:p-4 md:pb-2">
+          <p className="px-2 text-sm font-semibold text-gray-500">Lucky Waku-Waku</p>
+          <div className="flex items-center gap-2">
             <InstallButton />
             <NotificationBell />
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen((open) => !open)}
+              aria-expanded={mobileNavOpen}
+              aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+              className="rounded p-2 text-gray-700 hover:bg-gray-100 md:hidden"
+            >
+              {mobileNavOpen ? (
+                <span aria-hidden="true" className="block text-lg leading-none">
+                  ✕
+                </span>
+              ) : (
+                <span aria-hidden="true" className="block text-lg leading-none">
+                  ☰
+                </span>
+              )}
+            </button>
           </div>
         </div>
-        {visibleItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
-            className={({ isActive }) =>
-              `rounded px-3 py-2 text-sm font-medium ${isActive ? 'bg-blue-100 text-blue-800' : 'text-gray-700 hover:bg-gray-100'}`
-            }
-          >
-            {item.label}
-          </NavLink>
-        ))}
-        <div className="ml-auto flex items-center gap-2 md:hidden">
-          <InstallButton />
-          <NotificationBell />
-        </div>
-        <div className="mt-auto hidden flex-col gap-1 pt-4 text-sm md:flex">
-          <p className="px-2 text-gray-700">{user?.fullName}</p>
-          <button onClick={() => void logout()} className="rounded px-2 py-1 text-left text-gray-500 hover:bg-gray-100">
-            Sign out
-          </button>
+
+        <div
+          className={`flex-col gap-1 px-2 pb-2 md:flex md:flex-1 md:px-4 md:pb-4 ${mobileNavOpen ? 'flex' : 'hidden md:flex'}`}
+        >
+          {visibleItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              onClick={closeMobileNav}
+              className={({ isActive }) =>
+                `rounded px-3 py-2 text-sm font-medium ${isActive ? 'bg-blue-100 text-blue-800' : 'text-gray-700 hover:bg-gray-100'}`
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
+          <div className="mt-2 flex flex-col gap-1 border-t border-gray-200 pt-2 text-sm md:mt-auto md:border-t-0 md:pt-4">
+            <p className="px-2 text-gray-700">{user?.fullName}</p>
+            <button
+              onClick={() => {
+                closeMobileNav();
+                void logout();
+              }}
+              className="rounded px-2 py-1 text-left text-gray-500 hover:bg-gray-100"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </nav>
       <main className="flex-1 p-4 md:p-6">

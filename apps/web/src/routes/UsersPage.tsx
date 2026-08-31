@@ -266,31 +266,41 @@ export function UsersPage() {
       <NewUserForm onCreated={handleCreated} />
 
       {users === 'loading' && (
-        <table className="w-full text-sm">
-          <tbody>
-            <SkeletonTableRows rows={4} columns={6} />
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={4} columns={6} />
+            </tbody>
+          </table>
+        </div>
       )}
       {users === 'error' && <p role="alert">Could not load users.</p>}
       {Array.isArray(users) && (
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 text-gray-500">
-              <th className="py-2 pr-4 font-medium">Code</th>
-              <th className="py-2 pr-4 font-medium">Name</th>
-              <th className="py-2 pr-4 font-medium">Department</th>
-              <th className="py-2 pr-4 font-medium">Roles</th>
-              <th className="py-2 pr-4 font-medium">Status</th>
-              <th className="py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((user) => (
-              <UserRowEditor key={user.id} user={user} onSaved={handleSaved} />
-            ))}
-          </tbody>
-        </table>
+        // Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
+        // M6): this table had no overflow-x-auto wrapper, unlike every
+        // other data table in the app — on a real phone viewport it
+        // pushed the whole page 527px wide inside a 375px window instead
+        // of scrolling within its own bounds, cutting off the rightmost
+        // column entirely.
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-gray-500">
+                <th className="py-2 pr-4 font-medium">Code</th>
+                <th className="py-2 pr-4 font-medium">Name</th>
+                <th className="py-2 pr-4 font-medium">Department</th>
+                <th className="py-2 pr-4 font-medium">Roles</th>
+                <th className="py-2 pr-4 font-medium">Status</th>
+                <th className="py-2 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <UserRowEditor key={user.id} user={user} onSaved={handleSaved} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

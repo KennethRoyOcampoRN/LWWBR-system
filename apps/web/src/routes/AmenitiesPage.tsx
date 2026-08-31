@@ -330,11 +330,13 @@ export function AmenitiesPage() {
 
       {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
       {items === 'loading' && (
-        <table className="min-w-full text-sm">
-          <tbody>
-            <SkeletonTableRows rows={4} columns={7} />
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={4} columns={7} />
+            </tbody>
+          </table>
+        </div>
       )}
       {items === 'error' && <p role="alert">Could not load the amenity catalogue.</p>}
       {Array.isArray(items) && items.length === 0 && <EmptyState message="No amenity items yet." />}

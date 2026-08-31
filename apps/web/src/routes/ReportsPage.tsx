@@ -339,11 +339,13 @@ export function ReportsPage() {
           results pane previously had no loading indicator at all — only
           the "Run report" button's own label changed to "Running…". */}
       {loading && (
-        <table className="min-w-full text-sm">
-          <tbody>
-            <SkeletonTableRows rows={5} columns={5} />
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <tbody>
+              <SkeletonTableRows rows={5} columns={5} />
+            </tbody>
+          </table>
+        </div>
       )}
 
       {report?.key === 'occupancy' && <OccupancyReportView report={report} />}
