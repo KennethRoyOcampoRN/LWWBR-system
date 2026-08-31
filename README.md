@@ -5126,3 +5126,104 @@ launch happens, to confirm the number holds (it should — nothing about
 this app's payload changes between local and deployed, only network
 conditions do, and those should only improve on a real CDN vs. this
 sandbox's `vite preview`).
+
+### Visual redesign, first pass: design tokens + Command Center (client-directed, 2026-08-31)
+
+New direction from the client: a full visual skin pass across the app —
+violet/indigo primary, soft gradient background, rounded cards with soft
+shadows instead of hard borders, gradient-filled hero KPI cards, circular
+icon badges, more generous whitespace — matched to a reference dashboard
+they picked (described to me as a direction, not reproduced — someone
+else's proprietary design). Explicitly a skin pass: no page structure,
+data placement, or functional behavior changed. Given the scope (16
+screens), agreed process was a token proposal + a single-screen (Command
+Center) demonstration before any wider rollout — proposal presented and
+approved before any code changed; this entry covers the approved build.
+
+**Design tokens** — `tailwind.config.js`, `theme.extend`:
+- `colors.brand` — a full 50–950 scale anchored on the client's two given
+  hex values: `brand-600 #6C5CE7` (primary — buttons, active nav pill,
+  links), gradient partner `#7C6EF2`.
+- `colors.ink` — `DEFAULT #211B39` (headings, replaces `text-gray-900`),
+  `secondary #6E6B85` (body/labels, replaces `text-gray-500/600`),
+  `muted #9C99AE`. A very slightly violet-tinted near-black instead of
+  pure gray, which is most of what makes the redesigned surfaces read as
+  one system rather than "default Tailwind plus a purple button."
+- `colors.success/warning/danger/info/accent` — kept as **distinct
+  hues**, not all folded into brand violet, so the color-coding the app
+  already relies on (dirty/urgent/ready/etc.) isn't lost, just restyled
+  softer to match. Only wired into `DashboardPage.tsx` directly in this
+  pass — `unitStatusStyle.ts`/`workOrderStyle.ts`/etc. still use their
+  original Tailwind classes until the redesign reaches those pages.
+- `boxShadow.card` — a soft, *violet-tinted* shadow (not plain gray) —
+  `0 1px 2px rgba(108,92,231,.06), 0 8px 24px rgba(108,92,231,.10)`.
+- `backgroundImage['app-gradient'/'brand-gradient'/'danger-gradient']` —
+  the page background (`linear-gradient(160deg,#F7F5FE,#FFFFFF)`) and the
+  two KPI hero-card gradients (see below).
+- Radius/spacing: no new scale — `rounded-2xl` (cards) and `rounded-xl`
+  (buttons/badges) are already in Tailwind's default scale; "more
+  generous" spacing is a usage convention (`p-6`→`p-8` on the main
+  content area, `gap-3`→`gap-4`/`gap-6`/`gap-8` throughout), not a new
+  token.
+
+**Icons** — the app had zero icons anywhere before this. Client approved
+hand-rolled inline SVGs over adding an icon library (lucide/heroicons),
+matching this session's established "no new dependency without asking"
+convention. `components/icons.tsx`: 8 small stroke-style icons (24×24
+viewBox, consistent strokeWidth/line-cap), one per Command Center
+KPI/section — bed (Occupied), check (Ready), broom (Dirty), alert-
+triangle (Out of order/Urgent), arrow-in/arrow-out (Check-ins/outs),
+utensils (F&B), a activity-pulse glyph (Live activity header). Sized at
+each call site — the icons have no intrinsic width/height of their own,
+so every usage passes an explicit size class.
+
+**AppShell.tsx (shared chrome — deliberately in scope)**: the page
+background gradient and nav restyle are global, not Dashboard-specific,
+so they're visible on every screen as a side effect of this pass even
+though only Command Center's own content got redesigned — flagged to the
+client ahead of time so it doesn't read as a half-finished rollout when
+they click through other pages during review. Nav: white panel with
+`shadow-card` instead of a hard right border; active `NavLink` is now a
+filled `bg-brand-600 text-white` pill (`rounded-xl`) instead of the old
+light-blue tint; inactive links use the new `ink-secondary` text color
+with a `brand-50` hover tint. Same restyle applied to both the desktop
+sidebar and the mobile slide-down menu (one shared list, per last
+slice's nav-bug fix) — confirmed via screenshot that the active pill
+renders correctly in both.
+
+**DashboardPage.tsx**: `KpiCard` rebuilt to take a `variant` (7 total:
+`hero-brand`, `hero-danger`, `success`, `warning`, `danger`, `info`,
+`accent`) and an icon component, rendering a circular soft-tinted icon
+badge, `rounded-2xl`/`shadow-card`, no more hard pastel border. **Two
+gradient hero cards, not one** — client-approved call: Occupied (`bg-
+brand-gradient`, the property's neutral headline number) and Open urgent
+work orders (`bg-danger-gradient`, a distinct red/rose gradient) — kept
+deliberately different gradients rather than flattening both into brand
+violet, so the good/neutral-vs-needs-attention-now distinction the old
+color-coded cards had isn't lost. The other 6 KPIs (Ready/Dirty/Out of
+order/Check-ins/Check-outs/F&B) are soft-tinted cards matched to the
+semantic color that fits what each number means. Attention queue and
+Live activity list items got the same tinted-badge/rounded treatment and
+more generous spacing; the offline banner (from the PWA slice) now uses
+the `warning` semantic tokens instead of one-off amber classes.
+
+**What's explicitly untouched in this pass**: every other route (Units,
+Work Orders, Amenities, Restaurant, Reports, Users, Roles, Sessions,
+Login), and the shared per-domain style files (`unitStatusStyle.ts`,
+`workOrderStyle.ts`, `amenityRequestStyle.ts`) — those keep their
+current Tailwind classes until the redesign is approved to roll out
+further.
+
+Verification: pure `className`/markup changes, no data or behavior
+change, so the existing suite should (and does) pass unmodified —
+confirmed, not assumed: `npm run typecheck` clean, `npm run lint` clean,
+`npm run test -w apps/web` — 101/101 passing (same count as before this
+slice — no new tests needed since nothing new to behaviorally test),
+`npm run test -w apps/api` — 391/394 (same 3 pre-existing sandbox-
+network-only failures), `npm run test -w packages/shared` — 76/76,
+`npm run build` clean across all three packages. Screenshotted the real
+production build at both desktop (1440px) and the 375px mobile viewport
+from last slice's mobile pass, including the mobile nav expanded —
+confirmed zero horizontal overflow at either width and sent the
+screenshots to the client for review before any further rollout, per
+the agreed process.

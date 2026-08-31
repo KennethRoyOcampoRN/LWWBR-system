@@ -68,7 +68,15 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col md:flex-row">
+    // Visual redesign pass, spec §11 M6 (client-directed, 2026-08-31) —
+    // token proposal approved before this landed; see README for the
+    // full token set. This background gradient and the nav below are
+    // shared chrome, not Dashboard-specific, so the visual change here
+    // is visible on every screen even though only Command Center's own
+    // content got redesigned in this first pass — that's intentional
+    // scope, not a half-finished rollout (flagged and approved ahead of
+    // time, see README).
+    <div className="flex min-h-screen flex-col bg-app-gradient md:flex-row">
       {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
           M6): on an actual phone viewport this used to render every nav
           item as one horizontal row of text links with no wrap control —
@@ -79,9 +87,9 @@ export function AppShell() {
           vertical list when open, one item per line, same as desktop's
           always-visible sidebar. At md and up this is all just the
           plain always-visible left sidebar it always was. */}
-      <nav className="flex shrink-0 flex-col border-b border-gray-200 bg-white md:w-56 md:border-b-0 md:border-r">
+      <nav className="flex shrink-0 flex-col bg-white shadow-card md:w-56">
         <div className="flex items-center justify-between gap-2 p-2 md:p-4 md:pb-2">
-          <p className="px-2 text-sm font-semibold text-gray-500">Lucky Waku-Waku</p>
+          <p className="px-2 text-sm font-semibold text-ink-secondary">Lucky Waku-Waku</p>
           <div className="flex items-center gap-2">
             <InstallButton />
             <NotificationBell />
@@ -90,7 +98,7 @@ export function AppShell() {
               onClick={() => setMobileNavOpen((open) => !open)}
               aria-expanded={mobileNavOpen}
               aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
-              className="rounded p-2 text-gray-700 hover:bg-gray-100 md:hidden"
+              className="rounded-xl p-2 text-ink-secondary hover:bg-brand-50 md:hidden"
             >
               {mobileNavOpen ? (
                 <span aria-hidden="true" className="block text-lg leading-none">
@@ -115,27 +123,29 @@ export function AppShell() {
               end={item.to === '/'}
               onClick={closeMobileNav}
               className={({ isActive }) =>
-                `rounded px-3 py-2 text-sm font-medium ${isActive ? 'bg-blue-100 text-blue-800' : 'text-gray-700 hover:bg-gray-100'}`
+                `rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive ? 'bg-brand-600 text-white shadow-card' : 'text-ink-secondary hover:bg-brand-50 hover:text-brand-700'
+                }`
               }
             >
               {item.label}
             </NavLink>
           ))}
-          <div className="mt-2 flex flex-col gap-1 border-t border-gray-200 pt-2 text-sm md:mt-auto md:border-t-0 md:pt-4">
-            <p className="px-2 text-gray-700">{user?.fullName}</p>
+          <div className="mt-2 flex flex-col gap-1 border-t border-brand-100 pt-2 text-sm md:mt-auto md:border-t-0 md:pt-4">
+            <p className="px-2 text-ink-secondary">{user?.fullName}</p>
             <button
               onClick={() => {
                 closeMobileNav();
                 void logout();
               }}
-              className="rounded px-2 py-1 text-left text-gray-500 hover:bg-gray-100"
+              className="rounded-xl px-2 py-1 text-left text-ink-muted hover:bg-brand-50 hover:text-brand-700"
             >
               Sign out
             </button>
           </div>
         </div>
       </nav>
-      <main className="flex-1 p-4 md:p-6">
+      <main className="flex-1 p-4 md:p-8">
         {/* Spec §11 M6: the boundary that actually protects the 9
             authenticated pages day to day — a crash in any single page
             shows a real error screen here instead of white-screening
