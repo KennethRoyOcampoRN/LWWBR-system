@@ -69,6 +69,26 @@ export const PERMISSION_KEYS = [
   'report:export',
   'audit:read',
   'system:configure',
+  // Client-directed feature, 2026-08-31: two standalone administrative
+  // request-and-status modules, unrelated to the descoped Payment/Folio/
+  // CashCount system (spec §13 decision 7). Deliberately NOT
+  // `payment:*` — that namespace (payment:read/submit/verify above) is
+  // reserved for decision 7's unbuilt system; reusing it here for an
+  // unrelated feature would make both permanently ambiguous to anyone
+  // reading this list. "Remittance" (money transferred/sent in — a
+  // manually-booked guest's payment via bank transfer/GCash/etc.,
+  // submitted for OWNER to verify) is the client's own naming choice,
+  // made specifically to read correctly as *incoming* while staying
+  // clear of `payment:*` at a glance.
+  'remittance:create',
+  'remittance:read',
+  'remittance:verify',
+  // Second standalone module, same slice: a simple quotation
+  // request/status record, no relation to bookings or the reserved
+  // payment:* namespace.
+  'quotation:create',
+  'quotation:read',
+  'quotation:update_status',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

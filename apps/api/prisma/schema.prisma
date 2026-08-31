@@ -66,41 +66,45 @@ model User {
 
   roles                 UserRole[]
   sessions              Session[]
-  auditLogs             AuditLog[]        @relation("AuditActor")
-  createdBookings       Booking[]         @relation("BookingCreatedBy")
-  checkIns              CheckInRecord[]   @relation("CheckedInBy")
-  checkOuts             CheckOutRecord[]  @relation("CheckedOutBy")
-  postedCharges         FolioCharge[]     @relation("ChargePostedBy")
-  voidedCharges         FolioCharge[]     @relation("ChargeVoidedBy")
-  settlements           FolioSettlement[] @relation("SettledBy")
-  submittedPayments     Payment[]         @relation("PaymentSubmittedBy")
-  verifiedPayments      Payment[]         @relation("PaymentVerifiedBy")
-  createdWorkOrders     WorkOrder[]       @relation("WorkOrderCreatedBy")
-  assignedWorkOrders    WorkOrder[]       @relation("WorkOrderAssignedTo")
-  assignedByWorkOrders  WorkOrder[]       @relation("WorkOrderAssignedBy")
-  verifiedWorkOrders    WorkOrder[]       @relation("WorkOrderVerifiedBy")
+  auditLogs             AuditLog[]          @relation("AuditActor")
+  createdBookings       Booking[]           @relation("BookingCreatedBy")
+  checkIns              CheckInRecord[]     @relation("CheckedInBy")
+  checkOuts             CheckOutRecord[]    @relation("CheckedOutBy")
+  postedCharges         FolioCharge[]       @relation("ChargePostedBy")
+  voidedCharges         FolioCharge[]       @relation("ChargeVoidedBy")
+  settlements           FolioSettlement[]   @relation("SettledBy")
+  submittedPayments     Payment[]           @relation("PaymentSubmittedBy")
+  verifiedPayments      Payment[]           @relation("PaymentVerifiedBy")
+  createdWorkOrders     WorkOrder[]         @relation("WorkOrderCreatedBy")
+  assignedWorkOrders    WorkOrder[]         @relation("WorkOrderAssignedTo")
+  assignedByWorkOrders  WorkOrder[]         @relation("WorkOrderAssignedBy")
+  verifiedWorkOrders    WorkOrder[]         @relation("WorkOrderVerifiedBy")
   workOrderNotes        WorkOrderNote[]
   workOrderPhotos       WorkOrderPhoto[]
-  requestedAmenities    AmenityRequest[]  @relation("AmenityRequestedBy")
-  approvedAmenities     AmenityRequest[]  @relation("AmenityApprovedBy")
-  issuedAmenities       AmenityRequest[]  @relation("AmenityIssuedBy")
-  returnedAmenities     AmenityRequest[]  @relation("AmenityReturnedBy")
-  createdFnbOrders      FnbOrder[]        @relation("FnbCreatedBy")
-  acknowledgedFnbOrders FnbOrder[]        @relation("FnbAcknowledgedBy")
-  cancelledFnbOrders    FnbOrder[]        @relation("FnbCancelledBy")
-  stockRequests         StockRequest[]    @relation("StockRequestedBy")
-  decidedStockRequests  StockRequest[]    @relation("StockDecidedBy")
+  requestedAmenities    AmenityRequest[]    @relation("AmenityRequestedBy")
+  approvedAmenities     AmenityRequest[]    @relation("AmenityApprovedBy")
+  issuedAmenities       AmenityRequest[]    @relation("AmenityIssuedBy")
+  returnedAmenities     AmenityRequest[]    @relation("AmenityReturnedBy")
+  createdFnbOrders      FnbOrder[]          @relation("FnbCreatedBy")
+  acknowledgedFnbOrders FnbOrder[]          @relation("FnbAcknowledgedBy")
+  cancelledFnbOrders    FnbOrder[]          @relation("FnbCancelledBy")
+  stockRequests         StockRequest[]      @relation("StockRequestedBy")
+  decidedStockRequests  StockRequest[]      @relation("StockDecidedBy")
   stockMovements        StockMovement[]
   shifts                Shift[]
-  restDayRequests       RestDayRequest[]  @relation("RestDayRequestedBy")
-  decidedRestDays       RestDayRequest[]  @relation("RestDayDecidedBy")
+  restDayRequests       RestDayRequest[]    @relation("RestDayRequestedBy")
+  decidedRestDays       RestDayRequest[]    @relation("RestDayDecidedBy")
   timeLogs              TimeLog[]
-  cashCounts            CashCount[]       @relation("CashCountedBy")
-  verifiedCashCounts    CashCount[]       @relation("CashVerifiedBy")
-  expenses              Expense[]         @relation("ExpenseRecordedBy")
-  approvedExpenses      Expense[]         @relation("ExpenseApprovedBy")
-  reportedIncidents     Incident[]        @relation("IncidentReportedBy")
-  involvedIncidents     Incident[]        @relation("IncidentInvolvedUser")
+  cashCounts            CashCount[]         @relation("CashCountedBy")
+  verifiedCashCounts    CashCount[]         @relation("CashVerifiedBy")
+  expenses              Expense[]           @relation("ExpenseRecordedBy")
+  approvedExpenses      Expense[]           @relation("ExpenseApprovedBy")
+  reportedIncidents     Incident[]          @relation("IncidentReportedBy")
+  involvedIncidents     Incident[]          @relation("IncidentInvolvedUser")
+  createdRemittances    RemittanceRequest[] @relation("RemittanceRequestCreatedBy")
+  verifiedRemittances   RemittanceRequest[] @relation("RemittanceRequestVerifiedBy")
+  createdQuotations     QuotationRequest[]  @relation("QuotationRequestCreatedBy")
+  updatedQuotations     QuotationRequest[]  @relation("QuotationRequestUpdatedBy")
   inspections           Inspection[]
   notifications         Notification[]
   uploadedFiles         FileObject[]
@@ -1128,6 +1132,75 @@ model Incident {
   @@index([status])
 }
 
+// Client-directed feature, 2026-08-31: a standalone record for an
+// incoming guest payment (manually-booked guest, paid via bank
+// transfer/GCash/etc.) submitted for OWNER to verify. Deliberately
+// unrelated to Booking/Unit/Folio — pure standalone record, same
+// "monitoring, not transactions" boundary as the rest of this schema.
+// Named RemittanceRequest, not PaymentRequest — see packages/shared's
+// permissions.ts for why this whole feature avoids the reserved
+// payment:* naming (spec §13 decision 7's unbuilt Payment/Folio/
+// CashCount system).
+enum RemittanceStatus {
+  FOR_VERIFICATION
+  VERIFIED
+}
+
+model RemittanceRequest {
+  id              String           @id @default(cuid())
+  referenceNo     String           @unique
+  name            String
+  date            DateTime
+  modeOfPayment   String
+  amount          Decimal          @db.Decimal(12, 2)
+  referenceNumber String
+  proofFileId     String?
+  status          RemittanceStatus @default(FOR_VERIFICATION)
+  createdById     String
+  verifiedById    String?
+  verifiedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?
+
+  proofFile  FileObject? @relation(fields: [proofFileId], references: [id])
+  createdBy  User        @relation("RemittanceRequestCreatedBy", fields: [createdById], references: [id])
+  verifiedBy User?       @relation("RemittanceRequestVerifiedBy", fields: [verifiedById], references: [id])
+
+  @@index([status])
+}
+
+// Client-directed feature, 2026-08-31: a standalone quotation-request
+// record (a prospective guest asking for a rate quote before booking).
+// No relation to Booking — this is before any reservation exists.
+enum QuotationStatus {
+  PENDING
+  DONE
+}
+
+model QuotationRequest {
+  id            String          @id @default(cuid())
+  referenceNo   String          @unique
+  name          String
+  contactNumber String
+  email         String
+  pax           Int
+  checkInDate   DateTime
+  checkOutDate  DateTime
+  note          String?
+  status        QuotationStatus @default(PENDING)
+  createdById   String
+  updatedById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  deletedAt     DateTime?
+
+  createdBy User  @relation("QuotationRequestCreatedBy", fields: [createdById], references: [id])
+  updatedBy User? @relation("QuotationRequestUpdatedBy", fields: [updatedById], references: [id])
+
+  @@index([status])
+}
+
 enum InspectionTemplate {
   POOL
   BEACH
@@ -1208,11 +1281,12 @@ model FileObject {
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 
-  checkInWaivers  CheckInRecord[]
-  workOrderNotes  WorkOrderNote[]
-  workOrderPhotos WorkOrderPhoto[]
-  paymentProofs   Payment[]
-  expenseReceipts Expense[]
+  checkInWaivers   CheckInRecord[]
+  workOrderNotes   WorkOrderNote[]
+  workOrderPhotos  WorkOrderPhoto[]
+  paymentProofs    Payment[]
+  expenseReceipts  Expense[]
+  remittanceProofs RemittanceRequest[]
 }
 
 model Setting {

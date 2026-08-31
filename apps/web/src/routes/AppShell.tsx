@@ -12,7 +12,16 @@ import { NotificationBell } from './NotificationBell.js';
 const NAV_ITEMS: {
   to: string;
   label: string;
-  permission?: 'user:read' | 'role:manage' | 'unit:read' | 'workorder:read' | 'amenity:read' | 'fnb:read' | 'report:view';
+  permission?:
+    | 'user:read'
+    | 'role:manage'
+    | 'unit:read'
+    | 'workorder:read'
+    | 'amenity:read'
+    | 'fnb:read'
+    | 'report:view'
+    | 'remittance:read'
+    | 'quotation:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -39,6 +48,11 @@ const NAV_ITEMS: {
   // report builders with the most real data already behind them from
   // tonight's testing.
   { to: '/reports', label: 'Reports', permission: 'report:view' },
+  // Client-directed feature, 2026-08-31: two standalone administrative
+  // request-and-status modules — see the modules' own README entry for
+  // why these are remittance:*/quotation:*, not payment:*/booking:*.
+  { to: '/payment-verification', label: 'Payment Verification', permission: 'remittance:read' },
+  { to: '/quotations', label: 'Quotations', permission: 'quotation:read' },
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

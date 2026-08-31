@@ -99,6 +99,17 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'payment:read': 'ALL',
     'payment:submit': 'ALL',
     'payment:verify': 'ALL',
+    // Client-directed feature, 2026-08-31: remittance:*/quotation:* —
+    // see permissions.ts for why these aren't payment:*/booking:*.
+    // remittance:create is one of SYSTEM_ADMIN's four named creator
+    // roles (Admin Head/Resort Manager/System Admin/Admin Staff);
+    // quotation:create deliberately is NOT — System Admin is the one
+    // role that can mark a quotation Done/Pending, so it can see and
+    // resolve every quotation without also being able to create one.
+    'quotation:read': 'ALL',
+    'quotation:update_status': 'ALL',
+    'remittance:create': 'ALL',
+    'remittance:read': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
     'restday:approve': 'ALL',
@@ -147,6 +158,14 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'incident:read': 'ALL',
     'payment:read': 'ALL',
     'payment:verify': 'ALL',
+    // Client-directed feature, 2026-08-31: OWNER verifies (and can
+    // revert) a remittance, so it needs read + verify but never create
+    // — OWNER never submits its own remittance for its own verification.
+    // Quotation is read-only for OWNER; System Admin owns marking Done/
+    // Pending.
+    'quotation:read': 'ALL',
+    'remittance:read': 'ALL',
+    'remittance:verify': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
     'shift:read': 'ALL',
@@ -185,6 +204,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'payment:read': 'ALL',
     'payment:submit': 'ALL',
     'payment:verify': 'ALL',
+    // Client-directed feature, 2026-08-31 — see permissions.ts's
+    // remittance:*/quotation:* comment.
+    'quotation:create': 'ALL',
+    'quotation:read': 'ALL',
+    'remittance:create': 'ALL',
+    'remittance:read': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
     'restday:approve': 'ALL',
@@ -262,6 +287,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'payment:read': 'ALL',
     'payment:submit': 'ALL',
     'payment:verify': 'ALL',
+    // Client-directed feature, 2026-08-31 — see permissions.ts's
+    // remittance:*/quotation:* comment.
+    'quotation:create': 'ALL',
+    'quotation:read': 'ALL',
+    'remittance:create': 'ALL',
+    'remittance:read': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
     'restday:request': 'ALL',
@@ -289,6 +320,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'incident:create': 'ALL',
     'payment:read': 'ALL',
     'payment:submit': 'ALL',
+    // Client-directed feature, 2026-08-31 — see permissions.ts's
+    // remittance:*/quotation:* comment.
+    'quotation:create': 'ALL',
+    'quotation:read': 'ALL',
+    'remittance:create': 'ALL',
+    'remittance:read': 'ALL',
     'restday:request': 'ALL',
     'shift:read': 'ALL',
     'unit:read': 'ALL',

@@ -19,13 +19,17 @@ describe('ROLE_PERMISSIONS', () => {
   // Client-confirmed narrow exception on top of that (see header comment):
   // OWNER may also create work orders/incidents (report-only — it doesn't
   // grant assign/verify/close/update_status), matching §8.1's "every
-  // role has this" quick-action button. No other write-shaped key is
-  // ever granted to OWNER.
+  // role has this" quick-action button. remittance:verify is a second,
+  // later client-directed exception (2026-08-31): OWNER is the one role
+  // that verifies (and can revert) a remittance, never creates one — see
+  // rolePermissions.ts's own OWNER-block comment. No other write-shaped
+  // key is ever granted to OWNER.
   const OWNER_ALLOWED_WRITE_KEYS = new Set([
     'payment:verify',
     'report:export',
     'workorder:create',
     'incident:create',
+    'remittance:verify',
   ]);
   it('grants OWNER only read-type keys plus the confirmed narrow exceptions', () => {
     const writeKeys = Object.keys(ROLE_PERMISSIONS.OWNER).filter(
@@ -83,6 +87,71 @@ describe('ROLE_PERMISSIONS', () => {
       expect(ROLE_PERMISSIONS[role]['workorder:read_all']).toBe('DEPARTMENT');
       expect(ROLE_PERMISSIONS[role]['report:view']).toBe('DEPARTMENT');
     }
+  });
+});
+
+// Client-directed feature, 2026-08-31: two standalone administrative
+// request-and-status modules. Asserts the exact role/permission grid
+// from the approved plan, not just "some role has it" — each of these
+// role shapes is what the API/frontend test suites build their
+// create/status-change permission-boundary fixtures from.
+describe('remittance:*/quotation:* role grants', () => {
+  const REMITTANCE_CREATORS = ['SYSTEM_ADMIN', 'RESORT_MANAGER', 'ADMIN_HEAD', 'ADMIN_STAFF'] as const;
+  const REMITTANCE_VIEWERS = [...REMITTANCE_CREATORS, 'OWNER'] as const;
+  const QUOTATION_CREATORS = ['RESORT_MANAGER', 'ADMIN_HEAD', 'ADMIN_STAFF'] as const;
+  const QUOTATION_VIEWERS = [...QUOTATION_CREATORS, 'SYSTEM_ADMIN', 'OWNER'] as const;
+
+  it('grants remittance:create to exactly the four named roles', () => {
+    for (const role of REMITTANCE_CREATORS) {
+      expect(ROLE_PERMISSIONS[role]['remittance:create']).toBe('ALL');
+    }
+    for (const role of ROLE_KEYS) {
+      if (!REMITTANCE_CREATORS.includes(role as (typeof REMITTANCE_CREATORS)[number])) {
+        expect(ROLE_PERMISSIONS[role]['remittance:create']).toBeUndefined();
+      }
+    }
+  });
+
+  it('grants remittance:read to the four creators plus OWNER, and remittance:verify to OWNER only', () => {
+    for (const role of REMITTANCE_VIEWERS) {
+      expect(ROLE_PERMISSIONS[role]['remittance:read']).toBe('ALL');
+    }
+    for (const role of ROLE_KEYS) {
+      if (!REMITTANCE_VIEWERS.includes(role as (typeof REMITTANCE_VIEWERS)[number])) {
+        expect(ROLE_PERMISSIONS[role]['remittance:read']).toBeUndefined();
+      }
+      if (role !== 'OWNER') {
+        expect(ROLE_PERMISSIONS[role]['remittance:verify']).toBeUndefined();
+      }
+    }
+    expect(ROLE_PERMISSIONS.OWNER['remittance:verify']).toBe('ALL');
+  });
+
+  it('grants quotation:create to exactly the three named roles — explicitly not SYSTEM_ADMIN', () => {
+    for (const role of QUOTATION_CREATORS) {
+      expect(ROLE_PERMISSIONS[role]['quotation:create']).toBe('ALL');
+    }
+    expect(ROLE_PERMISSIONS.SYSTEM_ADMIN['quotation:create']).toBeUndefined();
+    for (const role of ROLE_KEYS) {
+      if (!QUOTATION_CREATORS.includes(role as (typeof QUOTATION_CREATORS)[number])) {
+        expect(ROLE_PERMISSIONS[role]['quotation:create']).toBeUndefined();
+      }
+    }
+  });
+
+  it('grants quotation:read to the three creators plus SYSTEM_ADMIN and OWNER, and quotation:update_status to SYSTEM_ADMIN only', () => {
+    for (const role of QUOTATION_VIEWERS) {
+      expect(ROLE_PERMISSIONS[role]['quotation:read']).toBe('ALL');
+    }
+    for (const role of ROLE_KEYS) {
+      if (!QUOTATION_VIEWERS.includes(role as (typeof QUOTATION_VIEWERS)[number])) {
+        expect(ROLE_PERMISSIONS[role]['quotation:read']).toBeUndefined();
+      }
+      if (role !== 'SYSTEM_ADMIN') {
+        expect(ROLE_PERMISSIONS[role]['quotation:update_status']).toBeUndefined();
+      }
+    }
+    expect(ROLE_PERMISSIONS.SYSTEM_ADMIN['quotation:update_status']).toBe('ALL');
   });
 });
 

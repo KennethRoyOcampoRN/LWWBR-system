@@ -5378,3 +5378,112 @@ mobile viewport from the mobile-pass slice — confirmed two columns hold
 at both desktop and tablet widths, correctly stacks back to one column
 on mobile, and zero horizontal overflow at any width. Sent to the client
 for a look before any further rollout.
+
+### Payment verification + Quotations: two new standalone admin modules (2026-08-31)
+
+Client-directed feature: two new standalone request-and-status records,
+each with its own module, nav entry, and permissions — neither connects
+to bookings, units, or folio, and neither is related to the descoped
+Payment/Folio/CashCount system (spec §13 decision 7).
+
+**1. Payment verification** — an incoming guest payment (a manually
+booked guest, not through the automated website flow, who paid via bank
+transfer/GCash/etc.) submitted by staff for the Owner to verify. Fields:
+Name, Date, Mode of payment (free text), Amount, Reference number, and
+an optional proof/receipt photo. Status: `FOR_VERIFICATION` → `VERIFIED`,
+and explicitly **not** one-way — OWNER can revert a verified request
+back to `FOR_VERIFICATION`. Create: Admin Head, Resort Manager, System
+Admin, Admin Staff. Verify (and revert): OWNER only. View: all of the
+above plus OWNER.
+
+**2. Quotations** — a simple quotation request record. Fields: Name,
+Contact number, Email, Pax, Check-in date, Check-out date, Note. Status:
+just `PENDING`/`DONE`, no third state, and also not one-way — System
+Admin can move either direction. Create: Admin Head, Resort Manager,
+Admin Staff — **explicitly not** System Admin. Update status: System
+Admin only. View: all five roles (the four above plus OWNER).
+
+**Naming: `remittance:*`/`quotation:*`, not `payment:*`.** The
+`payment:read`/`payment:submit`/`payment:verify` keys already exist in
+`permissions.ts`, reserved for spec §13 decision 7's Payment/Folio/
+CashCount system — which is schema-defined but entirely unbuilt.
+Reusing that namespace for this unrelated feature would make both
+permanently ambiguous. First proposed `disbursement:*`; the client
+corrected this — this feature is incoming money (a payment submitted
+*for* verification), and "disbursement" reads as money going *out*, the
+wrong direction entirely. Renamed to the client's own suggestion,
+`remittance:*` — a standard term for money transferred/sent in, distinct
+enough from `payment:*` at a glance. `quotation:*` had no naming
+conflict to begin with.
+
+**Data model** (`apps/api/prisma/schema.prisma`): two new models,
+`RemittanceRequest` and `QuotationRequest`, following the existing
+referenceNo/soft-delete/audit-log conventions already used for
+`Incident`/`WorkOrder` — `referenceNo` (unique, generated via the shared
+`generateReferenceNo()` per-day sequence, prefixes `RM`/`QT`, both
+confirmed unused before picking them), `deletedAt` for soft delete, and
+no extra code needed for audit logging — the Prisma client extension
+audits every model by default except an explicit denylist, and neither
+model was added to it. `RemittanceRequest.amount` is `Decimal(12,2)`;
+`RemittanceRequest.proofFileId` is an optional relation to the existing
+`FileObject` model. Both `createdBy`/`verifiedBy`/`updatedBy` relations
+point at `User`. **This is a genuine schema change — the client needs to
+run `npx prisma db push` (from `apps/api`) against the real database
+before their next live test.** The sandbox has no network access to the
+hosted Supabase project (same long-standing block noted under M0), so
+this could only be validated with `npx prisma generate` (schema syntax,
+confirmed valid) — never pushed from here.
+
+**Proof photo reuses the existing upload pattern, no new one invented.**
+`POST /files` (already built, and its own code comment already
+anticipated "payment proofs, receipts" as a reuse case) handles the
+upload and validation (image MIME types, 10MB cap); `remittances/
+service.ts` just references the returned file id.
+
+**Real bug caught while building, before it ever shipped:** the first
+draft linked the proof photo straight to `/api/v1/files/:id`. Reading
+`files/router.ts` more carefully before wiring the frontend turned up
+its own comment stating plainly that no such generic route exists —
+reading a file back is scoped per-module, on purpose, never through a
+second generic route. That would have been a dead 404 link in
+production. Fixed by following the pattern `workorders/service.ts`'s
+`getWorkOrder` already uses: generate a real signed URL server-side via
+`getStorageAdapter().getSignedUrl(storageKey)` and embed it in the
+response, never expose the raw `storageKey` to the client. Rewrote the
+backend test for this endpoint to exercise the fix end to end — it
+mocks `getStorageAdapter`, asserts the signed URL comes back correctly,
+and separately asserts `proofFile.storageKey` is `undefined` in the
+response, so a future regression that leaks the raw key would fail
+loudly rather than silently.
+
+New/changed files: `packages/shared/src/{remittance,quotation}.ts`
+(status keys/labels), `permissions.ts` (6 new keys) and
+`rolePermissions.ts` (role grants across 5 roles, per the table above),
+`apps/api/src/modules/{remittances,quotations}/{schema,service,router}.ts`,
+mounted in `app.ts`; `apps/web/src/routes/{RemittancePage,
+QuotationsPage}.tsx` (list + permission-gated create form, following
+the existing page convention — not the new Command-Center-only redesign
+tokens, since that hasn't been approved to roll out beyond Command
+Center yet), `apps/web/src/lib/{remittanceStyle,quotationStyle}.ts`,
+two new nav entries in `AppShell.tsx`, two new routes in `App.tsx`.
+
+Test coverage: both create and status-change permission boundaries, for
+both modules — every allowed role can create/view, every disallowed
+role (including the narrow OWNER-only-verifies and
+SYSTEM_ADMIN-only-updates-status boundaries) gets a 403, the optional
+proof-photo path (valid id, missing id, no photo at all), and the
+signed-URL round trip described above. Frontend tests assert actual
+control presence/absence by role (a creator role sees the form and can
+submit; a non-creator doesn't see it at all; OWNER sees Verify/Revert
+buttons and a non-OWNER creator role doesn't; SYSTEM_ADMIN sees Done/
+Pending buttons and a non-SYSTEM_ADMIN role doesn't) — not permission-
+object shape checks.
+
+Verification: `npm run typecheck` clean (both apps), `npm run lint`
+clean, `npm run test -w packages/shared` — 81/81 (up from 77),
+`npm run test -w apps/api` — 432/435 (same 3 pre-existing
+sandbox-network-only failures; 22 new remittance tests + 19 new
+quotation tests all pass), `npm run test -w apps/web` — 110/110 (up
+from 103; 7 new tests across both pages), `npm run build` clean across
+all three packages. Not live-tested against the real database, per the
+sandbox network block above — needs `npx prisma db push` first.

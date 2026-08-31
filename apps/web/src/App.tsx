@@ -9,6 +9,8 @@ import { FnbPage } from './routes/FnbPage.js';
 import { LoginPage } from './routes/LoginPage.js';
 import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
+import { QuotationsPage } from './routes/QuotationsPage.js';
+import { RemittancePage } from './routes/RemittancePage.js';
 import { RequirePermission } from './routes/RequirePermission.js';
 import { ReportsPage } from './routes/ReportsPage.js';
 import { RolesPage } from './routes/RolesPage.js';
@@ -90,6 +92,22 @@ export function App() {
                     element={
                       <RequirePermission permission="report:view">
                         <ReportsPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/payment-verification"
+                    element={
+                      <RequirePermission permission="remittance:read">
+                        <RemittancePage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/quotations"
+                    element={
+                      <RequirePermission permission="quotation:read">
+                        <QuotationsPage />
                       </RequirePermission>
                     }
                   />
