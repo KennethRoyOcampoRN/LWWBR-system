@@ -5227,3 +5227,50 @@ from last slice's mobile pass, including the mobile nav expanded —
 confirmed zero horizontal overflow at either width and sent the
 screenshots to the client for review before any further rollout, per
 the agreed process.
+
+### Visual redesign, round 2: color/shadow feedback against the reference (2026-08-31)
+
+Client reviewed the first pass side by side with their reference and
+called four things too subtle. All four are `tailwind.config.js` value
+changes only — no component/markup changes, since the redesign already
+routes every color/shadow through those tokens rather than one-off
+classes.
+
+1. **Hero gradients** — were two adjacent shades of the same violet
+   (`#6C5CE7`→`#7C6EF2`, barely distinguishable) and a similarly narrow
+   red-to-orange. Both widened to span dark-to-light across their color
+   family: brand hero now `brand-800 #4A3BB0` → `brand-300 #C4B5FD`;
+   danger hero now `#9A1B2F` (deep red) → `#FF8A4C` (bright orange) —
+   kept in the red/orange family on purpose so "urgent" doesn't drift
+   toward pink.
+2. **Page background gradient** — was `#F7F5FE` fading to white by 55%,
+   too close to white to register. Now a real `brand-100`-level lavender
+   (`#E8E3FC`) at the top, holding through a mid stop, fading to white
+   much further down (`0%→35%→75%`).
+3. **Semantic status colors** — both the tint background and the icon
+   color pushed more saturated for all five (success/warning/danger/
+   info/accent). Not just eyeballed: re-checked every pairing against
+   WCAG contrast after the change — icon-on-its-own-tint (the KPI
+   badges) and icon-on-white (the Attention queue's white circle
+   badges). Tightest is success-50/success-600 at 3.72:1, already past
+   the 3:1 floor for graphical/icon contrast (WCAG 1.4.11); every other
+   pairing and every icon-on-white pairing lands at 4.2:1 or higher.
+4. **Card shadow** — was one shadow layer at low opacity
+   (`.06`/`.10`), which read as "closer to flat" per the client's own
+   words regardless of blur radius. Replaced with three stacked layers
+   (a tight ambient contact shadow, a mid-distance layer, a soft
+   far-diffuse layer) — this is what actually reads as a card floating
+   above the page, not a faint edge.
+
+Re-screenshotted the real production build at the same desktop (1440px)
+and 375px mobile viewports (plus the mobile nav expanded) used for the
+first round, confirmed zero horizontal overflow still holds, and sent
+the updated screenshots to the client for direct comparison against
+their reference before approving.
+
+Verification: same as round 1 — pure config-value changes, no markup or
+behavior change. `npm run typecheck` clean, `npm run lint` clean,
+`npm run test -w apps/web` — 101/101 passing (unchanged), `npm run
+test -w apps/api` — 391/394 (same 3 pre-existing sandbox-network-only
+failures), `npm run test -w packages/shared` — 76/76, `npm run build`
+clean across all three packages.

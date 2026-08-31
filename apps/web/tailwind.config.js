@@ -34,19 +34,51 @@ export default {
         // directly in DashboardPage.tsx for now (this first pass);
         // unitStatusStyle.ts/workOrderStyle.ts etc. get re-pointed at
         // these when the redesign rolls out to their pages, not here.
-        success: { 50: '#E7F9F0', 600: '#16A34A' },
-        warning: { 50: '#FEF6E7', 600: '#D97706' },
-        danger: { 50: '#FDEDF0', 600: '#DC2626' },
-        info: { 50: '#EEF2FF', 600: '#4F46E5' },
-        accent: { 50: '#FFF1E6', 600: '#C2570C' },
+        //
+        // Client feedback round 1 (2026-08-31): the first pass read as
+        // "too pale/washed out" against their reference. Both the -50
+        // tint and the -600 icon color were pushed more saturated here —
+        // every pairing (icon-on-its-own-tint, and icon-on-white for the
+        // Attention queue's white badge circles) was re-checked against
+        // WCAG contrast after the change, not just eyeballed: the
+        // tightest is success-50/success-600 at 3.72:1 (already past the
+        // 3:1 floor for graphical/icon contrast, WCAG 1.4.11), every
+        // other pair and every icon-on-white pairing lands at 4.2:1+.
+        success: { 50: '#C8F5DC', 600: '#0A6E30' },
+        warning: { 50: '#FDECC8', 600: '#B45309' },
+        danger: { 50: '#FBD5DB', 600: '#C81E3A' },
+        info: { 50: '#DCE3FF', 600: '#4338CA' },
+        accent: { 50: '#FDE0C4', 600: '#B34A06' },
       },
       boxShadow: {
-        card: '0 1px 2px rgba(108,92,231,0.06), 0 8px 24px rgba(108,92,231,0.10)',
+        // Client feedback round 1: the original shadow (opacity .06/.10)
+        // was "too subtle... cards read closer to flat." Three stacked
+        // layers now — a tight ambient contact shadow, a mid-distance
+        // layer, and a soft far-diffuse layer — is what actually reads
+        // as "floating above the background" rather than a faint edge;
+        // one blurry layer at low opacity doesn't get there regardless
+        // of how far the blur radius is pushed.
+        card: '0 2px 4px rgba(33,27,57,0.08), 0 6px 16px rgba(108,92,231,0.16), 0 20px 48px rgba(108,92,231,0.28)',
       },
       backgroundImage: {
-        'app-gradient': 'linear-gradient(160deg, #F7F5FE 0%, #FFFFFF 55%)',
-        'brand-gradient': 'linear-gradient(135deg, #6C5CE7 0%, #7C6EF2 100%)',
-        'danger-gradient': 'linear-gradient(135deg, #E11D48 0%, #F0653C 100%)',
+        // Client feedback round 1: "barely visible... make it more
+        // noticeably present." Was a two-stop fade from a near-white
+        // tint straight to white by the 55% mark — the tint was too
+        // close to white to register, and it disappeared a bit past the
+        // fold. Now a real lavender at the top (brand-100, not a diluted
+        // one-off), holding through a mid stop before fading to white
+        // much further down the page.
+        'app-gradient': 'linear-gradient(160deg, #E8E3FC 0%, #F5F3FF 35%, #FFFFFF 75%)',
+        // Client feedback round 1: "widen the range... stronger contrast
+        // between the start/end stops" — was two adjacent shades of the
+        // same violet (#6C5CE7 to #7C6EF2, barely distinguishable). Now
+        // spans the brand scale's dark end to its light end (800 to
+        // 300) so the diagonal sweep is actually visible, not just
+        // technically a gradient.
+        'brand-gradient': 'linear-gradient(135deg, #4A3BB0 0%, #C4B5FD 100%)',
+        // Same widening, same reasoning, kept in the red/orange family
+        // so "urgent" doesn't drift toward pink.
+        'danger-gradient': 'linear-gradient(135deg, #9A1B2F 0%, #FF8A4C 100%)',
       },
     },
   },
