@@ -109,16 +109,55 @@ function formatDuration(minutes: number): string {
 // means (success = good state, warning = needs eventual attention,
 // danger = needs attention now, info = neutral count, accent = a
 // distinct department color so it doesn't collide with info).
-type KpiVariant = 'hero-brand' | 'hero-danger' | 'success' | 'warning' | 'danger' | 'info' | 'accent';
+type KpiVariant =
+  'hero-brand' | 'hero-danger' | 'success' | 'warning' | 'danger' | 'info' | 'accent';
 
-const KPI_VARIANT_CLASSES: Record<KpiVariant, { card: string; iconBadge: string; value: string; label: string }> = {
-  'hero-brand': { card: 'bg-brand-gradient', iconBadge: 'bg-white/20 text-white', value: 'text-white', label: 'text-white/80' },
-  'hero-danger': { card: 'bg-danger-gradient', iconBadge: 'bg-white/20 text-white', value: 'text-white', label: 'text-white/80' },
-  success: { card: 'bg-white', iconBadge: 'bg-success-50 text-success-600', value: 'text-ink', label: 'text-ink-secondary' },
-  warning: { card: 'bg-white', iconBadge: 'bg-warning-50 text-warning-600', value: 'text-ink', label: 'text-ink-secondary' },
-  danger: { card: 'bg-white', iconBadge: 'bg-danger-50 text-danger-600', value: 'text-ink', label: 'text-ink-secondary' },
-  info: { card: 'bg-white', iconBadge: 'bg-info-50 text-info-600', value: 'text-ink', label: 'text-ink-secondary' },
-  accent: { card: 'bg-white', iconBadge: 'bg-accent-50 text-accent-600', value: 'text-ink', label: 'text-ink-secondary' },
+const KPI_VARIANT_CLASSES: Record<
+  KpiVariant,
+  { card: string; iconBadge: string; value: string; label: string }
+> = {
+  'hero-brand': {
+    card: 'bg-brand-gradient',
+    iconBadge: 'bg-white/20 text-white',
+    value: 'text-white',
+    label: 'text-white/80',
+  },
+  'hero-danger': {
+    card: 'bg-danger-gradient',
+    iconBadge: 'bg-white/20 text-white',
+    value: 'text-white',
+    label: 'text-white/80',
+  },
+  success: {
+    card: 'bg-white',
+    iconBadge: 'bg-success-50 text-success-600',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
+  },
+  warning: {
+    card: 'bg-white',
+    iconBadge: 'bg-warning-50 text-warning-600',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
+  },
+  danger: {
+    card: 'bg-white',
+    iconBadge: 'bg-danger-50 text-danger-600',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
+  },
+  info: {
+    card: 'bg-white',
+    iconBadge: 'bg-info-50 text-info-600',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
+  },
+  accent: {
+    card: 'bg-white',
+    iconBadge: 'bg-accent-50 text-accent-600',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
+  },
 };
 
 // A KPI card for a real, computed count — spec §8.2's "Occupied / Ready /
@@ -150,7 +189,9 @@ function KpiCard({
   const classes = KPI_VARIANT_CLASSES[variant];
   const content = (
     <>
-      <span className={`flex h-10 w-10 items-center justify-center rounded-full ${classes.iconBadge}`}>
+      <span
+        className={`flex h-10 w-10 items-center justify-center rounded-full ${classes.iconBadge}`}
+      >
         <Icon className="h-5 w-5" />
       </span>
       <div>
@@ -162,7 +203,10 @@ function KpiCard({
   const className = `flex flex-col gap-3 rounded-2xl p-4 shadow-card transition-shadow ${classes.card}`;
   if (to) {
     return (
-      <Link to={to} className={`${className} hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}>
+      <Link
+        to={to}
+        className={`${className} hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}
+      >
         {content}
       </Link>
     );
@@ -252,20 +296,23 @@ export function CommandCenter() {
   // attention-queue numbers, since a status change can move a unit in or
   // out of "dirty" or "out of order."
   useEffect(() => {
-    const unsubscribe = subscribeToUnitStatusChanges((payload) => {
-      setFeed((prev) => {
-        const next: FeedItem = {
-          id: `${payload.entityId}-${payload.version}`,
-          line: payload.summary,
-          actorName: null,
-          note: payload.note,
-          at: payload.at,
-        };
-        const base = Array.isArray(prev) ? prev : [];
-        return [next, ...base].slice(0, MAX_FEED_ITEMS);
-      });
-      void fetchDashboard();
-    }, () => {});
+    const unsubscribe = subscribeToUnitStatusChanges(
+      (payload) => {
+        setFeed((prev) => {
+          const next: FeedItem = {
+            id: `${payload.entityId}-${payload.version}`,
+            line: payload.summary,
+            actorName: null,
+            note: payload.note,
+            at: payload.at,
+          };
+          const base = Array.isArray(prev) ? prev : [];
+          return [next, ...base].slice(0, MAX_FEED_ITEMS);
+        });
+        void fetchDashboard();
+      },
+      () => {},
+    );
     return unsubscribe;
   }, [fetchDashboard]);
 
@@ -273,13 +320,18 @@ export function CommandCenter() {
     <div className="flex flex-col gap-8">
       <div>
         <h1 className="text-xl font-semibold leading-tight text-ink">Command Center</h1>
-        <p className="text-sm leading-relaxed text-ink-secondary">Every card here is live from real data.</p>
+        <p className="text-sm leading-relaxed text-ink-secondary">
+          Every card here is live from real data.
+        </p>
       </div>
 
       {cachedAt && (
-        <div role="status" className="rounded-2xl bg-warning-50 p-4 text-sm leading-relaxed text-warning-600 shadow-card">
-          Offline — showing the last known board as of {new Date(cachedAt).toLocaleString()}. Read-only; nothing
-          below can be actioned until the connection returns.
+        <div
+          role="status"
+          className="rounded-2xl bg-warning-50 p-4 text-sm leading-relaxed text-warning-600 shadow-card"
+        >
+          Offline — showing the last known board as of {new Date(cachedAt).toLocaleString()}.
+          Read-only; nothing below can be actioned until the connection returns.
         </div>
       )}
 
@@ -287,7 +339,9 @@ export function CommandCenter() {
           on one screen — the strongest case in this app for per-widget
           error isolation, so a crash in one (e.g. a malformed feed
           timestamp) doesn't take the other two down with it. */}
-      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Property status" reset={reset} />}>
+      <ErrorBoundary
+        fallback={(_error, reset) => <WidgetError label="Property status" reset={reset} />}
+      >
         <section>
           <h2 className="mb-3 text-sm font-semibold text-ink-secondary">Property status</h2>
           {dashboard === 'loading' && (
@@ -300,10 +354,30 @@ export function CommandCenter() {
           {dashboard === 'error' && <p role="alert">Could not load the KPI strip.</p>}
           {typeof dashboard === 'object' && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <KpiCard label="Occupied" value={dashboard.kpi.occupied} variant="hero-brand" icon={IconBed} />
-              <KpiCard label="Ready" value={dashboard.kpi.ready} variant="success" icon={IconCheck} />
-              <KpiCard label="Dirty" value={dashboard.kpi.dirty} variant="warning" icon={IconBroom} />
-              <KpiCard label="Out of order" value={dashboard.kpi.outOfOrder} variant="danger" icon={IconAlertTriangle} />
+              <KpiCard
+                label="Occupied"
+                value={dashboard.kpi.occupied}
+                variant="hero-brand"
+                icon={IconBed}
+              />
+              <KpiCard
+                label="Ready"
+                value={dashboard.kpi.ready}
+                variant="success"
+                icon={IconCheck}
+              />
+              <KpiCard
+                label="Dirty"
+                value={dashboard.kpi.dirty}
+                variant="warning"
+                icon={IconBroom}
+              />
+              <KpiCard
+                label="Out of order"
+                value={dashboard.kpi.outOfOrder}
+                variant="danger"
+                icon={IconAlertTriangle}
+              />
               <KpiCard
                 label="Open urgent work orders"
                 value={dashboard.kpi.urgentOpenWorkOrders}
@@ -311,8 +385,18 @@ export function CommandCenter() {
                 icon={IconAlertTriangle}
                 to="/work-orders"
               />
-              <KpiCard label="Check-ins today" value={dashboard.kpi.checkinsToday} variant="info" icon={IconArrowIn} />
-              <KpiCard label="Check-outs today" value={dashboard.kpi.checkoutsToday} variant="info" icon={IconArrowOut} />
+              <KpiCard
+                label="Check-ins today"
+                value={dashboard.kpi.checkinsToday}
+                variant="info"
+                icon={IconArrowIn}
+              />
+              <KpiCard
+                label="Check-outs today"
+                value={dashboard.kpi.checkoutsToday}
+                variant="info"
+                icon={IconArrowOut}
+              />
               <KpiCard
                 label="Open F&B tickets"
                 value={dashboard.kpi.openFnbOrders}
@@ -325,92 +409,123 @@ export function CommandCenter() {
         </section>
       </ErrorBoundary>
 
-      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Attention queue" reset={reset} />}>
-        <section className="rounded-2xl bg-white p-4 shadow-card">
-          <h2 className="mb-3 text-sm font-semibold text-ink-secondary">Attention queue</h2>
-          {dashboard === 'loading' && <SkeletonList />}
-          {typeof dashboard === 'object' && (
-            <ul className="flex flex-col gap-2">
-              {dashboard.dirtyRooms.map((room) => (
-                <li key={room.id} className="flex items-center justify-between rounded-xl bg-warning-50 px-4 py-3">
-                  <span className="flex items-center gap-3 text-sm font-medium text-ink">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-warning-600">
-                      <IconBroom className="h-4 w-4" />
+      {/* Client feedback, 2026-08-31: these two widgets stacked one after
+          another burned too much vertical space, especially with a full
+          Attention queue. Side-by-side from md up (the same breakpoint
+          the nav already switches on); back to stacked below that, where
+          two columns wouldn't fit meaningfully. */}
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <ErrorBoundary
+          fallback={(_error, reset) => <WidgetError label="Attention queue" reset={reset} />}
+        >
+          <section className="rounded-2xl bg-white p-4 shadow-card">
+            <h2 className="mb-3 text-sm font-semibold text-ink-secondary">Attention queue</h2>
+            {dashboard === 'loading' && <SkeletonList />}
+            {typeof dashboard === 'object' && (
+              <ul className="flex flex-col gap-2">
+                {dashboard.dirtyRooms.map((room) => (
+                  <li
+                    key={room.id}
+                    className="flex items-center justify-between rounded-xl bg-warning-50 px-4 py-3"
+                  >
+                    <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-warning-600">
+                        <IconBroom className="h-4 w-4" />
+                      </span>
+                      {room.code} — {room.name} still dirty
                     </span>
-                    {room.code} — {room.name} still dirty
-                  </span>
-                  <span className="text-xs font-semibold text-warning-600">{formatDuration(room.dirtyMinutes)}</span>
-                </li>
-              ))}
-              {dashboard.dirtyRooms.length === 0 && (
-                <li>
-                  <EmptyState message="No rooms dirty past the 3-hour threshold." />
-                </li>
-              )}
-              {dashboard.slaBreachedWorkOrders.map((wo) => (
-                <li key={wo.id} className="flex items-center justify-between rounded-xl bg-danger-50 px-4 py-3">
-                  <span className="flex items-center gap-3 text-sm font-medium text-ink">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-danger-600">
-                      <IconAlertTriangle className="h-4 w-4" />
+                    <span className="text-xs font-semibold text-warning-600">
+                      {formatDuration(room.dirtyMinutes)}
                     </span>
-                    {wo.referenceNo} — {wo.title}
-                    {wo.unitCode ? ` (${wo.unitCode})` : ''} past due
-                  </span>
-                  <span className="text-xs font-semibold text-danger-600">{formatDuration(wo.overdueMinutes)}</span>
-                </li>
-              ))}
-              {dashboard.slaBreachedWorkOrders.length === 0 && (
-                <li>
-                  <EmptyState message="No work orders past their SLA due date." />
-                </li>
-              )}
-              {dashboard.overdueAmenityRequests.map((req) => (
-                <li key={req.id} className="flex items-center justify-between rounded-xl bg-accent-50 px-4 py-3">
-                  <span className="flex items-center gap-3 text-sm font-medium text-ink">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-accent-600">
-                      <IconAlertTriangle className="h-4 w-4" />
+                  </li>
+                ))}
+                {dashboard.dirtyRooms.length === 0 && (
+                  <li>
+                    <EmptyState message="No rooms dirty past the 3-hour threshold." />
+                  </li>
+                )}
+                {dashboard.slaBreachedWorkOrders.map((wo) => (
+                  <li
+                    key={wo.id}
+                    className="flex items-center justify-between rounded-xl bg-danger-50 px-4 py-3"
+                  >
+                    <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-danger-600">
+                        <IconAlertTriangle className="h-4 w-4" />
+                      </span>
+                      {wo.referenceNo} — {wo.title}
+                      {wo.unitCode ? ` (${wo.unitCode})` : ''} past due
                     </span>
-                    {req.referenceNo} — {req.itemName}
-                    {req.unitCode ? ` (${req.unitCode})` : ''} overdue
-                  </span>
-                  <span className="text-xs font-semibold text-accent-600">{formatDuration(req.overdueMinutes)}</span>
-                </li>
-              ))}
-              {dashboard.overdueAmenityRequests.length === 0 && (
-                <li>
-                  <EmptyState message="No amenity requests past their due-back time." />
-                </li>
-              )}
-            </ul>
-          )}
-        </section>
-      </ErrorBoundary>
+                    <span className="text-xs font-semibold text-danger-600">
+                      {formatDuration(wo.overdueMinutes)}
+                    </span>
+                  </li>
+                ))}
+                {dashboard.slaBreachedWorkOrders.length === 0 && (
+                  <li>
+                    <EmptyState message="No work orders past their SLA due date." />
+                  </li>
+                )}
+                {dashboard.overdueAmenityRequests.map((req) => (
+                  <li
+                    key={req.id}
+                    className="flex items-center justify-between rounded-xl bg-accent-50 px-4 py-3"
+                  >
+                    <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-accent-600">
+                        <IconAlertTriangle className="h-4 w-4" />
+                      </span>
+                      {req.referenceNo} — {req.itemName}
+                      {req.unitCode ? ` (${req.unitCode})` : ''} overdue
+                    </span>
+                    <span className="text-xs font-semibold text-accent-600">
+                      {formatDuration(req.overdueMinutes)}
+                    </span>
+                  </li>
+                ))}
+                {dashboard.overdueAmenityRequests.length === 0 && (
+                  <li>
+                    <EmptyState message="No amenity requests past their due-back time." />
+                  </li>
+                )}
+              </ul>
+            )}
+          </section>
+        </ErrorBoundary>
 
-      <ErrorBoundary fallback={(_error, reset) => <WidgetError label="Live activity" reset={reset} />}>
-        <section className="rounded-2xl bg-white p-4 shadow-card">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-secondary">
-            <IconActivity className="h-4 w-4 text-brand-600" />
-            Live activity
-          </h2>
-          {feed === 'loading' && <SkeletonList />}
-          {feed === 'error' && <p role="alert">Could not load recent activity.</p>}
-          {Array.isArray(feed) && feed.length === 0 && <EmptyState message="No status changes recorded yet." />}
-          {Array.isArray(feed) && feed.length > 0 && (
-            <ul className="flex flex-col gap-3">
-              {feed.map((event) => (
-                <li key={event.id} className="border-l-2 border-brand-100 pl-3 text-sm leading-relaxed">
-                  <p className="text-ink">{event.line}</p>
-                  <p className="text-xs text-ink-muted">
-                    {event.actorName ? `${event.actorName} · ` : ''}
-                    {new Date(event.at).toLocaleString()}
-                  </p>
-                  {event.note && <p className="text-xs text-ink-secondary">"{event.note}"</p>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </ErrorBoundary>
+        <ErrorBoundary
+          fallback={(_error, reset) => <WidgetError label="Live activity" reset={reset} />}
+        >
+          <section className="rounded-2xl bg-white p-4 shadow-card">
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-secondary">
+              <IconActivity className="h-4 w-4 text-brand-600" />
+              Live activity
+            </h2>
+            {feed === 'loading' && <SkeletonList />}
+            {feed === 'error' && <p role="alert">Could not load recent activity.</p>}
+            {Array.isArray(feed) && feed.length === 0 && (
+              <EmptyState message="No status changes recorded yet." />
+            )}
+            {Array.isArray(feed) && feed.length > 0 && (
+              <ul className="flex flex-col gap-3">
+                {feed.map((event) => (
+                  <li
+                    key={event.id}
+                    className="border-l-2 border-brand-100 pl-3 text-sm leading-relaxed"
+                  >
+                    <p className="text-ink">{event.line}</p>
+                    <p className="text-xs text-ink-muted">
+                      {event.actorName ? `${event.actorName} · ` : ''}
+                      {new Date(event.at).toLocaleString()}
+                    </p>
+                    {event.note && <p className="text-xs text-ink-secondary">"{event.note}"</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </ErrorBoundary>
+      </div>
     </div>
   );
 }
@@ -426,7 +541,9 @@ export function DashboardPage() {
     return (
       <div className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold leading-tight text-ink">Welcome, {user?.fullName}</h1>
-        <p className="text-sm leading-relaxed text-ink-secondary">Roles: {user?.roles.join(', ')}</p>
+        <p className="text-sm leading-relaxed text-ink-secondary">
+          Roles: {user?.roles.join(', ')}
+        </p>
         <p className="text-sm leading-relaxed text-ink-muted">
           The Command Center is not part of this role's dashboard yet — see spec §8.3.
         </p>

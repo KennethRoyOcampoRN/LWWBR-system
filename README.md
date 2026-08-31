@@ -5353,3 +5353,28 @@ three packages. Also verified live in a headless browser against the
 built app: clicking each card lands on the correct page with the correct
 heading (confirmed via URL + heading text, not just that a link element
 exists), and the hover-elevation affordance renders correctly.
+
+### Layout feedback: Attention queue + Live activity side-by-side (2026-08-31)
+
+Client feedback: the two widgets stacked one after another burned too
+much vertical space, especially with a full Attention queue pushing
+Live activity far down the page. Wrapped both `ErrorBoundary`-guarded
+`<section>`s in a `grid grid-cols-1 gap-6 md:grid-cols-2` container —
+`md` matches the breakpoint the nav already switches on (desktop
+sidebar vs. mobile hamburger), so "two columns on desktop/tablet, one
+on mobile" reuses an existing convention rather than introducing a new
+breakpoint decision. Pure layout change — neither widget's internal
+markup, data, or error-boundary isolation changed.
+
+Verification: `npm run typecheck` clean, `npm run lint` clean,
+`npm run test -w apps/web` — 103/103 passing (unchanged — no behavior
+changed, nothing new to test), `npm run test -w apps/api` — 391/394
+(same 3 pre-existing sandbox-network-only failures), `npm run test -w
+packages/shared` — 77/77, `npm run build` clean. Screenshotted the real
+production build with a populated 7-row Attention queue (to actually
+show the vertical-space win, not an empty-state screenshot) at desktop
+(1440px), tablet (820px, the exact `md` breakpoint), and the 375px
+mobile viewport from the mobile-pass slice — confirmed two columns hold
+at both desktop and tablet widths, correctly stacks back to one column
+on mobile, and zero horizontal overflow at any width. Sent to the client
+for a look before any further rollout.
