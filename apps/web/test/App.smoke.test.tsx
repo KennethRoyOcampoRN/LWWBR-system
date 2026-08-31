@@ -77,6 +77,9 @@ describe('App', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/');
     capturedRealtimeHandlers = null;
+    // The offline-cache test below seeds localStorage directly — clear it
+    // both before and after so no snapshot leaks into an unrelated test.
+    window.localStorage.clear();
   });
 
   afterEach(() => {
@@ -710,6 +713,78 @@ describe('App', () => {
     // Live activity feed, backfilled from GET /units/activity.
     await waitFor(() => expect(screen.getByText(/R05 — Room 5: Cleaning → Cleaned/i)).toBeInTheDocument());
     expect(screen.getByText(/Room Attendant 1 \(Demo\)/i)).toBeInTheDocument();
+  });
+
+  // Spec §3 / §11 M6: "cache the last-known board read-only so a staff
+  // member with no signal still sees their task list." Seeds the
+  // localStorage snapshot directly (the same shape DashboardPage itself
+  // writes via lib/dashboardCache.ts after a real successful load) rather
+  // than depending on a prior render's side effect, then drives a load
+  // where both /units/dashboard and /units/activity fail outright — the
+  // literal shape of "the network dropped mid-session."
+  it('Command Center falls back to the cached last-known board when the live fetch fails, with a visible offline banner', async () => {
+    const managerUser = {
+      ...currentUser,
+      roles: ['RESORT_MANAGER'],
+      permissions: { 'unit:read': 'ALL' },
+    };
+
+    window.localStorage.setItem(
+      'lwwbr.dashboardSnapshot.v1',
+      JSON.stringify({
+        dashboard: {
+          kpi: {
+            occupied: 7,
+            ready: 1,
+            dirty: 0,
+            outOfOrder: 0,
+            urgentOpenWorkOrders: 0,
+            checkinsToday: 0,
+            checkoutsToday: 0,
+            openFnbOrders: 0,
+          },
+          dirtyRooms: [],
+          slaBreachedWorkOrders: [],
+          overdueAmenityRequests: [],
+        },
+        feed: [
+          {
+            id: 'cached_event_1',
+            line: 'R11 — Room 11: Ready → Occupied',
+            actorName: 'Front Desk (Demo)',
+            note: null,
+            at: '2026-08-30T10:00:00Z',
+          },
+        ],
+        cachedAt: '2026-08-30T10:05:00Z',
+      }),
+    );
+
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/units/dashboard') || url.includes('/units/activity')) {
+        return Promise.reject(new Error('network request failed'));
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+
+    // The cached KPI count renders, not a generic error state.
+    await waitFor(() => expect(screen.getByText('7')).toBeInTheDocument());
+    expect(screen.getByText('Occupied')).toBeInTheDocument();
+    expect(screen.getByText(/R11 — Room 11: Ready → Occupied/i)).toBeInTheDocument();
+
+    // The offline banner is visible and names the cached timestamp — this
+    // is what makes the view read-only-and-stale legible, not silently
+    // wrong.
+    const banner = screen.getByRole('status');
+    expect(banner).toHaveTextContent('Offline');
+    expect(banner).toHaveTextContent(new Date('2026-08-30T10:05:00Z').toLocaleString());
   });
 
   // Redesign, 2026-08-24 (client decision, live-testing feedback): "this

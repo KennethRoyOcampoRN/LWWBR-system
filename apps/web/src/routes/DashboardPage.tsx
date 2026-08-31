@@ -5,6 +5,7 @@ import { ErrorBoundary, WidgetError } from '../components/ErrorBoundary.js';
 import { SkeletonCard, SkeletonList } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api } from '../lib/api.js';
+import { loadDashboardSnapshot, saveDashboardSnapshot } from '../lib/dashboardCache.js';
 import { subscribeToUnitStatusChanges } from '../lib/realtime.js';
 import { UNIT_STATUS_LABELS } from '../lib/unitStatusStyle.js';
 
@@ -101,30 +102,56 @@ function KpiCard({ label, value, accentClass }: { label: string; value: number; 
 export function CommandCenter() {
   const [dashboard, setDashboard] = useState<DashboardData | 'loading' | 'error'>('loading');
   const [feed, setFeed] = useState<FeedItem[] | 'loading' | 'error'>('loading');
+  // Spec §3 / §11 M6: "cache the last-known board read-only so a staff
+  // member with no signal still sees their task list." `cachedAt` is
+  // non-null exactly when what's on screen came from that cache rather
+  // than a live fetch — that's what the banner below keys off, and it
+  // clears the moment a live fetch succeeds again.
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
   const fetchDashboard = useCallback(() => {
     return api
       .get<DashboardData>('/units/dashboard')
-      .then(setDashboard)
-      .catch(() => setDashboard('error'));
+      .then((data) => {
+        setDashboard(data);
+        setCachedAt(null);
+        saveDashboardSnapshot<DashboardData, FeedItem[]>({ dashboard: data });
+      })
+      .catch(() => {
+        const snapshot = loadDashboardSnapshot<DashboardData, FeedItem[]>();
+        if (snapshot?.dashboard) {
+          setDashboard(snapshot.dashboard);
+          setCachedAt(snapshot.cachedAt);
+        } else {
+          setDashboard('error');
+        }
+      });
   }, []);
 
   useEffect(() => {
     void fetchDashboard();
     api
       .get<{ events: RawActivityEvent[] }>(`/units/activity?limit=${FEED_LIMIT}`)
-      .then((res) =>
-        setFeed(
-          res.events.map((event) => ({
-            id: event.id,
-            line: `${event.unitCode} — ${event.unitName}: ${statusLabel(event.fromStatus)} → ${statusLabel(event.toStatus)}`,
-            actorName: event.actorName,
-            note: event.note,
-            at: event.createdAt,
-          })),
-        ),
-      )
-      .catch(() => setFeed('error'));
+      .then((res) => {
+        const items = res.events.map((event) => ({
+          id: event.id,
+          line: `${event.unitCode} — ${event.unitName}: ${statusLabel(event.fromStatus)} → ${statusLabel(event.toStatus)}`,
+          actorName: event.actorName,
+          note: event.note,
+          at: event.createdAt,
+        }));
+        setFeed(items);
+        saveDashboardSnapshot<DashboardData, FeedItem[]>({ feed: items });
+      })
+      .catch(() => {
+        const snapshot = loadDashboardSnapshot<DashboardData, FeedItem[]>();
+        if (snapshot?.feed) {
+          setFeed(snapshot.feed);
+          setCachedAt((prev) => prev ?? snapshot.cachedAt);
+        } else {
+          setFeed('error');
+        }
+      });
   }, [fetchDashboard]);
 
   // Same fallback principle as UnitsPage's 60s poll (spec §3's "a dropped
@@ -165,6 +192,13 @@ export function CommandCenter() {
         <h1 className="text-lg font-semibold">Command Center</h1>
         <p className="text-sm text-gray-500">Every card here is live from real data.</p>
       </div>
+
+      {cachedAt && (
+        <div role="status" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          Offline — showing the last known board as of {new Date(cachedAt).toLocaleString()}. Read-only; nothing
+          below can be actioned until the connection returns.
+        </div>
+      )}
 
       {/* Spec §11 M6: three genuinely simultaneous, independent widgets
           on one screen — the strongest case in this app for per-widget

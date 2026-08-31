@@ -4877,3 +4877,129 @@ No schema change (the field already existed), no new dependency.
 Verification: `npm run typecheck` clean, `npm run lint` clean,
 `npm run test -w apps/web` — 7/7 passing on `AmenitiesPage.test.tsx` (up
 from 6). Sandbox-verified only.
+
+### M6 slice: PWA manifest + install prompt + read-only offline cache of the last-known board (spec §11 M6) — verified in sandbox only, not live-tested (2026-08-31)
+
+Spec's own wording for this M6 line is deliberately narrow — not full
+offline app support — and the build stays inside exactly that scope.
+
+**1. Manifest + icons.** `apps/web/public/manifest.webmanifest`
+(`display: standalone`, `start_url`/`scope: "/"`, `theme_color`
+`#1d4ed8` matching the app's existing `bg-blue-700` accent), linked from
+`index.html` along with a theme-color meta tag and apple-touch-icon. No
+icon/logo asset existed anywhere in the repo, so `icons/icon-192.png` and
+`icons/icon-512.png` are placeholder solid-color PNGs (generated with a
+one-off pure-Python PNG writer — no image-library dependency added for
+two flat-color squares) — **swap for real branded artwork before real
+launch**, flagged in both the manifest comment in `index.html` and here.
+
+**2. Install prompt — no new dependency.** `components/InstallButton.tsx`
+listens for the standard `beforeinstallprompt` event, calls `.prompt()`
+on click, and hides itself once `appinstalled` fires or if the browser
+never fires the event at all (already installed, or a browser without
+support — e.g. iOS Safari). Placed in `AppShell`'s nav next to
+`NotificationBell`, on both the desktop and mobile header rows — the one
+piece of chrome visible across all 9 authenticated pages during actual
+work, unlike the login screen (a one-time, low-frequency touch point)
+where installing isn't the obvious next action.
+
+**3. Read-only offline cache of the last-known board — no new
+dependency, plain hand-written service worker.** Two independent halves,
+matching what "read-only cache of the last-known board" actually needs:
+
+- **The data**: `lib/dashboardCache.ts` wraps `localStorage` (every
+  access try/catch-guarded — private browsing, quota limits, or
+  localStorage disabled entirely must never crash the page this exists
+  to keep viewable) behind `saveDashboardSnapshot`/`loadDashboardSnapshot`.
+  `DashboardPage.tsx` saves a snapshot after every successful
+  `/units/dashboard` and `/units/activity` load (merged, not
+  overwritten — the two load independently and either can fail without
+  clobbering the other's cached half), and falls back to the cached
+  snapshot if a live fetch fails, with a visible amber "Offline — showing
+  the last known board as of `<time>`" banner. This page already has no
+  action buttons on any of its three widgets, so "read-only" was already
+  the natural shape here — nothing to disable.
+- **The app shell**: a cached data snapshot is useless if the SPA itself
+  can't boot on a reload while offline. `public/sw.js` is a minimal,
+  hand-written service worker — deliberately not vite-plugin-pwa/Workbox,
+  a new dependency that would auto-generate a build-time precache
+  manifest more robustly than this, but more than this narrow scope
+  needs. Network-first with cache-fallback for same-origin GET requests;
+  **`/api/*` is explicitly excluded** and always passed straight through
+  untouched — every live read/write already goes through
+  `lib/api.ts`, and a SW-cached API response would both silently violate
+  "read-only" the moment the underlying data changed elsewhere, and need
+  real cache-invalidation logic this file doesn't have. Also bypassed:
+  any cross-origin request, and any non-GET request. The file's own
+  header comment documents exactly this cached/bypassed split in detail —
+  there's no Workbox structure to lean on here, so that comment has to
+  carry the intent for whoever touches it next.
+- **Everything else stays uncached** — other pages, forms, write actions.
+  Registered from `main.tsx`, guarded by `'serviceWorker' in navigator`
+  (also what keeps the test suite from needing a mock for it).
+
+**Explicitly out of scope, flagged and confirmed with the client:**
+spec's §3 "known trade-off" paragraph bundles this cache together with
+"queue photo uploads per §8.3" — a separate feature (IndexedDB-held photo
+captures that retry on reconnect, described in §8.3's "Photo capture
+UX"). That's real future scope, but it isn't in the M6 milestone's own
+acceptance line, and no queuing infrastructure exists yet anywhere in the
+app — treated as its own later slice, not pulled into this one.
+
+**Test coverage, deliberately thorough on the service worker per the
+client's own flag** that a hand-rolled SW (stale cache never
+invalidating, wrong-origin requests slipping through) is the easiest spot
+in this task to introduce a subtle bug with no Workbox structure to catch
+it:
+- `test/sw.test.ts` (9 tests) — loads the actual shipped `public/sw.js`
+  source and evaluates it inside a Node `vm` sandbox standing in for
+  `self`/`caches`/`fetch` (jsdom has no `ServiceWorkerGlobalScope`, and a
+  separately-tested helper module could drift from what's actually
+  served — this exercises the literal file that ships). Covers:
+  `skipWaiting` on install; `activate` deleting every cache except the
+  current `CACHE_NAME` and calling `clients.claim()`; a successful
+  same-origin GET being cached and returned; a non-ok response (404) NOT
+  being cached; falling back to the cached exact request when the network
+  fails; falling back further to cached `/index.html` for a deep link
+  never individually cached; and that `/api/*`, cross-origin, and
+  non-GET requests are all bypassed with `respondWith` never called.
+- `test/dashboardCache.test.ts` (7 tests) — save/load round-trip, partial
+  merge (dashboard-only save doesn't clobber a previously-cached feed and
+  vice versa), a later save overwriting only the field it provides, and
+  that a thrown `localStorage.setItem`/`getItem` (quota exceeded,
+  security error) or corrupt stored JSON never throws into the caller.
+- `test/InstallButton.test.tsx` (4 tests) — renders nothing until
+  `beforeinstallprompt` fires; shows the button and calls `.prompt()` on
+  click; hides itself again after a click resolves (the captured event is
+  single-use); hides itself on `appinstalled`.
+- `test/App.smoke.test.tsx` — one new Command Center test: seeds the
+  exact localStorage snapshot shape `dashboardCache.ts` itself writes,
+  drives a load where both `/units/dashboard` and `/units/activity`
+  reject outright (the literal shape of "the network dropped
+  mid-session"), and asserts the cached KPI count and feed item render
+  (not a generic error state) alongside the offline banner naming the
+  cached timestamp.
+
+Also added an ESLint override (`eslint.config.js`) scoping
+`globals.serviceworker` to `apps/web/public/sw.js` specifically — it runs
+in its own `ServiceWorkerGlobalScope`, not the browser globals the rest
+of `apps/web` gets.
+
+No schema change. Verification: `npm run typecheck` clean, `npm run lint`
+clean (after the new SW-scoped ESLint globals override),
+`npm run test -w apps/web` — 98/98 passing (14 files, up from 76 across
+11 — the four new test files plus the one new App.smoke.test.tsx case),
+`npm run build` clean across all three packages, confirmed
+`manifest.webmanifest`/`sw.js`/`icons/*` all land correctly in
+`dist/` at the paths `index.html` references. Also verified live in a
+headless browser against the built app served over HTTP: the service
+worker registers and reaches `active` state, and the manifest `<link>`
+resolves. Sandbox-verified only otherwise — this is exactly the kind of
+change (installability, real offline behavior, iOS Safari's lack of
+`beforeinstallprompt`) that needs a real phone on real flaky wifi, not
+just a sandbox check, before calling it done. Recommend the client: (1)
+install the app from a phone browser and confirm it opens standalone;
+(2) load the Command Center once online, then put the phone in airplane
+mode and reload — confirm the cached board and offline banner appear;
+(3) confirm normal pages still work correctly once back online, i.e. the
+offline banner clears and the SW isn't serving anything stale.

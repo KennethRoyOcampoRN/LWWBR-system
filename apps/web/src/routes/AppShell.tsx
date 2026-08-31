@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { ErrorBoundary } from '../components/ErrorBoundary.js';
+import { InstallButton } from '../components/InstallButton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { NotificationBell } from './NotificationBell.js';
 
@@ -54,9 +55,12 @@ export function AppShell() {
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <nav className="flex shrink-0 flex-row items-center gap-1 border-b border-gray-200 bg-white p-2 md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:p-4">
-        <div className="hidden items-center justify-between md:flex">
+        <div className="hidden items-center justify-between gap-2 md:flex">
           <p className="px-2 pb-2 text-sm font-semibold text-gray-500">Lucky Waku-Waku</p>
-          <NotificationBell />
+          <div className="flex items-center gap-2 pb-2">
+            <InstallButton />
+            <NotificationBell />
+          </div>
         </div>
         {visibleItems.map((item) => (
           <NavLink
@@ -70,7 +74,8 @@ export function AppShell() {
             {item.label}
           </NavLink>
         ))}
-        <div className="ml-auto md:hidden">
+        <div className="ml-auto flex items-center gap-2 md:hidden">
+          <InstallButton />
           <NotificationBell />
         </div>
         <div className="mt-auto hidden flex-col gap-1 pt-4 text-sm md:flex">

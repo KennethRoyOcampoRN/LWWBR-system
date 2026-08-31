@@ -56,5 +56,14 @@ export default [
       globals: { ...globals.node },
     },
   },
+  {
+    // A classic (non-module) service worker script, run in its own
+    // ServiceWorkerGlobalScope — not the browser globals block above
+    // (no `window`/`document` there) and not Node either.
+    files: ['apps/web/public/sw.js'],
+    languageOptions: {
+      globals: { ...globals.serviceworker },
+    },
+  },
   prettierConfig,
 ];
