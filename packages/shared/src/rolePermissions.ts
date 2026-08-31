@@ -126,6 +126,22 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
   OWNER: {
     'audit:read': 'ALL',
     'cash:read': 'ALL',
+    // Real gap found scoping the Command Center KPI-card-navigation
+    // slice, 2026-08-31: OWNER held zero fnb:* keys at all — couldn't
+    // even see the Restaurant nav item or page. The matrix's own §5.4
+    // fnb rows mark OWNER "—" (not even 👁) on all three, so this isn't
+    // a misreading of the table; it's a genuine conflict with spec's own
+    // prose a few lines above it: "OWNER is read-only across the entire
+    // system except payment:verify and report:export." A role that's
+    // supposed to be read-only *everywhere* being fully blocked from one
+    // entire module contradicts that sentence outright — same kind of
+    // prose-vs-matrix tension already resolved elsewhere in this file
+    // (see the workorder:create/incident:create note above), and
+    // resolved the same way: the prose is authoritative. Read-only only
+    // — fnb:create/fnb:manage_menu/fnb:update_status stay withheld, so
+    // OWNER still can't place orders, edit the menu, or drag a ticket
+    // through the kitchen board.
+    'fnb:read': 'ALL',
     'folio:read': 'ALL',
     'incident:create': 'ALL', // resolved ambiguity — see header comment
     'incident:read': 'ALL',

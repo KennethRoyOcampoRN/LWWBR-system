@@ -45,6 +45,18 @@ vi.mock('../src/lib/realtime.js', () => ({
     onStatusChange('connected');
     return () => {};
   },
+  // FnbPage subscribes on mount too — real gap found adding the KPI-card
+  // navigation test that's the first one in this file to actually
+  // navigate into /restaurant: this vi.mock replaces the whole module,
+  // so any export FnbPage imports needs a stub here or the page crashes
+  // (into the ErrorBoundary, not a helpful failure) the moment it mounts.
+  subscribeToFnbOrderChanges: (
+    _onEvent: unknown,
+    onStatusChange: (status: 'connecting' | 'connected' | 'reconnecting' | 'disabled') => void,
+  ) => {
+    onStatusChange('connected');
+    return () => {};
+  },
 }));
 
 function jsonResponse(status: number, body: unknown) {
@@ -713,6 +725,67 @@ describe('App', () => {
     // Live activity feed, backfilled from GET /units/activity.
     await waitFor(() => expect(screen.getByText(/R05 — Room 5: Cleaning → Cleaned/i)).toBeInTheDocument());
     expect(screen.getByText(/Room Attendant 1 \(Demo\)/i)).toBeInTheDocument();
+
+    // Open urgent work orders is always a real link (workorder:read is
+    // the one permission every role holds). Open F&B tickets must NOT be
+    // one here — this managerUser fixture holds only unit:read, no
+    // fnb:read, so linking to a page that would immediately refuse them
+    // (RequirePermission) is exactly the dead-end this card is built to
+    // avoid offering.
+    const urgentLink = screen.getByRole('link', { name: /Open urgent work orders/ });
+    expect(urgentLink).toHaveAttribute('href', '/work-orders');
+    expect(screen.queryByRole('link', { name: /Open F&B tickets/ })).not.toBeInTheDocument();
+  });
+
+  // Real feature, this slice: clicking either hero KPI card navigates.
+  // Open F&B tickets only links when the viewer holds fnb:read — this
+  // fixture grants it (mirroring the real fix landing alongside this
+  // feature: OWNER now holds fnb:read) so both cards are exercised as
+  // actual navigation, not just asserted present.
+  it('Open urgent work orders and Open F&B tickets KPI cards navigate to their pages', async () => {
+    const user = userEvent.setup();
+    const managerUser = {
+      ...currentUser,
+      roles: ['RESORT_MANAGER'],
+      permissions: { 'unit:read': 'ALL', 'workorder:read': 'ALL', 'fnb:read': 'ALL' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.includes('/units/dashboard')) {
+        return jsonResponse(200, {
+          kpi: { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 1, checkinsToday: 0, checkoutsToday: 0, openFnbOrders: 1 },
+          dirtyRooms: [],
+          slaBreachedWorkOrders: [],
+          overdueAmenityRequests: [],
+        });
+      }
+      if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
+      if (url.endsWith('/work-orders')) return jsonResponse(200, { workOrders: [] });
+      if (url.endsWith('/work-orders?mine=true')) return jsonResponse(200, { workOrders: [] });
+      if (url.endsWith('/work-orders/assignable-users')) return jsonResponse(200, { users: [] });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: [] });
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
+      if (url.includes('/units/orderable')) return jsonResponse(200, { units: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: /Open urgent work orders/ })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('link', { name: /Open urgent work orders/ }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'My Tasks' })).toBeInTheDocument());
+
+    // Back to the dashboard, then the F&B card.
+    await user.click(screen.getByRole('link', { name: 'Command Center' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('link', { name: /Open F&B tickets/ }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Restaurant' })).toBeInTheDocument());
   });
 
   // Spec §3 / §11 M6: "cache the last-known board read-only so a staff

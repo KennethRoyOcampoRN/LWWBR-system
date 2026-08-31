@@ -65,6 +65,19 @@ describe('ROLE_PERMISSIONS', () => {
     expect(perms['workorder:update_status']).toBeUndefined();
   });
 
+  // Real gap found 2026-08-31 (client-confirmed prose-vs-matrix
+  // resolution, see the OWNER block's own comment in rolePermissions.ts):
+  // §5.4's matrix marks OWNER "—" on every fnb row, contradicting the
+  // spec's own "read-only across the entire system" prose. Read access
+  // only — the three fnb write keys stay withheld.
+  it('grants OWNER fnb:read but no fnb write access', () => {
+    const perms = ROLE_PERMISSIONS.OWNER;
+    expect(perms['fnb:read']).toBe('ALL');
+    expect(perms['fnb:create']).toBeUndefined();
+    expect(perms['fnb:manage_menu']).toBeUndefined();
+    expect(perms['fnb:update_status']).toBeUndefined();
+  });
+
   it('scopes department-head workorder:read_all and report:view to DEPARTMENT', () => {
     for (const role of ['POC_HOUSEKEEPING', 'POC_MAINTENANCE', 'RESTAURANT_MANAGER'] as const) {
       expect(ROLE_PERMISSIONS[role]['workorder:read_all']).toBe('DEPARTMENT');

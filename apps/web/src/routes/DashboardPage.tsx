@@ -1,5 +1,6 @@
 import type { AnyUnitStatusKey } from '@lwwbr/shared';
 import { useCallback, useEffect, useState, type ReactNode, type SVGProps } from 'react';
+import { Link } from 'react-router-dom';
 import { EmptyState } from '../components/EmptyState.js';
 import { ErrorBoundary, WidgetError } from '../components/ErrorBoundary.js';
 import {
@@ -127,20 +128,28 @@ const KPI_VARIANT_CLASSES: Record<KpiVariant, { card: string; iconBadge: string;
 // hand-rolled SVGs (icons.tsx) has no intrinsic width/height of its own,
 // so an icon rendered without an explicit size class falls back to the
 // browser's default SVG box (huge) and blows out the card layout.
+//
+// `to`, when given, makes the whole card a real `Link` (a genuine <a>,
+// keyboard-focusable) rather than a div with an onClick — only two KPIs
+// use this today (Open urgent work orders → /work-orders, Open F&B
+// tickets → /restaurant, both wired in CommandCenter below); the rest
+// stay plain, non-interactive cards.
 function KpiCard({
   label,
   value,
   variant,
   icon: Icon,
+  to,
 }: {
   label: string;
   value: number;
   variant: KpiVariant;
   icon: (props: SVGProps<SVGSVGElement>) => ReactNode;
+  to?: string;
 }) {
   const classes = KPI_VARIANT_CLASSES[variant];
-  return (
-    <div className={`flex flex-col gap-3 rounded-2xl p-4 shadow-card ${classes.card}`}>
+  const content = (
+    <>
       <span className={`flex h-10 w-10 items-center justify-center rounded-full ${classes.iconBadge}`}>
         <Icon className="h-5 w-5" />
       </span>
@@ -148,11 +157,32 @@ function KpiCard({
         <p className={`text-2xl font-semibold ${classes.value}`}>{value}</p>
         <p className={`text-xs font-medium ${classes.label}`}>{label}</p>
       </div>
-    </div>
+    </>
   );
+  const className = `flex flex-col gap-3 rounded-2xl p-4 shadow-card transition-shadow ${classes.card}`;
+  if (to) {
+    return (
+      <Link to={to} className={`${className} hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}>
+        {content}
+      </Link>
+    );
+  }
+  return <div className={className}>{content}</div>;
 }
 
 export function CommandCenter() {
+  const { user } = useAuth();
+  // The F&B KPI card only links to /restaurant when the viewer actually
+  // holds fnb:read — Command Center is visible to every unit:read
+  // holder, which includes roles (e.g. POC Housekeeping/Maintenance)
+  // that don't hold fnb:read. RequirePermission would show a graceful
+  // "no permission" message rather than crash, but there's no reason to
+  // offer a clickable card that's certain to dead-end — same standard
+  // already applied elsewhere in this app (e.g. FnbPage only offering
+  // Delete once it's guaranteed not to be refused). Open urgent work
+  // orders has no equivalent check: workorder:read is the one
+  // permission every role holds.
+  const canViewFnb = Boolean(user?.permissions['fnb:read']);
   const [dashboard, setDashboard] = useState<DashboardData | 'loading' | 'error'>('loading');
   const [feed, setFeed] = useState<FeedItem[] | 'loading' | 'error'>('loading');
   // Spec §3 / §11 M6: "cache the last-known board read-only so a staff
@@ -279,10 +309,17 @@ export function CommandCenter() {
                 value={dashboard.kpi.urgentOpenWorkOrders}
                 variant="hero-danger"
                 icon={IconAlertTriangle}
+                to="/work-orders"
               />
               <KpiCard label="Check-ins today" value={dashboard.kpi.checkinsToday} variant="info" icon={IconArrowIn} />
               <KpiCard label="Check-outs today" value={dashboard.kpi.checkoutsToday} variant="info" icon={IconArrowOut} />
-              <KpiCard label="Open F&B tickets" value={dashboard.kpi.openFnbOrders} variant="accent" icon={IconUtensils} />
+              <KpiCard
+                label="Open F&B tickets"
+                value={dashboard.kpi.openFnbOrders}
+                variant="accent"
+                icon={IconUtensils}
+                to={canViewFnb ? '/restaurant' : undefined}
+              />
             </div>
           )}
         </section>

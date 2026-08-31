@@ -30,6 +30,21 @@ const restaurantStaffUser = {
   permissions: { 'fnb:read': 'ALL' },
 };
 
+// Real gap fixed alongside the Command Center KPI-card-navigation slice
+// (2026-08-31): OWNER held zero fnb:* keys at all — added fnb:read only,
+// so this is exactly OWNER's real post-fix permission shape (same shape
+// as restaurantStaffUser above, named for what's actually under test
+// below: that fnb:read alone, with none of the three write keys, drives
+// FnbPage.tsx's own canManageMenu/canCreateOrder/canUpdateOrderStatus
+// gates to false everywhere without anything crashing).
+const ownerUser = {
+  ...restaurantManagerUser,
+  id: 'user_4',
+  fullName: 'Owner (Demo)',
+  roles: ['OWNER'],
+  permissions: { 'fnb:read': 'ALL' },
+};
+
 // Holds every fnb:* capability so one test can drive order placement
 // through the full kanban lifecycle without switching users (matches
 // SYSTEM_ADMIN/RESORT_MANAGER-with-Restaurant-Staff-hat holding all of
@@ -134,6 +149,66 @@ describe('FnbPage', () => {
     await waitFor(() => expect(screen.getByText('Sisig')).toBeInTheDocument());
     expect(screen.queryByText('Add a menu item')).not.toBeInTheDocument();
     expect(screen.queryByText('Mark unavailable')).not.toBeInTheDocument();
+  });
+
+  // Real gap fixed alongside this slice: OWNER now holds fnb:read (see
+  // rolePermissions.ts) and can reach this page at all for the first
+  // time. Confirms the read-only view is correct, not just that the
+  // permission object has the right key — a populated kitchen board (a
+  // real RECEIVED ticket) and populated menu, and asserts every write
+  // control's absence directly (not present anywhere in the DOM), not
+  // merely that the read-only content still renders around them.
+  it('OWNER (fnb:read only) sees a fully read-only view — no status buttons, no order form, no menu edit controls', async () => {
+    const receivedOrder = {
+      id: 'order_1',
+      referenceNo: 'FB-260824-0001',
+      unit: { id: 'unit_1', code: 'R01', name: 'Room 1' },
+      guestName: null,
+      type: 'DINE_IN',
+      scheduledFor: null,
+      settlement: 'PAY_NOW',
+      status: 'RECEIVED',
+      subtotal: 500,
+      notes: null,
+      createdAt: new Date().toISOString(),
+      createdBy: { fullName: 'Restaurant Manager (Demo)' },
+      lines: [{ id: 'line_1', menuItemId: 'menu_1', qty: 2, unitPrice: 250, notes: null, itemName: 'Sisig', menuItem: { id: 'menu_1', name: 'Sisig' } }],
+    };
+
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: ownerUser });
+      if (url.endsWith('/menu-items')) return jsonResponse(200, { menuItems: [sisig] });
+      if (url.includes('/fnb-orders?history=true')) return jsonResponse(200, { fnbOrders: [] });
+      if (url.includes('/fnb-orders?boardOnly=true')) return jsonResponse(200, { fnbOrders: [receivedOrder] });
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [receivedOrder] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Restaurant' })).toBeInTheDocument());
+
+    // Read-only content renders: the real ticket and the real menu item
+    // are visible, not an empty or broken page.
+    await waitFor(() => expect(screen.getByText('FB-260824-0001')).toBeInTheDocument());
+    expect(screen.getByText('Received (1)')).toBeInTheDocument();
+    expect(screen.getAllByText('Sisig').length).toBeGreaterThan(0);
+    expect(screen.getByText('₱250.00')).toBeInTheDocument();
+
+    // Kitchen board: no status-change controls on the ticket at all.
+    expect(screen.queryByRole('button', { name: 'Start preparing' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+
+    // No order-placement form anywhere on the page.
+    expect(screen.queryByText('Place an order')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Place order' })).not.toBeInTheDocument();
+
+    // Menu: no edit controls on the existing item, no add-item form.
+    expect(screen.queryByRole('button', { name: 'Mark unavailable' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Add a menu item')).not.toBeInTheDocument();
   });
 
   it('drives an order through place -> start preparing -> mark ready -> mark served', async () => {

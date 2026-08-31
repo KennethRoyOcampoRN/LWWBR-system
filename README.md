@@ -5274,3 +5274,82 @@ behavior change. `npm run typecheck` clean, `npm run lint` clean,
 test -w apps/api` — 391/394 (same 3 pre-existing sandbox-network-only
 failures), `npm run test -w packages/shared` — 76/76, `npm run build`
 clean across all three packages.
+
+### Clickable Command Center KPI cards + OWNER fnb:read gap (2026-08-31)
+
+Two related changes: navigable KPI cards, and a permission gap found
+while scoping them.
+
+**KPI card navigation.** `DashboardPage.tsx`'s `KpiCard` gained an
+optional `to` prop — when set, the whole card renders as a real
+`react-router-dom` `Link` (a genuine `<a>`, keyboard-focusable) instead
+of a plain `div`, with a hover/focus elevation affordance layered onto
+the existing shadow token. Wired for exactly two cards: "Open urgent
+work orders" → `/work-orders` (unconditional — `workorder:read` is the
+one permission every role holds, confirmed earlier this session), and
+"Open F&B tickets" → `/restaurant`, **conditional** on the viewer
+actually holding `fnb:read`. Command Center is visible to every
+`unit:read` holder, which includes roles that don't hold `fnb:read`
+(POC Housekeeping/Maintenance) — `RequirePermission` already degrades a
+denied route to a plain message rather than crashing, but there's no
+reason to offer a clickable affordance that's certain to dead-end, same
+standard already applied elsewhere (e.g. FnbPage's own delete-item
+gate). `CommandCenter` now calls `useAuth()` directly to make this call
+client-side. The other 6 KPI cards are untouched — not in scope.
+
+**OWNER `fnb:read` gap, found while scoping the above.** OWNER held zero
+`fnb:*` permissions at all — couldn't see the Restaurant nav item or
+page. Checked spec §5.4's actual matrix before changing anything: OWNER's
+row is `—` (not even 👁) on all three fnb permission rows, so this isn't
+a misreading of the table — it's a genuine conflict with spec's own
+prose a few lines above it ("OWNER is read-only across the entire system
+except payment:verify and report:export"). A role that's supposed to be
+read-only *everywhere* being fully blocked from an entire module
+contradicts that sentence outright — the same kind of prose-vs-matrix
+tension `rolePermissions.ts` already has an established resolution
+pattern for (see the file's existing workorder:create/incident:create
+note); resolved the same way, prose wins. Added `'fnb:read': 'ALL'` to
+`OWNER` — read-only only, `fnb:create`/`fnb:manage_menu`/
+`fnb:update_status` all stay withheld.
+
+**Verified `FnbPage.tsx` needed no changes, not assumed.** Read through
+every write control in the file line by line before touching anything:
+`canManageMenu`/`canCreateOrder`/`canUpdateOrderStatus` gate the kitchen
+board's status buttons, the "Place an order" form, and every menu-edit
+control independently of the page-level `fnb:read` gate — `fnb:read`
+alone was already guaranteed to produce a correctly read-only view.
+
+New tests:
+- `packages/shared/test/authz.test.ts` — OWNER holds `fnb:read` and none
+  of the three fnb write keys (the existing "OWNER only holds read-type
+  keys" test already covered this implicitly since `fnb:read` contains
+  "read", but this asserts it directly and by name).
+- `apps/web/test/App.smoke.test.tsx` — extended the existing Command
+  Center test to assert "Open urgent work orders" is a real link and
+  "Open F&B tickets" is **not** one for a user without `fnb:read` (the
+  negative case, not just the positive one); a new test drives an actual
+  click-and-navigate through both cards for a user who does hold
+  `fnb:read`, asserting the destination heading renders. (Also fixed a
+  latent gap in this file's `vi.mock('../src/lib/realtime.js', ...)` —
+  it was missing `subscribeToFnbOrderChanges`, which crashed the first
+  test in this file to ever navigate into `/restaurant`; not a real bug,
+  just a mock that had never been exercised that way before.)
+- `apps/web/test/FnbPage.test.tsx` — a new test using OWNER's exact
+  post-fix permission shape (`fnb:read` only) against a **populated**
+  kitchen board (a real RECEIVED ticket) and menu, asserting the absence
+  of every write control by role/name (no "Start preparing"/"Cancel"
+  buttons, no "Place an order" form, no "Mark unavailable"/"Delete", no
+  "Add a menu item" form) while confirming the read-only content — the
+  ticket, its reference number, the menu item and its price — genuinely
+  renders. This is the "no edit controls actually render" check the
+  client asked for, not a permission-object assertion.
+
+No schema change, no new dependency. Verification: `npm run typecheck`
+clean, `npm run lint` clean, `npm run test -w apps/web` — 103/103
+passing (up from 101), `npm run test -w apps/api` — 391/394 (same 3
+pre-existing sandbox-network-only failures), `npm run test -w
+packages/shared` — 77/77 (up from 76), `npm run build` clean across all
+three packages. Also verified live in a headless browser against the
+built app: clicking each card lands on the correct page with the correct
+heading (confirmed via URL + heading text, not just that a link element
+exists), and the hover-elevation affordance renders correctly.
