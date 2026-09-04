@@ -89,6 +89,21 @@ export const PERMISSION_KEYS = [
   'quotation:create',
   'quotation:read',
   'quotation:update_status',
+  // Client-directed feature, 2026-08-31: stock monitoring and
+  // purchasing, in/out only (no StockRequest approval workflow — that
+  // stays unbuilt, see inventory:* above). Deliberately NOT `inventory:*`
+  // — those three keys are spec §5.4's own reserved names for the
+  // StockRequest approval flow (spec §11: "inventory request"/"inventory
+  // adjust" columns map to StockRequest.status transitions), already
+  // granted to ~8 roles for that unbuilt feature. Reusing that namespace
+  // here for a different, simpler workflow would create the same
+  // ambiguity `remittance:*` was named to avoid for `payment:*`.
+  // Deliberately NOT baked into any existing role's default grants,
+  // including SYSTEM_ADMIN — see STOCK_MANAGER's own comment in
+  // rolePermissions.ts for why.
+  'stock:read',
+  'stock:manage',
+  'stock:log_movement',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

@@ -664,6 +664,7 @@ describe('App', () => {
             checkinsToday: 5,
             checkoutsToday: 4,
             openFnbOrders: 6,
+            lowStockItems: 0,
           },
           dirtyRooms: [{ id: 'unit_9', code: 'R09', name: 'Room 9', dirtyMinutes: 200 }],
           slaBreachedWorkOrders: [
@@ -672,6 +673,7 @@ describe('App', () => {
           overdueAmenityRequests: [
             { id: 'am_1', referenceNo: 'LWW-AM-0004', itemName: 'Beach towel', unitCode: 'R03', overdueMinutes: 45 },
           ],
+          lowStockItems: [],
         });
       }
       if (url.includes('/units/activity')) {
@@ -772,12 +774,20 @@ describe('App', () => {
             // is what keeps them off screen.
             pendingRemittances: 3,
             pendingQuotations: 2,
+            // Unlike the two keys above, a real backend response WOULD
+            // include this for this same permission set — low-stock
+            // visibility is deliberately unrestricted (see
+            // getUnitsDashboard's own doc comment). Included here for
+            // real, to prove the contrast within this one fixture: same
+            // user, one feature hidden, the other not.
+            lowStockItems: 1,
           },
           dirtyRooms: [],
           slaBreachedWorkOrders: [],
           overdueAmenityRequests: [],
           remittanceRequests: [{ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', waitingMinutes: 30 }],
           quotationRequests: [{ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', waitingMinutes: 20 }],
+          lowStockItems: [{ id: 'stock_1', name: 'Dish Soap', unitOfMeasure: 'bottle', currentQty: 2, reorderLevel: 5 }],
         });
       }
       if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
@@ -796,6 +806,14 @@ describe('App', () => {
     expect(screen.queryByText(/QT-260831-0001/)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /payment verification/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /quotation/i })).not.toBeInTheDocument();
+
+    // The contrast: same fixture, no stock:* permission at all, and the
+    // low-stock card/row are still fully visible with the real data —
+    // proof this feature is not accidentally gated the same way the two
+    // above are. Not a link (no stock:read to open /stock), but present.
+    expect(screen.getByText('Low stock items').parentElement).toHaveTextContent('1');
+    expect(screen.getByText(/Dish Soap low \(2 bottle, reorder at 5\)/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /low stock/i })).not.toBeInTheDocument();
   });
 
   // A viewer with both permissions sees both cards with the real counts
@@ -824,12 +842,14 @@ describe('App', () => {
             openFnbOrders: 0,
             pendingRemittances: 1,
             pendingQuotations: 1,
+            lowStockItems: 0,
           },
           dirtyRooms: [],
           slaBreachedWorkOrders: [],
           overdueAmenityRequests: [],
           remittanceRequests: [{ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', waitingMinutes: 30 }],
           quotationRequests: [{ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', waitingMinutes: 20 }],
+          lowStockItems: [],
         });
       }
       if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
@@ -874,10 +894,11 @@ describe('App', () => {
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.includes('/units/dashboard')) {
         return jsonResponse(200, {
-          kpi: { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 1, checkinsToday: 0, checkoutsToday: 0, openFnbOrders: 1 },
+          kpi: { occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 1, checkinsToday: 0, checkoutsToday: 0, openFnbOrders: 1, lowStockItems: 0 },
           dirtyRooms: [],
           slaBreachedWorkOrders: [],
           overdueAmenityRequests: [],
+          lowStockItems: [],
         });
       }
       if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });

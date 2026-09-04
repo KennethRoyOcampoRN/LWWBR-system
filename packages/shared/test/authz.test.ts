@@ -155,6 +155,39 @@ describe('remittance:*/quotation:* role grants', () => {
   });
 });
 
+// Client-directed feature, 2026-08-31: stock monitoring and purchasing.
+// Purely an assignable add-on role (STOCK_MANAGER) — asserts the exact
+// grant, and specifically that no other role, including SYSTEM_ADMIN,
+// carries any of the three stock:* keys by default (the client's own
+// instruction, applied consistently rather than special-cased for
+// SYSTEM_ADMIN — see STOCK_MANAGER's own comment in rolePermissions.ts).
+describe('stock:* role grants', () => {
+  const STOCK_KEYS = ['stock:read', 'stock:manage', 'stock:log_movement'] as const;
+
+  it('grants all three stock:* keys to STOCK_MANAGER only', () => {
+    for (const key of STOCK_KEYS) {
+      expect(ROLE_PERMISSIONS.STOCK_MANAGER[key]).toBe('ALL');
+    }
+    for (const role of ROLE_KEYS) {
+      if (role === 'STOCK_MANAGER') continue;
+      for (const key of STOCK_KEYS) {
+        expect(ROLE_PERMISSIONS[role][key]).toBeUndefined();
+      }
+    }
+  });
+
+  // The one place this is worth a dedicated assertion, not just folded
+  // into the loop above: it's the one role someone might assume holds
+  // every key by default (see the stale "SYSTEM_ADMIN keeps them, as it
+  // does every key" line in this file's own header comment, which
+  // predates this and the remittance/quotation exceptions).
+  it('does not grant SYSTEM_ADMIN any stock:* key by default', () => {
+    for (const key of STOCK_KEYS) {
+      expect(ROLE_PERMISSIONS.SYSTEM_ADMIN[key]).toBeUndefined();
+    }
+  });
+});
+
 describe('getEffectivePermissions', () => {
   it('unions permissions across multiple roles', () => {
     const effective = getEffectivePermissions(['CASHIER', 'ADMIN_STAFF']);

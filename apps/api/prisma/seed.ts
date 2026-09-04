@@ -49,6 +49,12 @@ const ROLE_DEPARTMENT: Record<RoleKey, Department> = {
   RESORT_STAFF: 'GROUNDS_SAFETY',
   RESTAURANT_MANAGER: 'RESTAURANT',
   RESTAURANT_STAFF: 'RESTAURANT',
+  // No dedicated Stock/Purchasing Department enum value exists — FRONT_OFFICE
+  // is the closest fit, same department as Admin Head/Admin Staff, who
+  // handle the other purchasing-adjacent admin work (remittance/quotation)
+  // added this same slice. Display/org data only, per this map's own
+  // header comment — not an authorization boundary.
+  STOCK_MANAGER: 'FRONT_OFFICE',
 };
 
 // Demo password for every seeded account — mustChangePassword forces a

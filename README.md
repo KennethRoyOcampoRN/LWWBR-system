@@ -5596,3 +5596,159 @@ screenshots with both new cards/rows populated for a viewer holding
 both permissions, plus a third screenshot confirming a viewer holding
 neither sees no trace of either card or row type. Sent all three to the
 client for a look.
+
+### Stock monitoring and purchasing (2026-08-31)
+
+Client-directed feature: a new module for `StockItem`/`StockMovement` —
+both modeled in M0 per spec's Phase 2 backlog note but never wired to
+any code until now. In/out only, no `StockRequest` approval workflow
+(deliberately skipped for this version, per the client's own scope cut).
+
+**Naming: `stock:*`, not `inventory:*`.** `inventory:read`/
+`inventory:request`/`inventory:adjust` already exist and are already
+granted to ~8 roles — but they're spec §5.4's own reserved names for the
+`StockRequest` approval flow ("inventory request"/"inventory adjust"
+columns map directly to `StockRequest.status` transitions). Reusing that
+namespace for this simpler, unrelated in/out workflow would create the
+same ambiguity `remittance:*` was named to avoid for `payment:*` two
+slices ago. New keys: `stock:read` (catalog + movement history),
+`stock:manage` (catalog CRUD — name/category/unit/reorder threshold/
+active flag; deliberately does NOT include `currentQty`, see below),
+`stock:log_movement` (log a RECEIVE/CONSUME/ADJUST entry).
+
+**ADJUST is exposed, TRANSFER is not.** The schema already models
+`ADJUST` as a reason distinct from RECEIVE/CONSUME — without it,
+correcting a miscount would force staff to fake a RECEIVE/CONSUME entry
+that misrepresents what actually happened, corrupting the one thing
+this feature exists to protect: an honest audit trail. Exposed under the
+same `stock:log_movement` permission (still "logging a movement," not a
+separate workflow step). RECEIVE/CONSUME take a positive magnitude;
+ADJUST takes the signed correction directly, since a miscount can go
+either direction. TRANSFER (the 4th enum value) stays unexposed — there
+is no location concept modeled on `StockItem` at all, so "transfer" has
+nothing to transfer between yet.
+
+**`currentQty` is never directly editable.** `updateStockItemSchema` is
+`.strict()` and has no `currentQty` field at all — the running quantity
+is driven only by movements (`createStockMovement`), so the audit trail
+can't be bypassed by hand-editing the count. A brand-new item's starting
+balance (`initialQty`, defaults to 0) is set once at creation time,
+outside the movement log — there's nothing to "log" about establishing
+a baseline for a row that didn't exist a moment ago, same reasoning
+`AmenityItem.totalQty` already uses.
+
+**New role: `STOCK_MANAGER`** (label "Stock Manager"), added to
+`ROLE_KEYS`/`ROLE_LABELS` — `seed.ts`'s existing role/demo-user loops
+already derive from that list, so no manual seeding code was needed
+beyond mapping it to a `Department` for its demo user (`FRONT_OFFICE` —
+no dedicated Stock/Purchasing department exists; closest fit is the
+other purchasing-adjacent admin work, same department as Admin Head/
+Admin Staff). Granted `stock:read`/`stock:manage`/`stock:log_movement`,
+plus the same baseline every one of the other 14 roles already carries
+(`workorder:create`, `workorder:read`, `incident:create`, `shift:read`
+— confirmed by intersecting all 14 existing roles' grants) so it isn't
+missing spec §8.1's "every role" quick-action button purely for being a
+newly added role.
+
+**System Admin does not inherently hold `stock:*`** — an inference, not
+something the client stated outright, flagged as such at plan time. The
+client's own instruction was "don't bake stock permissions into Resort
+Manager's or any other existing role's default grants" — System Admin's
+own block in `rolePermissions.ts` is itself an existing role's default
+grants, so baking it in there would quietly contradict that. There's
+already precedent for System Admin having real, deliberate gaps
+(`remittance:verify` is OWNER-only, `quotation:create` is withheld from
+System Admin too) — this isn't the first exception to "System Admin
+holds everything." If a specific System Admin employee needs to manage
+stock, they get `STOCK_MANAGER` assigned too, through the same Users
+page checkboxes every other role uses — no special case, confirmed no
+`UsersPage`/`RolesPage` code changes were needed since both already
+render off `ROLE_KEYS`/`ROLE_LABELS` dynamically.
+
+**Command Center: genuinely unscoped, the opposite of remittance/
+quotation.** `kpi.lowStockItems` and the `lowStockItems` queue array are
+always-present fields, computed unconditionally in `getUnitsDashboard` —
+never optional, never omitted, regardless of the caller's `stock:*`
+permissions. This is the client's own explicit instruction, not an
+inference: low-stock visibility stays exactly like the other 8 original
+KPI cards (`unit:read` alone is enough). Built the contrast directly
+into both the code comments and the test suite specifically so a future
+reader can't mistake this for the same omit-when-unauthorized pattern
+remittance/quotation use one section up — the interface's own doc
+comment says so explicitly, and one frontend test exercises both
+patterns side by side in a single fixture (a Housekeeping-only user:
+`pendingRemittances`/`pendingQuotations` hidden, `lowStockItems` fully
+visible with real data). The KPI card and queue rows are still only
+*clickable* when the viewer holds `stock:read` (same dead-end-avoidance
+rule as the F&B card's `canViewFnb`) — that's a different axis from
+whether the number/rows render at all.
+
+"Drops below" (spec's own wording) is strict `<`, not `<=` — an item
+exactly at its reorder level is not yet flagged. Inactive items are
+excluded from the low-stock queue: no point alerting on a discontinued
+item's stale count.
+
+**Frontend defensive fallback, a real gap, not just test friction:**
+`dashboardCache.ts`'s offline snapshot has no schema version beyond its
+storage key, so a snapshot cached before this deploy genuinely could be
+missing `lowStockItems` in a real user's browser. `DashboardPage.tsx`
+now falls back to `?? 0`/`?? []` for both the KPI value and the queue
+array rather than assuming the field is always present just because the
+live API contract guarantees it — caught while updating the existing
+`App.smoke.test.tsx` cached-snapshot fixture (an intentionally
+old-shaped payload) for this slice, not something invented to make a
+test pass.
+
+New/changed files: `packages/shared/src/stock.ts` (category/reason keys
++ labels), `permissions.ts` (3 new keys), `roles.ts` (`STOCK_MANAGER`),
+`rolePermissions.ts` (its grant block), `apps/api/prisma/seed.ts`
+(`ROLE_DEPARTMENT` mapping), `apps/api/src/modules/stock/{schema,
+service,router}.ts`, mounted in `app.ts`; `units/service.ts`'s
+`getUnitsDashboard` gained the always-on `listLowStockItems` call;
+`apps/web/src/routes/StockPage.tsx` (catalog + movement-log forms,
+gated on `stock:manage`/`stock:log_movement` independently — a
+`stock:read`-only viewer sees the table with neither form), a new nav
+entry (placed with the other operational catalog pages — Amenities,
+Restaurant — not the admin request-log pair), a new `/stock` route,
+and `DashboardPage.tsx`'s new KPI card + queue rows.
+
+No schema change — `StockItem`/`StockMovement` were already pushed in
+M0. This slice only adds application code, plus new `Permission`/`Role`/
+`RolePermission` rows the seed script creates — **the client needs to
+run `npm run seed` (from `apps/api`) before `STOCK_MANAGER` exists as an
+assignable role** (same requirement `rolePermissions.ts` changes have
+always had — no `prisma db push` needed this time, since nothing in
+`schema.prisma` changed).
+
+Test coverage: full create/manage/log_movement/read permission
+boundaries (including the deliberate `SYSTEM_ADMIN` refusal, confirming
+it does NOT inherently hold any `stock:*` key); the movement math for
+all three reasons (RECEIVE increments, CONSUME decrements and rejects
+going negative, ADJUST applies a signed delta either direction);
+rejection of a negative `quantity` for RECEIVE/CONSUME; rejection of a
+movement against an inactive item; the low-stock boundary specifically
+asked for — an item exactly at, just above, and just below its reorder
+level, asserted as one test on exact list membership so an off-by-one
+regression fails loudly; inactive-item exclusion; and the Command
+Center visibility tests — both the always-present contract (a
+Housekeeping-only fixture with zero `stock:*` keys still receives the
+real count and rows) and the extended existing remittance/quotation
+fixture now also asserting low-stock renders in the same response where
+the other two are hidden.
+
+Verification: `npm run typecheck` clean (both apps), `npm run lint`
+clean, `npm run test -w packages/shared` — 83/83 (up from 81; 2 new
+`STOCK_MANAGER`-grant tests), `npm run test -w apps/api` — 471/474 (up
+from 448; same 3 pre-existing sandbox-network-only failures; 24 new
+stock-module tests + 5 new dashboard tests), `npm run test -w apps/web`
+— 115/115 (up from 112; 3 new `StockPage` tests, 2 extended existing
+Command Center tests), `npm run build` clean across all three packages.
+Also verified live in a headless browser against the built app (API
+mocked, no live database needed — no schema change this slice): the
+Stock page itself (catalog table with below-threshold quantities
+visually flagged, the add-item and log-movement forms), the Command
+Center with the new KPI card and queue rows fully populated and
+clickable for a Stock Manager fixture, and the same Command Center for
+a Housekeeping fixture with zero `stock:*` permissions — confirmed no
+Stock nav item, but the low-stock card and both rows still render with
+the real data, unscoped. Sent all three to the client.

@@ -485,5 +485,36 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'workorder:read': 'ALL',
     'workorder:update_status': 'ALL',
   },
+  // Client-directed feature, 2026-08-31: stock monitoring and
+  // purchasing — see permissions.ts's stock:* comment for why this
+  // isn't inventory:*. Purely an assignable add-on role, per the
+  // client's own instruction: not baked into any existing role's
+  // default grants, including SYSTEM_ADMIN. That last part is an
+  // inference, not something the client stated outright — flagging it
+  // here rather than presenting it as certain. Reasoning: SYSTEM_ADMIN's
+  // own block below is itself "an existing role's default grants," so
+  // baking stock:* in there would quietly contradict the instruction not
+  // to bake it into any role's defaults; and there's already precedent
+  // for SYSTEM_ADMIN having real, deliberate gaps (remittance:verify is
+  // OWNER-only, quotation:create is withheld from SYSTEM_ADMIN too) —
+  // this isn't the first exception to "SYSTEM_ADMIN holds everything."
+  // If a specific System Admin employee needs to manage stock, they get
+  // STOCK_MANAGER assigned too, through the same Users page checkboxes
+  // every other role uses — no special case.
+  STOCK_MANAGER: {
+    // The universal baseline every other role in this file carries
+    // (confirmed by intersecting all 14 other roles' grants) — not part
+    // of the stock feature's own scope, but withholding it here would
+    // make STOCK_MANAGER the one role without spec §8.1's "every role"
+    // quick-action button or its own roster visibility, purely because
+    // it's a newly added role rather than a deliberate restriction.
+    'incident:create': 'ALL',
+    'shift:read': 'ALL',
+    'stock:log_movement': 'ALL',
+    'stock:manage': 'ALL',
+    'stock:read': 'ALL',
+    'workorder:create': 'ALL',
+    'workorder:read': 'ALL',
+  },
 };
 

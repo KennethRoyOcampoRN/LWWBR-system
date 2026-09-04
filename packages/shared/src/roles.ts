@@ -18,6 +18,13 @@ export const ROLE_KEYS = [
   'RESORT_STAFF',
   'RESTAURANT_MANAGER',
   'RESTAURANT_STAFF',
+  // Client-directed feature, 2026-08-31: purely an assignable add-on
+  // role for the stock monitoring/purchasing feature (see permissions.ts's
+  // stock:* comment) — not baked into any existing role's default grants,
+  // assigned to specific employees by System Admin exactly like any
+  // other role, through the existing Users page checkboxes (which render
+  // off this list, so no separate wiring was needed).
+  'STOCK_MANAGER',
 ] as const;
 
 export type RoleKey = (typeof ROLE_KEYS)[number];
@@ -37,4 +44,5 @@ export const ROLE_LABELS: Record<RoleKey, string> = {
   RESORT_STAFF: 'Resort Staff',
   RESTAURANT_MANAGER: 'Restaurant Manager',
   RESTAURANT_STAFF: 'Restaurant Staff',
+  STOCK_MANAGER: 'Stock Manager',
 };

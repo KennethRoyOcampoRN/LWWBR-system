@@ -19,6 +19,7 @@ import { quotationsRouter } from './modules/quotations/router.js';
 import { remittancesRouter } from './modules/remittances/router.js';
 import { reportsRouter } from './modules/reports/router.js';
 import { rolesRouter } from './modules/roles/router.js';
+import { stockRouter } from './modules/stock/router.js';
 import { unitsRouter } from './modules/units/router.js';
 import { usersRouter } from './modules/users/router.js';
 import { workOrdersRouter } from './modules/workorders/router.js';
@@ -76,6 +77,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', incidentsRouter);
   app.use('/api/v1', remittancesRouter);
   app.use('/api/v1', quotationsRouter);
+  app.use('/api/v1', stockRouter);
   app.use('/api/v1', jobsRouter);
 
   for (const router of options.extraRouters ?? []) {

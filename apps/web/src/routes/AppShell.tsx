@@ -21,7 +21,8 @@ const NAV_ITEMS: {
     | 'fnb:read'
     | 'report:view'
     | 'remittance:read'
-    | 'quotation:read';
+    | 'quotation:read'
+    | 'stock:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -43,6 +44,12 @@ const NAV_ITEMS: {
   // and the kitchen board are a later slice. Per the role matrix,
   // Maintenance/Housekeeping staff hold no fnb:* key at all.
   { to: '/restaurant', label: 'Restaurant', permission: 'fnb:read' },
+  // Client-directed feature, 2026-08-31: stock monitoring and
+  // purchasing, in/out only — see permissions.ts's stock:* comment for
+  // why this isn't inventory:*. Placed alongside the other operational
+  // catalog pages (Amenities, Restaurant), not the admin request-log
+  // pair below (Payment Verification, Quotations).
+  { to: '/stock', label: 'Stock', permission: 'stock:read' },
   // M6, report builder (2026-08-25): starting with occupancy/unit status
   // history and work-order stats (spec §8.4 items 1 and 4) — the two
   // report builders with the most real data already behind them from

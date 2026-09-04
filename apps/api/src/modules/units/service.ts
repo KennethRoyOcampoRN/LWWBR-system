@@ -31,6 +31,7 @@ import { listOverdueAmenityRequests, type OverdueAmenityRequest } from '../ameni
 import { countOpenFnbOrders } from '../fnb/service.js';
 import { listPendingQuotations, type PendingQuotation } from '../quotations/service.js';
 import { listPendingRemittances, type PendingRemittance } from '../remittances/service.js';
+import { listLowStockItems, type LowStockItem } from '../stock/service.js';
 import {
   countUrgentOpenWorkOrders,
   createWorkOrder,
@@ -402,6 +403,14 @@ export interface DirtyRoom {
 // truthful-looking card to someone with no business seeing the number at
 // all; omission makes "no data for you" structurally different from
 // "the true count is zero."
+//
+// Client-directed feature, 2026-08-31 (same slice): low-stock items —
+// see stock/service.ts's listLowStockItems for the full reasoning. The
+// deliberate contrast with the paragraph above: `lowStockItems` (KPI
+// count and queue array both) is the client's own explicit instruction
+// to NOT restrict visibility — always present, never optional, unlike
+// pendingRemittances/pendingQuotations right above it. Keep it that way;
+// don't "fix" it to match the omit-when-unauthorized pattern.
 export interface UnitsDashboard {
   kpi: {
     occupied: number;
@@ -414,12 +423,14 @@ export interface UnitsDashboard {
     openFnbOrders: number;
     pendingRemittances?: number;
     pendingQuotations?: number;
+    lowStockItems: number;
   };
   dirtyRooms: DirtyRoom[];
   slaBreachedWorkOrders: SlaBreachedWorkOrder[];
   overdueAmenityRequests: OverdueAmenityRequest[];
   remittanceRequests?: PendingRemittance[];
   quotationRequests?: PendingQuotation[];
+  lowStockItems: LowStockItem[];
 }
 
 export async function getUnitsDashboard(permissions: EffectivePermissions): Promise<UnitsDashboard> {
@@ -437,6 +448,7 @@ export async function getUnitsDashboard(permissions: EffectivePermissions): Prom
     checkinsToday: 0,
     checkoutsToday: 0,
     openFnbOrders: 0,
+    lowStockItems: 0,
   };
   const dirtyUnits: typeof units = [];
   for (const unit of units) {
@@ -498,7 +510,19 @@ export async function getUnitsDashboard(permissions: EffectivePermissions): Prom
   kpi.openFnbOrders = await countOpenFnbOrders();
   const overdueAmenityRequests = await listOverdueAmenityRequests();
 
-  const dashboard: UnitsDashboard = { kpi, dirtyRooms, slaBreachedWorkOrders, overdueAmenityRequests };
+  // Always computed, no permission check — see this interface's own doc
+  // comment for why this is the deliberate opposite of
+  // pendingRemittances/pendingQuotations just below.
+  const lowStockItems = await listLowStockItems();
+  kpi.lowStockItems = lowStockItems.length;
+
+  const dashboard: UnitsDashboard = {
+    kpi,
+    dirtyRooms,
+    slaBreachedWorkOrders,
+    overdueAmenityRequests,
+    lowStockItems,
+  };
 
   // Independent gates, deliberately not bundled behind a single check:
   // Admin Staff holds remittance:read but not quotation:read (see

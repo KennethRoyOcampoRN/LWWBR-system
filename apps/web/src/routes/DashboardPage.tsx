@@ -50,6 +50,12 @@ interface DashboardData {
     // with a `?? 0` that could paint a real-looking zero.
     pendingRemittances?: number;
     pendingQuotations?: number;
+    // Client-directed feature, 2026-08-31, same slice: low-stock items.
+    // Deliberately NOT optional, unlike the two keys above — the
+    // client's own explicit instruction was to NOT restrict visibility
+    // here (unit:read alone is enough, same as every original KPI card).
+    // Always a real number, never omitted.
+    lowStockItems: number;
   };
   dirtyRooms: { id: string; code: string; name: string; dirtyMinutes: number }[];
   slaBreachedWorkOrders: {
@@ -68,6 +74,8 @@ interface DashboardData {
   }[];
   remittanceRequests?: { id: string; referenceNo: string; name: string; waitingMinutes: number }[];
   quotationRequests?: { id: string; referenceNo: string; name: string; waitingMinutes: number }[];
+  // Always present — see kpi.lowStockItems's own comment above.
+  lowStockItems: { id: string; name: string; unitOfMeasure: string; currentQty: number; reorderLevel: number }[];
 }
 
 interface RawActivityEvent {
@@ -249,6 +257,12 @@ export function CommandCenter() {
   // other access to justify seeing.
   const canViewRemittances = Boolean(user?.permissions['remittance:read']);
   const canViewQuotations = Boolean(user?.permissions['quotation:read']);
+  // Different axis from the two flags above: the low-stock count/rows
+  // themselves are never gated (see kpi.lowStockItems's own comment) —
+  // this only controls whether the card/rows are clickable, same
+  // dead-end-avoidance reasoning as canViewFnb. A viewer without
+  // stock:read still sees the real count, just not as a link.
+  const canViewStock = Boolean(user?.permissions['stock:read']);
   const [dashboard, setDashboard] = useState<DashboardData | 'loading' | 'error'>('loading');
   const [feed, setFeed] = useState<FeedItem[] | 'loading' | 'error'>('loading');
   // Spec §3 / §11 M6: "cache the last-known board read-only so a staff
@@ -448,6 +462,21 @@ export function CommandCenter() {
                   to="/quotations"
                 />
               )}
+              {/* Client-directed feature, 2026-08-31, same slice: always
+                  rendered, no permission check — deliberately the
+                  opposite of the two cards above. See
+                  kpi.lowStockItems's own comment. `?? 0`: a snapshot
+                  cached by dashboardCache.ts before this field existed
+                  won't have it — the cache has no schema version beyond
+                  its storage key, so an old offline snapshot is a real
+                  possibility, not just a defensive-coding nicety. */}
+              <KpiCard
+                label="Low stock items"
+                value={dashboard.kpi.lowStockItems ?? 0}
+                variant="warning"
+                icon={IconAlertTriangle}
+                to={canViewStock ? '/stock' : undefined}
+              />
             </div>
           )}
         </section>
@@ -585,6 +614,46 @@ export function CommandCenter() {
                 {canViewQuotations && dashboard.quotationRequests?.length === 0 && (
                   <li>
                     <EmptyState message="No quotations pending." />
+                  </li>
+                )}
+                {/* Client-directed feature, 2026-08-31, same slice:
+                    always rendered — no canViewStock check on whether
+                    these rows appear at all, only on whether they're
+                    clickable (same as the KPI card above; a viewer
+                    without stock:read still sees the real rows, just not
+                    as links to a page they can't open). `?? []`: same
+                    old-cached-snapshot reasoning as the KPI card above. */}
+                {(dashboard.lowStockItems ?? []).map((item) => {
+                  const rowContent = (
+                    <>
+                      <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-warning-600">
+                          <IconAlertTriangle className="h-4 w-4" />
+                        </span>
+                        {item.name} low ({item.currentQty} {item.unitOfMeasure}, reorder at {item.reorderLevel})
+                      </span>
+                    </>
+                  );
+                  const className =
+                    'flex items-center justify-between rounded-xl bg-warning-50 px-4 py-3 transition-shadow';
+                  return (
+                    <li key={item.id}>
+                      {canViewStock ? (
+                        <Link
+                          to="/stock"
+                          className={`${className} hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}
+                        >
+                          {rowContent}
+                        </Link>
+                      ) : (
+                        <div className={className}>{rowContent}</div>
+                      )}
+                    </li>
+                  );
+                })}
+                {(dashboard.lowStockItems ?? []).length === 0 && (
+                  <li>
+                    <EmptyState message="No items below their reorder threshold." />
                   </li>
                 )}
               </ul>

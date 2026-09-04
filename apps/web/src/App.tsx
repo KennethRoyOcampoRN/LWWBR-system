@@ -15,6 +15,7 @@ import { RequirePermission } from './routes/RequirePermission.js';
 import { ReportsPage } from './routes/ReportsPage.js';
 import { RolesPage } from './routes/RolesPage.js';
 import { SessionsPage } from './routes/SessionsPage.js';
+import { StockPage } from './routes/StockPage.js';
 import { UnitsPage } from './routes/UnitsPage.js';
 import { UsersPage } from './routes/UsersPage.js';
 import { WorkOrdersPage } from './routes/WorkOrdersPage.js';
@@ -84,6 +85,14 @@ export function App() {
                     element={
                       <RequirePermission permission="fnb:read">
                         <FnbPage />
+                      </RequirePermission>
+                    }
+                  />
+                  <Route
+                    path="/stock"
+                    element={
+                      <RequirePermission permission="stock:read">
+                        <StockPage />
                       </RequirePermission>
                     }
                   />

@@ -16,3 +16,4 @@ export * from './report.js';
 export * from './incident.js';
 export * from './remittance.js';
 export * from './quotation.js';
+export * from './stock.js';

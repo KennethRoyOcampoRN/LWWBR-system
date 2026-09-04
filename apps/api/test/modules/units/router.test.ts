@@ -15,6 +15,7 @@ const mockPrisma = {
   setting: { findUnique: vi.fn() },
   remittanceRequest: { findMany: vi.fn() },
   quotationRequest: { findMany: vi.fn() },
+  stockItem: { findMany: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
 
@@ -79,6 +80,7 @@ beforeEach(() => {
   mockPrisma.setting.findUnique.mockResolvedValue(null);
   mockPrisma.remittanceRequest.findMany.mockResolvedValue([]);
   mockPrisma.quotationRequest.findMany.mockResolvedValue([]);
+  mockPrisma.stockItem.findMany.mockResolvedValue([]);
   mockRealtimeEmit.mockResolvedValue(undefined);
 });
 
@@ -747,6 +749,10 @@ describe('GET /api/v1/units/dashboard', () => {
       // permission-scoping tests below for the omitted-vs-present cases).
       pendingRemittances: 0,
       pendingQuotations: 0,
+      // Always present, regardless of role/permissions — see
+      // getUnitsDashboard's own doc comment for why lowStockItems is the
+      // deliberate opposite of pendingRemittances/pendingQuotations.
+      lowStockItems: 0,
     });
     expect(res.body.dirtyRooms).toHaveLength(1);
     expect(res.body.dirtyRooms[0]).toMatchObject({ id: 'unit_dirty_long', code: '102' });
@@ -1007,6 +1013,40 @@ describe('GET /api/v1/units/dashboard', () => {
     expect(mockPrisma.quotationRequest.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { deletedAt: null, status: 'PENDING' } }),
     );
+  });
+
+  // Client-directed feature, 2026-08-31, same slice: low-stock items.
+  // Deliberately the INVERSE of the remittance/quotation permission-
+  // scoping tests above — the client's own explicit instruction was to
+  // NOT restrict visibility here, unlike that feature. A caller holding
+  // unit:read only, with none of stock:read/stock:manage/
+  // stock:log_movement, must still see the real count and rows — proof
+  // this feature is not accidentally gated the same way the last one was.
+  it('includes lowStockItems for a viewer holding none of stock:read/stock:manage/stock:log_movement', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.stockItem.findMany.mockResolvedValue([
+      { id: 'stock_1', name: 'Dish Soap', category: 'KITCHEN', unitOfMeasure: 'bottle', currentQty: '2.00', reorderLevel: '5.00' },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.lowStockItems).toBe(1);
+    expect(res.body.lowStockItems).toHaveLength(1);
+    expect(res.body.lowStockItems[0]).toMatchObject({ id: 'stock_1', name: 'Dish Soap', currentQty: 2, reorderLevel: 5 });
+  });
+
+  it('reports zero low-stock items when everything is at or above its reorder level', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([]);
+    mockPrisma.stockItem.findMany.mockResolvedValue([
+      { id: 'stock_1', name: 'Dish Soap', category: 'KITCHEN', unitOfMeasure: 'bottle', currentQty: '10.00', reorderLevel: '5.00' },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units/dashboard').set('Cookie', authCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.kpi.lowStockItems).toBe(0);
+    expect(res.body.lowStockItems).toEqual([]);
   });
 });
 
