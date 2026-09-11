@@ -8,7 +8,14 @@ import {
   listStockMovementsQuerySchema,
   updateStockItemSchema,
 } from './schema.js';
-import { createStockItem, createStockMovement, listStockItems, listStockMovements, updateStockItem } from './service.js';
+import {
+  createStockItem,
+  createStockMovement,
+  deleteStockItem,
+  listStockItems,
+  listStockMovements,
+  updateStockItem,
+} from './service.js';
 
 export const stockRouter = Router();
 
@@ -52,6 +59,21 @@ stockRouter.post(
     const body = createStockMovementSchema.parse(req.body);
     const movement = await createStockMovement(req.params.id as string, body, { id: req.authUser!.id });
     res.status(201).json({ stockMovement: movement });
+  }),
+);
+
+// Client-directed feature, 2026-09-11: a genuine soft-delete (deletedAt),
+// NOT the hard-delete pattern fnb/router.ts's DELETE /menu-items uses —
+// see deleteStockItem's own comment for why that pattern isn't safely
+// reusable here without a schema change. Same permission as everything
+// else on this page (stock:manage) and the same "only once deactivated"
+// gate as Amenities/F&B's delete.
+stockRouter.delete(
+  '/stock-items/:id',
+  requirePermission('stock:manage'),
+  asyncHandler(async (req, res) => {
+    await deleteStockItem(req.params.id as string, { id: req.authUser!.id });
+    res.status(204).end();
   }),
 );
 

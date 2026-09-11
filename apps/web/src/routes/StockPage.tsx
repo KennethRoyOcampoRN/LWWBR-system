@@ -100,6 +100,23 @@ export function StockPage() {
     }
   }
 
+  // Client-directed feature, 2026-09-11: a genuine soft-delete
+  // (deletedAt) — see stock/service.ts's deleteStockItem for why this
+  // isn't the same hard-delete pattern FnbPage.tsx's menu items use.
+  // Same confirm-dialog and error-surfacing shape as that page's own
+  // deleteItem, reused deliberately rather than inventing a new one.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  async function deleteItem(item: StockItemRow) {
+    if (!window.confirm(`Delete "${item.name}"? This removes it from the catalog.`)) return;
+    setDeleteError(null);
+    try {
+      await api.delete(`/stock-items/${item.id}`);
+      await fetchItems();
+    } catch (err) {
+      setDeleteError(err instanceof ApiRequestError ? err.message : 'Could not delete the item.');
+    }
+  }
+
   async function handleLogMovement(e: FormEvent) {
     e.preventDefault();
     if (!movementItemId) return;
@@ -129,6 +146,12 @@ export function StockPage() {
           Stock monitoring and purchasing, in and out only — no approval workflow.
         </p>
       </div>
+
+      {deleteError && (
+        <p role="alert" className="text-sm text-red-700">
+          {deleteError}
+        </p>
+      )}
 
       {items === 'loading' && (
         <table className="w-full text-sm">
@@ -186,6 +209,19 @@ export function StockPage() {
                           className="text-sm text-gray-600 hover:underline"
                         >
                           {item.isActive ? 'Deactivate' : 'Reactivate'}
+                        </button>
+                      )}
+                      {/* Client decision, 2026-09-11, same "Option B"
+                          convention as Amenities/F&B: only offered once
+                          the item is already inactive — matches the
+                          server's own 409 ITEM_STILL_ACTIVE guard. */}
+                      {canManage && !item.isActive && (
+                        <button
+                          type="button"
+                          onClick={() => void deleteItem(item)}
+                          className="text-sm text-red-700 hover:underline"
+                        >
+                          Delete
                         </button>
                       )}
                     </td>

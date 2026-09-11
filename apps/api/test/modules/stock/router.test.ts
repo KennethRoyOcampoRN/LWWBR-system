@@ -143,6 +143,17 @@ describe('GET /api/v1/stock-items', () => {
     const res = await request(createApp()).get('/api/v1/stock-items').set('Cookie', authCookie());
     expect(res.status).toBe(403);
   });
+
+  // Direct assertion for the new deleteStockItem code path below — a
+  // soft-deleted item must never resurface in the catalog listing.
+  it('excludes soft-deleted items from the query', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+    mockPrisma.stockItem.findMany.mockResolvedValue([]);
+    await request(createApp()).get('/api/v1/stock-items').set('Cookie', authCookie());
+    expect(mockPrisma.stockItem.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ deletedAt: null }) }),
+    );
+  });
 });
 
 describe('PATCH /api/v1/stock-items/:id', () => {
@@ -191,6 +202,79 @@ describe('PATCH /api/v1/stock-items/:id', () => {
       .set('Cookie', authCookie())
       .send({ reorderLevel: 5 });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('DELETE /api/v1/stock-items/:id', () => {
+  it('soft-deletes an inactive item (sets deletedAt, not a real .delete() call)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+    mockPrisma.stockItem.findFirst.mockResolvedValue(fakeStockItem({ isActive: false }));
+    mockPrisma.stockItem.update.mockResolvedValue(fakeStockItem({ isActive: false, deletedAt: new Date() }));
+
+    const res = await request(createApp()).delete('/api/v1/stock-items/stock_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(204);
+    expect(mockPrisma.stockItem.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'stock_1' }, data: { deletedAt: expect.any(Date) } }),
+    );
+  });
+
+  it('rejects deleting a still-active item', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+    mockPrisma.stockItem.findFirst.mockResolvedValue(fakeStockItem({ isActive: true }));
+
+    const res = await request(createApp()).delete('/api/v1/stock-items/stock_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(409);
+    expect(mockPrisma.stockItem.update).not.toHaveBeenCalled();
+  });
+
+  // The question the client specifically asked to have tested: deleting
+  // an item with existing movement history is NOT blocked (deliberately
+  // the opposite of deleteUnit's UNIT_HAS_HISTORY hard-block) — this is
+  // safe specifically because it's a soft-delete, not a real .delete()
+  // (see deleteStockItem's own comment). Confirms the delete itself
+  // succeeds and, separately, that the movement history genuinely
+  // survives afterward by exercising listStockMovements too.
+  it('allows deleting an inactive item that has existing movement history, and that history survives afterward', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+    mockPrisma.stockItem.findFirst.mockResolvedValue(fakeStockItem({ isActive: false }));
+    mockPrisma.stockItem.update.mockResolvedValue(fakeStockItem({ isActive: false, deletedAt: new Date() }));
+
+    const deleteRes = await request(createApp()).delete('/api/v1/stock-items/stock_1').set('Cookie', authCookie());
+    expect(deleteRes.status).toBe(204);
+
+    mockPrisma.stockMovement.findMany.mockResolvedValue([
+      fakeStockMovement({ id: 'movement_1', stockItemId: 'stock_1', delta: '10.00', reason: 'RECEIVE' }),
+    ]);
+    const historyRes = await request(createApp())
+      .get('/api/v1/stock-movements?stockItemId=stock_1')
+      .set('Cookie', authCookie());
+    expect(historyRes.status).toBe(200);
+    expect(historyRes.body.stockMovements).toHaveLength(1);
+    expect(historyRes.body.stockMovements[0]).toMatchObject({ id: 'movement_1', stockItemId: 'stock_1' });
+  });
+
+  it('404s for an item that does not exist', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+    mockPrisma.stockItem.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp()).delete('/api/v1/stock-items/missing').set('Cookie', authCookie());
+
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses a role with no stock:* access at all', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_STAFF'));
+    const res = await request(createApp()).delete('/api/v1/stock-items/stock_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a role holding only stock:read', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    const res = await request(createApp()).delete('/api/v1/stock-items/stock_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+    expect(mockPrisma.stockItem.update).not.toHaveBeenCalled();
   });
 });
 

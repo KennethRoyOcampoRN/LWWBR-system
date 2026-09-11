@@ -5814,3 +5814,87 @@ an OWNER fixture (`stock:read` only) — the catalog renders with the
 below-threshold item correctly flagged, and no Actions column, add-item
 form, or movement/deactivate controls appear anywhere on the page. Sent
 to the client.
+
+### Stock catalog delete, plus a verification of Amenities' existing delete (2026-09-11)
+
+Client-directed feature: a "Delete" action for Stock catalog items,
+gated on `stock:manage` (same permission as everything else on that
+page), distinct from the existing Deactivate/Reactivate toggle.
+
+**Checked the reuse target before copying it — it doesn't do what the
+request assumed.** The client's own framing was "same as how
+`FnbPage.tsx`'s menu items already have both 'Mark unavailable' and a
+separate 'Delete' action... reuse that exact pattern." Reading
+`fnb/service.ts`'s `deleteMenuItem` (and `amenities/service.ts`'s
+`deleteAmenityItem`, the same "Option B" pattern) found neither is
+actually a `deletedAt` soft-delete — both do a genuine
+`prisma.<model>.delete()`, made safe only because their history rows
+(`FnbOrderLine`/`AmenityRequest`) have a **nullable** FK with
+`onDelete: SetNull` plus a **name snapshot** taken at creation time
+(`menuItemName`/`amenityItemName`) — the item's own code comments say
+so explicitly ("this is what makes a real `MenuItem.delete()` safe").
+`StockMovement.stockItemId` is **required**, has no `SetNull`, and no
+name snapshot — reusing that hard-delete pattern verbatim would either
+throw a raw FK-constraint error for any item with movement history, or
+need a schema change (nullable FK + a new snapshot field) this ask
+didn't call for.
+
+**Went with the soft-delete the client had actually specified**
+(`StockItem.deletedAt`, which already exists and is already filtered
+everywhere) rather than force-fitting the hard-delete pattern — this
+sidesteps the FK problem entirely, since the row never leaves the
+table. That also settled the open question the client asked to have
+decided: **deleting an item with existing movement history is allowed,
+not blocked** (the opposite of `deleteUnit`'s `UNIT_HAS_HISTORY`
+hard-block) — safe specifically because nothing is actually destroyed;
+movements stay fully intact and listable, just orphaned from a
+now-invisible catalog item, matching the client's own second framing of
+the question. Still gated on `isActive` first (`409
+ITEM_STILL_ACTIVE`), matching the existing "delete only once
+deactivated" UX from Amenities/F&B — that part of the reuse instruction
+did carry over directly.
+
+New: `DELETE /api/v1/stock-items/:id` (`stock:manage`), a "Delete"
+button in `StockPage.tsx` next to Deactivate/Reactivate (only rendered
+once `!item.isActive`, matching the same client-decision comment style
+already on the Amenities/F&B rows), same `window.confirm` + error-slot
+shape as `FnbPage.tsx`'s own `deleteItem`.
+
+**Separately verified Amenities' existing delete, per the client's
+request to actually test it rather than confirm the code exists.** Ran
+the existing `AmenitiesPage.test.tsx` suite (all 7 passing, including
+"deletes an inactive item after confirmation") and, on top of that,
+drove the real flow in a headless browser against the built app: no
+Delete button on an active Kayak item, Deactivate makes it appear,
+clicking Delete (through the confirm dialog) removes it, and the
+catalog correctly falls back to "No amenity items yet." Genuinely
+functional end to end — **no changes made to Amenities.**
+
+Test coverage: `stock:manage` required, refused for `stock:read`-only
+and no-access roles; 409 for a still-active item; 404 for a missing
+item; success sets `deletedAt` via `update` (asserted directly — not a
+`.delete()` call); **the history case the client specifically asked to
+have tested** — deleting an inactive item with existing movement
+history succeeds, and a follow-up `listStockMovements` call confirms
+that history is unchanged afterward; a direct assertion that
+`listStockItems`' query excludes soft-deleted rows. Frontend: the
+Delete button only appears once an item is deactivated and actually
+removes it from the table on confirmation; the existing `stock:read`-
+only DOM-absence tests (from last slice) extended to also assert no
+Delete button renders for those three roles.
+
+No schema change — `StockItem.deletedAt` already existed.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w apps/api` — 493/496 (up from 489; same 3
+pre-existing sandbox-network-only failures; 8 new stock tests), `npm
+run test -w apps/web` — 119/119 (up from 118; 1 new test, 2 existing
+tests extended), `npm run test -w packages/shared` — 84/84 (unchanged
+— no shared-package changes this slice), `npm run build` clean across
+all three packages. Also verified live in a headless browser against
+the built app for both flows (screenshots sent to the client): Stock's
+new delete (inactive item shows Reactivate + Delete side by side,
+deleting falls back to "No stock items yet."), and Amenities' existing
+delete confirmed still genuinely functional (Deactivate reveals
+Delete, deleting removes Kayak and falls back to "No amenity items
+yet.").

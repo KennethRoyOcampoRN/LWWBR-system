@@ -93,6 +93,52 @@ describe('StockPage', () => {
     await waitFor(() => expect(screen.getByText('Dish Soap')).toBeInTheDocument());
   });
 
+  // Client decision, 2026-09-11, same "Option B" convention as Amenities/
+  // F&B's own menu-item delete: Delete is only offered once an item is
+  // already inactive, and confirms before actually deleting.
+  it('offers Delete only once an item is deactivated, and deletes it on confirmation', async () => {
+    const user = userEvent.setup();
+    let items = [stockItem];
+    let deleteCalled = false;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: stockManagerUser });
+      if (url.endsWith('/stock-items') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { stockItems: items });
+      }
+      if (url.endsWith('/stock-items/stock_1') && init?.method === 'PATCH') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toMatchObject({ isActive: false });
+        items = [{ ...items[0]!, isActive: false }];
+        return jsonResponse(200, { stockItem: items[0] });
+      }
+      if (url.endsWith('/stock-items/stock_1') && init?.method === 'DELETE') {
+        deleteCalled = true;
+        items = [];
+        return jsonResponse(204, undefined);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/stock');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+    // Active item: no Delete button yet.
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Deactivate' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Toilet Paper (12-roll pack)')).not.toBeInTheDocument());
+  });
+
   it('a read-only holder (stock:read only) sees the catalog but no add-item form or movement/deactivate controls', async () => {
     const readOnlyUser = { ...stockManagerUser, permissions: { 'stock:read': 'ALL' } };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
@@ -110,6 +156,7 @@ describe('StockPage', () => {
     expect(screen.queryByText('Add an item')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Log movement' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 
   // Client follow-up, 2026-09-11: view-only stock:read added to
@@ -149,6 +196,7 @@ describe('StockPage', () => {
       expect(screen.queryByRole('button', { name: 'Log movement' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Reactivate' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
 
       // No catalog form anywhere on the page.
       expect(screen.queryByText('Add an item')).not.toBeInTheDocument();

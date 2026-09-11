@@ -49,6 +49,35 @@ export async function updateStockItem(id: string, input: UpdateStockItemInput, _
   return stockItemToJson(item);
 }
 
+// Client-directed feature, 2026-09-11: a genuine soft-delete via
+// deletedAt, NOT the hard-delete pattern fnb/service.ts's
+// deleteMenuItem (and amenities/service.ts's deleteAmenityItem) use.
+// Those are safe to hard-delete only because their history rows
+// (FnbOrderLine/AmenityRequest) have a nullable FK with onDelete:
+// SetNull plus a name snapshot taken at creation time — neither exists
+// for StockMovement.stockItemId (required, no SetNull, no snapshot), so
+// a real .delete() here would either throw a raw FK-constraint error or
+// need a schema change this feature doesn't call for. Soft-delete
+// sidesteps the problem entirely: the StockItem row never actually
+// leaves the table, so StockMovement.stockItemId never dangles —
+// deliberately NOT blocked on movement history existing (unlike
+// deleteUnit's UNIT_HAS_HISTORY hard-block), since nothing is actually
+// destroyed. Movements stay fully intact and listable, just orphaned
+// from a now-invisible catalog item, exactly like every other
+// soft-deleted record with historical references in this app. Still
+// gated on isActive first (409 ITEM_STILL_ACTIVE), matching the
+// existing "delete only once deactivated" UX from Amenities/F&B.
+export async function deleteStockItem(id: string, _actor: StockActor) {
+  const existing = await prisma.stockItem.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Stock item not found');
+  }
+  if (existing.isActive) {
+    throw new ApiError(409, 'ITEM_STILL_ACTIVE', 'Deactivate the item before deleting it.');
+  }
+  await prisma.stockItem.update({ where: { id }, data: { deletedAt: new Date() } });
+}
+
 export async function listStockItems(query: ListStockItemsQuery) {
   const items = await prisma.stockItem.findMany({
     where: { deletedAt: null, ...(query.isActive === undefined ? {} : { isActive: query.isActive }) },
