@@ -162,29 +162,45 @@ describe('remittance:*/quotation:* role grants', () => {
 // instruction, applied consistently rather than special-cased for
 // SYSTEM_ADMIN — see STOCK_MANAGER's own comment in rolePermissions.ts).
 describe('stock:* role grants', () => {
-  const STOCK_KEYS = ['stock:read', 'stock:manage', 'stock:log_movement'] as const;
+  const WRITE_KEYS = ['stock:manage', 'stock:log_movement'] as const;
+  // Client follow-up, 2026-09-11: view-only stock:read, added to these
+  // three roles after the module shipped — the write permissions stay
+  // STOCK_MANAGER-only, unchanged from the original plan.
+  const READ_ONLY_ROLES = ['SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'] as const;
 
-  it('grants all three stock:* keys to STOCK_MANAGER only', () => {
-    for (const key of STOCK_KEYS) {
+  it('grants both stock:* write keys to STOCK_MANAGER only', () => {
+    for (const key of WRITE_KEYS) {
       expect(ROLE_PERMISSIONS.STOCK_MANAGER[key]).toBe('ALL');
     }
     for (const role of ROLE_KEYS) {
       if (role === 'STOCK_MANAGER') continue;
-      for (const key of STOCK_KEYS) {
+      for (const key of WRITE_KEYS) {
         expect(ROLE_PERMISSIONS[role][key]).toBeUndefined();
       }
     }
   });
 
+  it('grants stock:read to STOCK_MANAGER plus SYSTEM_ADMIN/OWNER/RESORT_MANAGER, and no one else', () => {
+    expect(ROLE_PERMISSIONS.STOCK_MANAGER['stock:read']).toBe('ALL');
+    for (const role of READ_ONLY_ROLES) {
+      expect(ROLE_PERMISSIONS[role]['stock:read']).toBe('ALL');
+    }
+    for (const role of ROLE_KEYS) {
+      if (role === 'STOCK_MANAGER' || (READ_ONLY_ROLES as readonly string[]).includes(role)) continue;
+      expect(ROLE_PERMISSIONS[role]['stock:read']).toBeUndefined();
+    }
+  });
+
   // The one place this is worth a dedicated assertion, not just folded
-  // into the loop above: it's the one role someone might assume holds
+  // into the loops above: it's the one role someone might assume holds
   // every key by default (see the stale "SYSTEM_ADMIN keeps them, as it
   // does every key" line in this file's own header comment, which
-  // predates this and the remittance/quotation exceptions).
-  it('does not grant SYSTEM_ADMIN any stock:* key by default', () => {
-    for (const key of STOCK_KEYS) {
-      expect(ROLE_PERMISSIONS.SYSTEM_ADMIN[key]).toBeUndefined();
-    }
+  // predates this and the remittance/quotation exceptions) — confirms
+  // SYSTEM_ADMIN's stock:read grant is real but stops there.
+  it('grants SYSTEM_ADMIN stock:read but neither stock:manage nor stock:log_movement', () => {
+    expect(ROLE_PERMISSIONS.SYSTEM_ADMIN['stock:read']).toBe('ALL');
+    expect(ROLE_PERMISSIONS.SYSTEM_ADMIN['stock:manage']).toBeUndefined();
+    expect(ROLE_PERMISSIONS.SYSTEM_ADMIN['stock:log_movement']).toBeUndefined();
   });
 });
 

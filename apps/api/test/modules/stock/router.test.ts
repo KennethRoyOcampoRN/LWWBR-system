@@ -98,9 +98,10 @@ describe('POST /api/v1/stock-items', () => {
     expect(res.status).toBe(403);
   });
 
-  // Not baked into SYSTEM_ADMIN's default grants — see rolePermissions.ts's
+  // SYSTEM_ADMIN holds view-only stock:read (client follow-up,
+  // 2026-09-11) but not stock:manage — see rolePermissions.ts's
   // STOCK_MANAGER-block comment for the reasoning.
-  it('refuses SYSTEM_ADMIN — stock:* is not baked into its default grants', async () => {
+  it('refuses SYSTEM_ADMIN — stock:read does not include stock:manage', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
     const res = await request(createApp())
       .post('/api/v1/stock-items')
@@ -126,8 +127,11 @@ describe('POST /api/v1/stock-items', () => {
 });
 
 describe('GET /api/v1/stock-items', () => {
-  it('allows STOCK_MANAGER to list items', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
+  // Client follow-up, 2026-09-11: view-only stock:read added to
+  // SYSTEM_ADMIN/OWNER/RESORT_MANAGER, alongside STOCK_MANAGER's full
+  // access — all four can list the catalog.
+  it.each(['STOCK_MANAGER', 'SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])('allows %s to list items', async (roleKey) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
     mockPrisma.stockItem.findMany.mockResolvedValue([fakeStockItem()]);
     const res = await request(createApp()).get('/api/v1/stock-items').set('Cookie', authCookie());
     expect(res.status).toBe(200);
@@ -329,18 +333,57 @@ describe('POST /api/v1/stock-items/:id/movements', () => {
 });
 
 describe('GET /api/v1/stock-movements', () => {
-  it('allows STOCK_MANAGER to view movement history', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('STOCK_MANAGER'));
-    mockPrisma.stockMovement.findMany.mockResolvedValue([fakeStockMovement()]);
-    const res = await request(createApp()).get('/api/v1/stock-movements').set('Cookie', authCookie());
-    expect(res.status).toBe(200);
-    expect(res.body.stockMovements).toHaveLength(1);
-  });
+  it.each(['STOCK_MANAGER', 'SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])(
+    'allows %s to view movement history',
+    async (roleKey) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+      mockPrisma.stockMovement.findMany.mockResolvedValue([fakeStockMovement()]);
+      const res = await request(createApp()).get('/api/v1/stock-movements').set('Cookie', authCookie());
+      expect(res.status).toBe(200);
+      expect(res.body.stockMovements).toHaveLength(1);
+    },
+  );
 
   it('refuses a role with no stock:* access at all', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_STAFF'));
     const res = await request(createApp()).get('/api/v1/stock-movements').set('Cookie', authCookie());
     expect(res.status).toBe(403);
+  });
+});
+
+// Client follow-up, 2026-09-11: the three roles above hold view-only
+// stock:read, deliberately NOT stock:manage/stock:log_movement — this
+// pins that the write routes still refuse them, end to end at the
+// router level (not just asserted in rolePermissions.ts).
+describe('view-only roles cannot write (stock:manage/stock:log_movement stay STOCK_MANAGER-only)', () => {
+  it.each(['SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])('refuses %s creating a stock item', async (roleKey) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+    const res = await request(createApp())
+      .post('/api/v1/stock-items')
+      .set('Cookie', authCookie())
+      .send({ name: 'x', category: 'CLEANING', unitOfMeasure: 'pack', reorderLevel: 10 });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.stockItem.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])('refuses %s editing the catalog', async (roleKey) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+    const res = await request(createApp())
+      .patch('/api/v1/stock-items/stock_1')
+      .set('Cookie', authCookie())
+      .send({ reorderLevel: 5 });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.stockItem.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])('refuses %s logging a movement', async (roleKey) => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+    const res = await request(createApp())
+      .post('/api/v1/stock-items/stock_1/movements')
+      .set('Cookie', authCookie())
+      .send({ reason: 'RECEIVE', quantity: 5 });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.stockMovement.create).not.toHaveBeenCalled();
   });
 });
 

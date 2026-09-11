@@ -32,6 +32,14 @@ const stockItem = {
   isActive: true,
 };
 
+const dashboardPayload = {
+  kpi: {
+    occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 0,
+    checkinsToday: 0, checkoutsToday: 0, openFnbOrders: 0, lowStockItems: 0,
+  },
+  dirtyRooms: [], slaBreachedWorkOrders: [], overdueAmenityRequests: [], lowStockItems: [],
+};
+
 describe('StockPage', () => {
   it('a STOCK_MANAGER holder can list items, add a catalog item, and log a movement', async () => {
     const user = userEvent.setup();
@@ -104,20 +112,56 @@ describe('StockPage', () => {
     expect(screen.queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument();
   });
 
+  // Client follow-up, 2026-09-11: view-only stock:read added to
+  // SYSTEM_ADMIN/OWNER/RESORT_MANAGER — deliberately NOT stock:manage or
+  // stock:log_movement, which stay STOCK_MANAGER-only. Same standard as
+  // the FnbPage OWNER test: real populated data (two items, one below
+  // its reorder threshold), and every write control's absence asserted
+  // directly in the DOM, not inferred from the permission object.
+  it.each(['SYSTEM_ADMIN', 'OWNER', 'RESORT_MANAGER'])(
+    '%s (stock:read only) sees the catalog and movement data but no add-item form, log-movement button, or deactivate control',
+    async (roleKey) => {
+      const viewOnlyUser = { ...stockManagerUser, roles: [roleKey], permissions: { 'stock:read': 'ALL' } };
+      const lowItem = { id: 'stock_2', name: 'Dish Soap', category: 'KITCHEN', unitOfMeasure: 'bottle', currentQty: 2, reorderLevel: 5, isActive: true };
+
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/auth/me')) return jsonResponse(200, { user: viewOnlyUser });
+        if (url.endsWith('/stock-items')) return jsonResponse(200, { stockItems: [stockItem, lowItem] });
+        return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      window.history.pushState({}, '', '/stock');
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Stock' })).toBeInTheDocument());
+
+      // Read-only content renders: both real items, including the
+      // below-threshold one — not an empty or broken page.
+      await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+      expect(screen.getByText('Dish Soap')).toBeInTheDocument();
+      expect(screen.getByText('2')).toBeInTheDocument();
+
+      // No Actions column at all — canLogMovement and canManage are both
+      // false, so the column header and every cell in it are absent.
+      expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Log movement' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reactivate' })).not.toBeInTheDocument();
+
+      // No catalog form anywhere on the page.
+      expect(screen.queryByText('Add an item')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Add item' })).not.toBeInTheDocument();
+    },
+  );
+
   it('a viewer with no stock:* access at all does not see the Stock nav item or page', async () => {
     const noStockUser = { ...stockManagerUser, roles: ['RESORT_STAFF'], permissions: { 'unit:read': 'ALL' } };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: noStockUser });
-      if (url.includes('/units/dashboard')) {
-        return jsonResponse(200, {
-          kpi: {
-            occupied: 0, ready: 0, dirty: 0, outOfOrder: 0, urgentOpenWorkOrders: 0,
-            checkinsToday: 0, checkoutsToday: 0, openFnbOrders: 0, lowStockItems: 0,
-          },
-          dirtyRooms: [], slaBreachedWorkOrders: [], overdueAmenityRequests: [], lowStockItems: [],
-        });
-      }
+      if (url.includes('/units/dashboard')) return jsonResponse(200, dashboardPayload);
       if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });

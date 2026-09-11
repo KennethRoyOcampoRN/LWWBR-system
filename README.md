@@ -5752,3 +5752,65 @@ clickable for a Stock Manager fixture, and the same Command Center for
 a Housekeeping fixture with zero `stock:*` permissions — confirmed no
 Stock nav item, but the low-stock card and both rows still render with
 the real data, unscoped. Sent all three to the client.
+
+### Stock view-only access for Resort Manager/System Admin/Owner (2026-09-11)
+
+Client follow-up on the stock module above: `stock:read` (catalog +
+movement history, view-only) added to `SYSTEM_ADMIN`, `OWNER`, and
+`RESORT_MANAGER` — `stock:manage`/`stock:log_movement` deliberately stay
+`STOCK_MANAGER`-only, unchanged. These three can now see the Stock page
+and its data but have no way to add/edit items or log movements.
+
+**Verified rather than assumed the frontend gap didn't exist.** Read
+`StockPage.tsx` line by line before touching anything: `canManage`
+(`stock:manage`) independently gates the "Add an item" form and the
+Deactivate/Reactivate buttons; `canLogMovement` (`stock:log_movement`)
+independently gates the "Log movement" button and its form; neither is
+tied to the page-level `stock:read` check that controls whether the
+route renders at all. A `stock:read`-only viewer gets the catalog table
+with no Actions column rendered at all (`(canLogMovement || canManage)`
+is false) — same isolation already confirmed for `FnbPage.tsx`'s OWNER
+case. Confirmed no `StockPage.tsx` changes were needed, exactly as
+expected going in.
+
+Updated `rolePermissions.ts`'s `STOCK_MANAGER`-block comment to reflect
+the narrower reality: it originally explained why `SYSTEM_ADMIN` held
+none of the three `stock:*` keys (an inference at the time, not
+something the client stated outright). This follow-up is the client's
+explicit instruction, not an inference — read access for these three
+roles, write access still exactly as withheld as before.
+
+New tests: `packages/shared/test/authz.test.ts`'s `stock:*` role-grant
+block split into a write-keys assertion (`STOCK_MANAGER` only, matching
+before) and a new read assertion (`STOCK_MANAGER` + the three named
+roles, and explicitly no one else), plus a dedicated `SYSTEM_ADMIN`
+test pinning `stock:read` true / `stock:manage` and `stock:log_movement`
+false in one place — the role most likely to be assumed to hold
+everything. `apps/api/test/modules/stock/router.test.ts`: the two GET
+routes extended to `it.each` all four roles that should succeed, plus a
+new describe block confirming all three write routes (create item, edit
+item, log movement) still refuse each of the three view-only roles end
+to end at the router level, not just asserted in `rolePermissions.ts`.
+`apps/web/test/StockPage.test.tsx`: a new `it.each` test over the three
+roles, same standard as the existing `FnbPage.tsx` OWNER test — two real
+populated items (one below its reorder threshold), asserting the
+catalog and movement data render while the Actions column, "Add an
+item" form, "Log movement" button, and Deactivate/Reactivate buttons
+are all confirmed absent from the DOM directly, not inferred from the
+permission object.
+
+No schema change. This does change `Role`/`Permission`/`RolePermission`
+seed data — **the client needs to run `npm run seed` (from `apps/api`)
+before these three roles' `stock:read` grant takes effect**, same
+requirement every `rolePermissions.ts` change has always had.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w packages/shared` — 84/84 (up from 83),
+`npm run test -w apps/api` — 486/489 (up from 474; same 3 pre-existing
+sandbox-network-only failures), `npm run test -w apps/web` — 118/118
+(up from 115), `npm run build` clean across all three packages. Also
+verified live in a headless browser against the built app: `/stock` for
+an OWNER fixture (`stock:read` only) — the catalog renders with the
+below-threshold item correctly flagged, and no Actions column, add-item
+form, or movement/deactivate controls appear anywhere on the page. Sent
+to the client.

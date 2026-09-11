@@ -117,6 +117,14 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'role:manage': 'ALL',
     'shift:manage': 'ALL',
     'shift:read': 'ALL',
+    // Client-directed follow-up, 2026-09-11: view-only stock:read, added
+    // to SYSTEM_ADMIN/OWNER/RESORT_MANAGER after the stock module
+    // shipped — explicitly NOT stock:manage/stock:log_movement, which
+    // stay STOCK_MANAGER-only (see that role's own comment below for why
+    // SYSTEM_ADMIN doesn't hold the full stock:* set by default; this is
+    // a narrow, later, explicit exception for read access only, not a
+    // reversal of that reasoning).
+    'stock:read': 'ALL',
     'system:configure': 'ALL',
     'unit:block': 'ALL',
     'unit:force_status': 'ALL', // client decision, 2026-08-22 — see permissions.ts's comment; SYSTEM_ADMIN only for now
@@ -169,6 +177,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'report:export': 'ALL',
     'report:view': 'ALL',
     'shift:read': 'ALL',
+    // Client-directed follow-up, 2026-09-11 — see SYSTEM_ADMIN's own
+    // comment above: view-only, matches OWNER's existing read-only
+    // pattern for every other module (fnb:read, remittance:read,
+    // quotation:read above). stock:manage/stock:log_movement stay
+    // STOCK_MANAGER-only.
+    'stock:read': 'ALL',
     'unit:read': 'ALL',
     'workorder:create': 'ALL', // resolved ambiguity — see header comment
     'workorder:read': 'ALL',
@@ -216,6 +230,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'restday:request': 'ALL',
     'shift:manage': 'ALL',
     'shift:read': 'ALL',
+    // Client-directed follow-up, 2026-09-11 — see SYSTEM_ADMIN's own
+    // comment above: view-only, stock:manage/stock:log_movement stay
+    // STOCK_MANAGER-only.
+    'stock:read': 'ALL',
     'unit:block': 'ALL',
     'unit:manage': 'ALL',
     'unit:read': 'ALL',
@@ -487,20 +505,25 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
   },
   // Client-directed feature, 2026-08-31: stock monitoring and
   // purchasing — see permissions.ts's stock:* comment for why this
-  // isn't inventory:*. Purely an assignable add-on role, per the
-  // client's own instruction: not baked into any existing role's
-  // default grants, including SYSTEM_ADMIN. That last part is an
-  // inference, not something the client stated outright — flagging it
-  // here rather than presenting it as certain. Reasoning: SYSTEM_ADMIN's
-  // own block below is itself "an existing role's default grants," so
-  // baking stock:* in there would quietly contradict the instruction not
-  // to bake it into any role's defaults; and there's already precedent
-  // for SYSTEM_ADMIN having real, deliberate gaps (remittance:verify is
-  // OWNER-only, quotation:create is withheld from SYSTEM_ADMIN too) —
-  // this isn't the first exception to "SYSTEM_ADMIN holds everything."
-  // If a specific System Admin employee needs to manage stock, they get
-  // STOCK_MANAGER assigned too, through the same Users page checkboxes
-  // every other role uses — no special case.
+  // isn't inventory:*. Purely an assignable add-on role for the two
+  // write permissions, per the client's own instruction: stock:manage/
+  // stock:log_movement are not baked into any existing role's default
+  // grants, including SYSTEM_ADMIN/OWNER/RESORT_MANAGER — those three
+  // only hold view-only stock:read (client follow-up, 2026-09-11, see
+  // their own blocks). Originally this withheld all three stock:* keys
+  // from SYSTEM_ADMIN outright, flagged at the time as an inference (not
+  // something the client stated outright): SYSTEM_ADMIN's own block is
+  // itself "an existing role's default grants," so baking any stock:*
+  // key in there would have contradicted the instruction not to bake it
+  // into any role's defaults, and there was already precedent for
+  // SYSTEM_ADMIN having real, deliberate gaps (remittance:verify is
+  // OWNER-only, quotation:create is withheld from SYSTEM_ADMIN too). The
+  // 2026-09-11 follow-up narrowed that: read access for these three
+  // roles is now an explicit client instruction, not an inference — the
+  // write permissions stay exactly as withheld as before. If a specific
+  // System Admin employee needs to actually manage stock (not just view
+  // it), they still get STOCK_MANAGER assigned too, through the same
+  // Users page checkboxes every other role uses — no special case.
   STOCK_MANAGER: {
     // The universal baseline every other role in this file carries
     // (confirmed by intersecting all 14 other roles' grants) — not part
