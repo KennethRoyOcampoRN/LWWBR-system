@@ -17,3 +17,6 @@ export * from './incident.js';
 export * from './remittance.js';
 export * from './quotation.js';
 export * from './stock.js';
+export * from './geo.js';
+export * from './restDay.js';
+export * from './timeLog.js';

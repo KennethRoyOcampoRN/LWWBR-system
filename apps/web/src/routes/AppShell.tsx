@@ -22,7 +22,8 @@ const NAV_ITEMS: {
     | 'report:view'
     | 'remittance:read'
     | 'quotation:read'
-    | 'stock:read';
+    | 'stock:read'
+    | 'shift:read';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -55,6 +56,12 @@ const NAV_ITEMS: {
   // report builders with the most real data already behind them from
   // tonight's testing.
   { to: '/reports', label: 'Reports', permission: 'report:view' },
+  // Client-directed feature, 2026-09-18: shift roster, reliever
+  // assignment, DTR (time in/out), and rest-day requests, one
+  // standalone page — not surfaced on Command Center. shift:read is the
+  // universal floor every role holds (see rolePermissions.ts), so this
+  // is effectively always visible, same as Work Orders above.
+  { to: '/shifts', label: 'Shifts & DTR', permission: 'shift:read' },
   // Client-directed feature, 2026-08-31: two standalone administrative
   // request-and-status modules — see the modules' own README entry for
   // why these are remittance:*/quotation:*, not payment:*/booking:*.

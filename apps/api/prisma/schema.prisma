@@ -95,6 +95,7 @@ model User {
   restDayRequests       RestDayRequest[]    @relation("RestDayRequestedBy")
   decidedRestDays       RestDayRequest[]    @relation("RestDayDecidedBy")
   timeLogs              TimeLog[]
+  reviewedTimeLogs      TimeLog[]           @relation("TimeLogReviewedBy")
   cashCounts            CashCount[]         @relation("CashCountedBy")
   verifiedCashCounts    CashCount[]         @relation("CashVerifiedBy")
   expenses              Expense[]           @relation("ExpenseRecordedBy")
@@ -1013,20 +1014,42 @@ enum TimeLogSource {
   MANUAL
 }
 
+// Client-directed feature, 2026-09-18: DTR (time in/out) — photo +
+// location capture on both clock-in and clock-out, plus a geofence
+// review flag. See dtr/service.ts's own header comment for the full
+// reasoning (why Float not Decimal for lat/lng, why a geofence miss is
+// flagged rather than blocked, why review is one pass covering both
+// flags rather than two).
 model TimeLog {
-  id         String        @id @default(cuid())
-  userId     String
-  clockInAt  DateTime
-  clockOutAt DateTime?
-  source     TimeLogSource
-  note       String?
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-  deletedAt  DateTime?
+  id              String        @id @default(cuid())
+  userId          String
+  clockInAt       DateTime
+  clockOutAt      DateTime?
+  source          TimeLogSource
+  note            String?
+  clockInPhotoId  String?
+  clockOutPhotoId String?
+  clockInLat      Float?
+  clockInLng      Float?
+  clockOutLat     Float?
+  clockOutLng     Float?
+  clockInFlagged  Boolean       @default(false)
+  clockOutFlagged Boolean       @default(false)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  reviewNote      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
-  user User @relation(fields: [userId], references: [id])
+  user          User        @relation(fields: [userId], references: [id])
+  clockInPhoto  FileObject? @relation("TimeLogClockInPhoto", fields: [clockInPhotoId], references: [id])
+  clockOutPhoto FileObject? @relation("TimeLogClockOutPhoto", fields: [clockOutPhotoId], references: [id])
+  reviewedBy    User?       @relation("TimeLogReviewedBy", fields: [reviewedById], references: [id])
 
   @@index([userId, clockInAt])
+  @@index([clockInFlagged])
+  @@index([clockOutFlagged])
 }
 
 // ————————————————————————————————————————————————————————————
@@ -1281,12 +1304,14 @@ model FileObject {
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 
-  checkInWaivers   CheckInRecord[]
-  workOrderNotes   WorkOrderNote[]
-  workOrderPhotos  WorkOrderPhoto[]
-  paymentProofs    Payment[]
-  expenseReceipts  Expense[]
-  remittanceProofs RemittanceRequest[]
+  checkInWaivers        CheckInRecord[]
+  workOrderNotes        WorkOrderNote[]
+  workOrderPhotos       WorkOrderPhoto[]
+  paymentProofs         Payment[]
+  expenseReceipts       Expense[]
+  remittanceProofs      RemittanceRequest[]
+  timeLogClockInPhotos  TimeLog[]           @relation("TimeLogClockInPhoto")
+  timeLogClockOutPhotos TimeLog[]           @relation("TimeLogClockOutPhoto")
 }
 
 model Setting {

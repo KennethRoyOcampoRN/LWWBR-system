@@ -10,6 +10,7 @@ import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { amenitiesRouter } from './modules/amenities/router.js';
 import { authRouter } from './modules/auth/router.js';
 import { bookingsRouter } from './modules/bookings/router.js';
+import { dtrRouter } from './modules/dtr/router.js';
 import { filesRouter } from './modules/files/router.js';
 import { fnbRouter } from './modules/fnb/router.js';
 import { incidentsRouter } from './modules/incidents/router.js';
@@ -18,7 +19,9 @@ import { notificationsRouter } from './modules/notifications/router.js';
 import { quotationsRouter } from './modules/quotations/router.js';
 import { remittancesRouter } from './modules/remittances/router.js';
 import { reportsRouter } from './modules/reports/router.js';
+import { restDayRouter } from './modules/restday/router.js';
 import { rolesRouter } from './modules/roles/router.js';
+import { shiftsRouter } from './modules/shifts/router.js';
 import { stockRouter } from './modules/stock/router.js';
 import { unitsRouter } from './modules/units/router.js';
 import { usersRouter } from './modules/users/router.js';
@@ -78,6 +81,9 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', remittancesRouter);
   app.use('/api/v1', quotationsRouter);
   app.use('/api/v1', stockRouter);
+  app.use('/api/v1', shiftsRouter);
+  app.use('/api/v1', restDayRouter);
+  app.use('/api/v1', dtrRouter);
   app.use('/api/v1', jobsRouter);
 
   for (const router of options.extraRouters ?? []) {

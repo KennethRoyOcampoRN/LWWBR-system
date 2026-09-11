@@ -5898,3 +5898,152 @@ deleting falls back to "No stock items yet."), and Amenities' existing
 delete confirmed still genuinely functional (Deactivate reveals
 Delete, deleting removes Kayak and falls back to "No amenity items
 yet.").
+
+### Shift roster, DTR (time in/out), and rest-day requests (2026-09-18)
+
+Client-directed feature: `Shift`/`RestDayRequest`/`TimeLog` — all
+scaffolded in M0, none wired to any code until now — plus a genuine
+schema addition to `TimeLog` for DTR's photo/location/geofence
+requirements. One standalone page, `/shifts` ("Shifts & DTR"), not
+surfaced on Command Center.
+
+**Shift roster + reliever assignment**: uses the existing `Shift` model
+exactly as-is — no schema change. `isReliever` is a bare flag with no
+relation to another shift/employee, so "reliever assignment" here
+genuinely is just marking a shift as covering for someone (a badge in
+the roster table); tracking *who* it covers for would need a real
+relation this ask didn't request. Create/edit/cancel gated
+`shift:manage`; view gated `shift:read` (the universal floor every role
+already holds). **Client follow-up mid-slice**: added a cancel/delete
+action so a mistaken roster entry can actually be corrected — a genuine
+soft-delete (`deletedAt`), matching spec §4.5's own stated default
+("nothing is hard-deleted from the UI"), not the deliberate Option-B
+hard-delete exceptions `MenuItem`/`AmenityItem` use elsewhere. Nothing
+else in the schema references `Shift.id`, so there's no history to
+check or block on. The roster's "assign to" employee picker is a new
+`GET /shifts/assignable-users` (gated `shift:manage` itself, not
+`user:read`) — checked the real seed first: most `shift:manage` holders
+(`POC_HOUSEKEEPING`, `POC_MAINTENANCE`, `ADMIN_HEAD`,
+`RESTAURANT_MANAGER`, `OPS_SAFETY_SUPERVISOR`) don't hold `user:read`,
+so the picker can't depend on the general user directory — same
+established pattern as `workorders/service.ts`'s own
+`listAssignableUsers`, reused rather than reinvented.
+
+**Rest-day requests**: uses `RestDayRequest` as-is. `restday:request`
+is near-universal (every role but OWNER) and self-scoped only — a
+caller can only ever submit for themselves. `GET /restday-requests`
+scopes to the caller's own requests unless they hold `restday:approve`
+(then the full queue by default, or their own via `?mine=true`) — same
+"the query can't be used to see someone else's records without the
+matching permission" rule as the stock/remittance modules. Approve/
+reject gated `restday:approve`, a narrower grant than `shift:manage`
+(only `SYSTEM_ADMIN`/`RESORT_MANAGER`/`OPS_SAFETY_SUPERVISOR` — confirmed
+against the real seed, not assumed).
+
+**DTR (time in/out) — the real schema change.** `TimeLog` gained 11
+columns: `clockInPhotoId`/`clockOutPhotoId` (nullable FKs to
+`FileObject`), `clockInLat`/`clockInLng`/`clockOutLat`/`clockOutLng`
+(`Float`, not `Decimal` — this isn't money, and double precision is
+exactly what GPS coordinates need), `clockInFlagged`/`clockOutFlagged`
+(independent booleans — a shift can be flagged at start, end, both, or
+neither), and `reviewedById`/`reviewedAt`/`reviewNote` (one review pass
+covers whichever flag(s) are set on a row, not two separate review
+actions). All nullable/additive — no existing-row migration risk.
+
+The core design decision, exactly as scoped: **a geofence miss never
+blocks the clock-in/out, it only flags the entry for review.** A
+denied/failed browser geolocation permission is common (old phone,
+privacy setting, dead GPS indoors) and must never stop someone from
+logging real hours; even a genuine outside-the-fence location might be
+legitimate (an errand, a delivery run) — the server can't judge that, a
+human reviewing the flag can. So there are only two outcomes, "not
+flagged" and "flagged," never "rejected." If no geofence is configured
+at all, nothing is flagged for location reasons — there's nothing
+configured to check against yet, so an unconfigured property shouldn't
+have every clock-in/out look suspicious. The selfie photo, by contrast,
+is a hard requirement (422 without one) — the client's own wording read
+as fixed, not configurable, and there was no reason to invent a toggle
+nobody asked for.
+
+New `Setting` row (no schema change needed — `Setting` is already a
+generic key/JSON table): `dtr.geofence` →
+`{centerLat, centerLng, radiusMeters}`. This is the first real use of
+`system:configure` — the permission key existed since M1 but had never
+been wired to an endpoint before `GET`/`PUT /dtr/geofence-setting`. No
+generic Settings admin API was built for this — just the one dedicated
+pair this feature needed.
+
+**Flag review reuses `shift:manage`, no new permission key** — approved
+as scoped. Reviewing a flagged entry ("does this employee's clock-in
+look legitimate") is the same judgment a department head already makes
+managing that person's shift schedule, not a distinct audience worth
+fragmenting authorization for the way `stock:*`/`remittance:*` earned
+their own namespace (those avoided a real collision with an unrelated
+reserved meaning; this doesn't collide with anything).
+
+**Clock-in/out itself needs no permission at all — `requireAuth` only.**
+There's no `dtr:*` key anywhere in spec's permission list, and
+`shift:read`/`shift:manage` are about viewing/editing the *roster*, not
+logging your own hours — every employee needs to do that regardless of
+role. Same precedent already established in this app: `GET
+/auth/sessions`'s own self-service, identity-scoped (not permission-
+scoped) treatment.
+
+Photos reuse the existing `POST /files` upload flow exactly (same
+pattern as work-order/payment-verification photos); photo URLs returned
+from `GET`/`POST /time-logs/*` are real signed URLs generated
+server-side, never a raw `storageKey` — same reasoning as
+`remittances/service.ts`'s own signed-URL pattern from two slices ago
+(no generic `GET /files/:id` route exists to link to directly).
+
+New/changed files: `apps/api/prisma/schema.prisma` (the `TimeLog`
+columns above, plus `User`/`FileObject` back-relations);
+`packages/shared/src/geo.ts` (`haversineDistanceMeters`/
+`isWithinGeofence`, pure functions), `restDay.ts`, `timeLog.ts`;
+`apps/api/src/modules/{shifts,restday,dtr}/{schema,service,router}.ts`,
+mounted in `app.ts`; `apps/web/src/routes/ShiftsPage.tsx` (roster, time
+clock, rest-day requests, flagged entries, geofence settings — five
+sections stacked on one page, same convention `AmenitiesPage.tsx`
+already uses for catalog+requests, no tab component exists in this
+codebase); a new nav entry gated `shift:read` (so effectively always
+visible), placed after Reports.
+
+Test coverage — the geofence math specifically: `haversineDistanceMeters`
+against a known, independently-checkable fact (1 degree of latitude ≈
+111,195m at the equator, using this module's own Earth radius), plus
+the boundary case the client asked to have tested — a point exactly at
+the configured radius, just inside, just outside. Backend: photo
+required (422 without one); inside/outside/missing-location clock-in
+all succeed with the correct flag state; never flagged when no
+geofence is configured; double clock-in refused (409); clock-out with
+no open entry refused; flagged-entries queue only returns unreviewed
+rows; review rejects an entry that was never flagged (409); every
+permission boundary (`shift:manage` vs `shift:read`-only,
+`restday:approve` vs `restday:request`-only, `system:configure` for
+the geofence setting, and confirming clock-in/out succeeds for every
+role tested with zero permission check). Frontend: geolocation denial
+doesn't block a clock-in (asserted end to end — upload photo, geofence
+denied, request still succeeds and shows "Flagged for review"); the
+photo-required guard fires with no network call; roster create/cancel
+for a `shift:manage` holder vs. DOM-absence of both for a `shift:read`-
+only holder (also confirming Flagged Entries and the geofence panel are
+absent); rest-day Approve/Reject presence vs. absence by permission.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w packages/shared` — 90/90 (up from 84; 6
+new geofence-math tests), `npm run test -w apps/api` — 548/551 (up from
+496; same 3 pre-existing sandbox-network-only failures; 71 new tests
+across the three modules), `npm run test -w apps/web` — 126/126 (up
+from 119; 7 new tests), `npm run build` clean across all three
+packages. Also verified live in a headless browser against the built
+app: the full page for a shift-manager fixture (roster with a reliever
+badge, time clock, rest-day requests, empty flagged-entries state), and
+a second run for a System-Admin fixture showing a real flagged entry
+(with its clock-in photo link and a working "Mark reviewed" control)
+alongside the pre-filled geofence settings panel. Sent both to the
+client.
+
+No `prisma db push` note needed for the client's next live test — this
+genuinely is a schema change (`TimeLog`'s 11 new columns), so **the
+client needs to run `npx prisma db push` (from `apps/api`) before
+trying DTR live.**
