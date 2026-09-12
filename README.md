@@ -6132,3 +6132,43 @@ a headless browser against the built app: screenshot shows the roster
 section gone while Flagged Entries (with a real flagged entry and a
 working photo link) and the rest of the page render normally. Sent to
 the client.
+
+### Time Clock: prominent Clock in/out buttons instead of a raw file input (2026-09-12)
+
+UI feedback: the raw `<input type="file">` ("Choose File"/"No file
+chosen") was replaced with a proper, prominent "Clock in" button (blue)
+and "Clock out" button (red) — a big tappable target with obvious
+labeling, not a generic file-chooser control. The file input is still
+the real mechanism underneath — same `accept`/`capture="user"` as
+before — just visually hidden (Tailwind's `sr-only`, not `display:
+none`, so it stays keyboard/screen-reader reachable and still opens via
+programmatic `.click()`) and triggered by the button via a `useRef`
+instead of being the thing the person sees and clicks directly.
+
+**Confirmed the time itself was already fully automatic, and stays that
+way**: `dtr/service.ts` sets `clockInAt`/`clockOutAt` to its own `new
+Date()` the moment each request completes (lines 113/139) — nothing
+client-supplied, no manual time entry anywhere, unchanged by this
+button swap since the underlying `handleClock`/`POST /time-logs/*`
+flow wasn't touched at all, only what wraps the file input. Also made
+this explicit in the section's own copy, since the old file-input UI
+never said so: "Tap the button, take a selfie, and the time is recorded
+automatically — there's nothing to type."
+
+Test changes: added two new tests confirming the button (not the raw
+input) is what's visibly presented — `getByRole('button', { name:
+'Clock in' })` before an open entry, `'Clock out'` after one — and that
+clicking either button reaches the hidden input's own `.click()` (spied
+via `HTMLInputElement.prototype.click`), plus an explicit assertion
+that both selfie inputs carry the `sr-only` class. All prior tests
+(`getByLabelText('Clock-in/out selfie')`, `capture="user"`,
+photo-required guard, geolocation-denied clock-in) needed zero changes
+— `aria-label` on the now-hidden inputs preserves the same accessible
+names `getByLabelText` was already querying by.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w apps/web` — 131/131 (`ShiftsPage.test.tsx`
+now at 12 tests, up from 10). `npm run build -w apps/web` clean.
+Verified live in a headless browser against the built app: screenshots
+of both button states (before/after clocking in) sent to the client
+for a look ahead of rollout.

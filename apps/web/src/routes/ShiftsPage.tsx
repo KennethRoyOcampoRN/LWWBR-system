@@ -1,5 +1,5 @@
 import { REST_DAY_STATUS_LABELS, type RestDayStatusKey } from '@lwwbr/shared';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
@@ -79,6 +79,8 @@ function TimeClockSection() {
   const [myLogs, setMyLogs] = useState<TimeLogRow[] | 'loading' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const clockInInputRef = useRef<HTMLInputElement>(null);
+  const clockOutInputRef = useRef<HTMLInputElement>(null);
 
   function fetchMyLogs() {
     setMyLogs('loading');
@@ -120,8 +122,8 @@ function TimeClockSection() {
     <section className="flex flex-col gap-4">
       <h2 className="text-base font-semibold">Time clock</h2>
       <p className="text-sm text-gray-500">
-        A selfie photo is required on both clock-in and clock-out. Location is captured automatically if your
-        browser allows it — it's never required to clock in or out.
+        Tap the button, take a selfie, and the time is recorded automatically — there's nothing to type. Location is
+        captured automatically if your browser allows it, but it's never required to clock in or out.
       </p>
 
       {error && (
@@ -130,41 +132,69 @@ function TimeClockSection() {
         </p>
       )}
 
-      <div className="flex flex-col gap-2 rounded border border-gray-200 p-4">
+      <div className="flex flex-col gap-3 rounded border border-gray-200 p-4">
         {openEntry ? (
           <>
             <p className="text-sm">Clocked in at {formatDateTime(openEntry.clockInAt)}</p>
-            <label className="flex flex-col gap-1 text-sm">
-              Clock-out selfie
-              {/* capture="user" pushes mobile browsers straight into the
-                  front-facing camera instead of the gallery/file picker
-                  — a live photo, not an old one. This is a mobile
-                  browser behavior, not a hard guarantee: desktop
-                  browsers generally ignore `capture` and still show a
-                  normal file picker, so this alone doesn't stop someone
-                  on a desktop from uploading an existing image. */}
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/heic"
-                capture="user"
-                disabled={busy}
-                onChange={(e) => void handleClock('clock-out', e.target.files?.[0] ?? null)}
-              />
-            </label>
-          </>
-        ) : (
-          <label className="flex flex-col gap-1 text-sm">
-            Clock-in selfie
+            {/* The button is what the person sees and taps; the actual
+                mechanism is the hidden file input below it, opened via
+                ref — same capture="user" behavior as before, just not
+                presented as a raw file-chooser control. The time itself
+                is never taken from this input: the server stamps
+                clockOutAt with its own "now" the moment the request
+                completes (see dtr/service.ts), so there is nothing here
+                for a person to set or get wrong. */}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => clockOutInputRef.current?.click()}
+              className="w-full rounded-lg bg-red-700 px-6 py-4 text-lg font-semibold text-white disabled:opacity-50 sm:w-fit"
+            >
+              {busy ? 'Working…' : 'Clock out'}
+            </button>
+            {/* capture="user" pushes mobile browsers straight into the
+                front-facing camera instead of the gallery/file picker
+                — a live photo, not an old one. This is a mobile
+                browser behavior, not a hard guarantee: desktop
+                browsers generally ignore `capture` and still show a
+                normal file picker, so this alone doesn't stop someone
+                on a desktop from uploading an existing image. */}
             <input
+              ref={clockOutInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp,image/heic"
               capture="user"
               disabled={busy}
+              aria-label="Clock-out selfie"
+              className="sr-only"
+              onChange={(e) => void handleClock('clock-out', e.target.files?.[0] ?? null)}
+            />
+          </>
+        ) : (
+          <>
+            {/* Same pattern as clock-out above: a real button up front,
+                the file input (and its "now" timestamp, set server-
+                side) is purely the mechanism behind it. */}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => clockInInputRef.current?.click()}
+              className="w-full rounded-lg bg-blue-700 px-6 py-4 text-lg font-semibold text-white disabled:opacity-50 sm:w-fit"
+            >
+              {busy ? 'Working…' : 'Clock in'}
+            </button>
+            <input
+              ref={clockInInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic"
+              capture="user"
+              disabled={busy}
+              aria-label="Clock-in selfie"
+              className="sr-only"
               onChange={(e) => void handleClock('clock-in', e.target.files?.[0] ?? null)}
             />
-          </label>
+          </>
         )}
-        {busy && <p className="text-xs text-gray-500">Working…</p>}
       </div>
 
       <h3 className="text-sm font-semibold">My recent time logs</h3>

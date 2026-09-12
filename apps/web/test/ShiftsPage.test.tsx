@@ -331,4 +331,61 @@ describe('ShiftsPage', () => {
     await waitFor(() => expect(screen.getByLabelText('Clock-in selfie')).toBeInTheDocument());
     expect(screen.getByLabelText('Clock-in selfie')).toHaveAttribute('capture', 'user');
   });
+
+  // UI feedback, 2026-09-12: the raw file input ("Choose File"/"No file
+  // chosen") is now hidden — a real "Clock in"/"Clock out" button is
+  // what the person sees and taps, opening the camera behind it via the
+  // input's own ref. Confirms the button is what's visibly presented,
+  // and that tapping it actually reaches the hidden input.
+  it('shows a "Clock in" button (not a raw file input) that opens the camera picker when tapped', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
+    render(<App />);
+
+    const button = await screen.findByRole('button', { name: 'Clock in' });
+    const input = screen.getByLabelText('Clock-in selfie') as HTMLInputElement;
+    expect(input).toHaveClass('sr-only');
+
+    await user.click(button);
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it('shows a "Clock out" button (not a raw file input) once already clocked in', async () => {
+    const user = userEvent.setup();
+    const openLog = {
+      id: 'log_1', userId: 'user_1', clockInAt: new Date().toISOString(), clockOutAt: null,
+      clockInPhoto: null, clockOutPhoto: null, clockInFlagged: false, clockOutFlagged: false,
+      reviewedAt: null, reviewNote: null, user: { id: 'user_1', fullName: 'POC Housekeeping (Demo)' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [openLog] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
+    render(<App />);
+
+    const button = await screen.findByRole('button', { name: 'Clock out' });
+    const input = screen.getByLabelText('Clock-out selfie') as HTMLInputElement;
+    expect(input).toHaveClass('sr-only');
+
+    await user.click(button);
+    expect(clickSpy).toHaveBeenCalled();
+  });
 });
