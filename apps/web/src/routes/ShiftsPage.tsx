@@ -1,37 +1,22 @@
-import { DEPARTMENT_KEYS, REST_DAY_STATUS_LABELS, type DepartmentKey, type RestDayStatusKey } from '@lwwbr/shared';
+import { REST_DAY_STATUS_LABELS, type RestDayStatusKey } from '@lwwbr/shared';
 import { useEffect, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
-import { DEPARTMENT_LABELS } from '../lib/workOrderStyle.js';
 
-// Client-directed feature, 2026-09-18: Shift roster + reliever
-// assignment, DTR (time in/out with selfie + geolocation capture), and
-// rest-day requests, all in one standalone page — not surfaced on
-// Command Center. See the backend modules' own header comments
-// (shifts/service.ts, dtr/service.ts, restday/service.ts) for the real
-// design decisions: soft-delete for roster cancellation, never-block-
-// only-flag for the geofence check, self-scoping for DTR/rest-day
-// requests without a dedicated permission key.
-
-interface AssignableUser {
-  id: string;
-  fullName: string;
-  employeeCode: string;
-  department: DepartmentKey;
-}
-
-interface ShiftRow {
-  id: string;
-  date: string;
-  startTime: string;
-  endTime: string;
-  department: DepartmentKey;
-  isReliever: boolean;
-  note: string | null;
-  user: { id: string; fullName: string };
-}
+// Client-directed feature, 2026-09-18: DTR (time in/out with selfie +
+// geolocation capture) and rest-day requests, in one standalone page —
+// not surfaced on Command Center. See the backend modules' own header
+// comments (dtr/service.ts, restday/service.ts) for the real design
+// decisions: never-block-only-flag for the geofence check, self-
+// scoping for DTR/rest-day requests without a dedicated permission
+// key. Client decision, 2026-09-12 (spec.md §13 decision 9): the
+// Shift-roster UI that used to live here was removed — scheduling is
+// handled manually outside the app — but the `Shift` model, its
+// `shift:manage` grants, and the backend `shifts` module stay in
+// place, untouched and dormant, since `shift:manage` still gates
+// Flagged Entries review below.
 
 interface TimeLogPhoto {
   id: string;
@@ -88,223 +73,6 @@ function captureLocation(): Promise<{ lat: number; lng: number } | null> {
       { timeout: 8000 },
     );
   });
-}
-
-function ShiftRosterSection({ canManage }: { canManage: boolean }) {
-  const [shifts, setShifts] = useState<ShiftRow[] | 'loading' | 'error'>('loading');
-  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
-  const [form, setForm] = useState({
-    userId: '',
-    date: '',
-    startTime: '',
-    endTime: '',
-    department: 'HOUSEKEEPING' as DepartmentKey,
-    isReliever: false,
-    note: '',
-  });
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  function fetchShifts() {
-    setShifts('loading');
-    return api
-      .get<{ shifts: ShiftRow[] }>('/shifts')
-      .then((res) => setShifts(res.shifts))
-      .catch(() => setShifts('error'));
-  }
-
-  useEffect(() => {
-    void fetchShifts();
-  }, []);
-
-  useEffect(() => {
-    if (!canManage) return;
-    api
-      .get<{ users: AssignableUser[] }>('/shifts/assignable-users')
-      .then((res) => setAssignableUsers(res.users))
-      .catch(() => setAssignableUsers([]));
-  }, [canManage]);
-
-  async function handleCreate(e: FormEvent) {
-    e.preventDefault();
-    setFormError(null);
-    setSubmitting(true);
-    try {
-      const dateIso = new Date(form.date).toISOString();
-      await api.post('/shifts', {
-        userId: form.userId,
-        date: dateIso,
-        startTime: new Date(`${form.date}T${form.startTime}`).toISOString(),
-        endTime: new Date(`${form.date}T${form.endTime}`).toISOString(),
-        department: form.department,
-        isReliever: form.isReliever,
-        note: form.note.trim() || undefined,
-      });
-      setForm({ userId: '', date: '', startTime: '', endTime: '', department: 'HOUSEKEEPING', isReliever: false, note: '' });
-      await fetchShifts();
-    } catch (err) {
-      setFormError(err instanceof ApiRequestError ? err.message : 'Could not create the shift.');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleDelete(shift: ShiftRow) {
-    if (!window.confirm(`Cancel the shift for ${shift.user.fullName} on ${formatDate(shift.date)}?`)) return;
-    try {
-      await api.delete(`/shifts/${shift.id}`);
-      await fetchShifts();
-    } catch {
-      // A failed cancel just leaves the row in place — the manager can
-      // retry; no dedicated error slot for a low-stakes list action.
-    }
-  }
-
-  return (
-    <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">Shift roster</h2>
-
-      {shifts === 'loading' && (
-        <table className="w-full text-sm">
-          <tbody>
-            <SkeletonTableRows rows={4} columns={6} />
-          </tbody>
-        </table>
-      )}
-      {shifts === 'error' && <p role="alert">Could not load the shift roster.</p>}
-      {Array.isArray(shifts) && shifts.length === 0 && <EmptyState message="No shifts scheduled yet." />}
-      {Array.isArray(shifts) && shifts.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
-                <th className="py-2 pr-4 font-medium">Employee</th>
-                <th className="py-2 pr-4 font-medium">Date</th>
-                <th className="py-2 pr-4 font-medium">Time</th>
-                <th className="py-2 pr-4 font-medium">Department</th>
-                <th className="py-2 pr-4 font-medium">Reliever</th>
-                {canManage && <th className="py-2 font-medium">Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {shifts.map((shift) => (
-                <tr key={shift.id} className="border-b border-gray-100">
-                  <td className="py-2 pr-4 font-medium">{shift.user.fullName}</td>
-                  <td className="py-2 pr-4">{formatDate(shift.date)}</td>
-                  <td className="py-2 pr-4">
-                    {new Date(shift.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} –{' '}
-                    {new Date(shift.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </td>
-                  <td className="py-2 pr-4">{DEPARTMENT_LABELS[shift.department]}</td>
-                  <td className="py-2 pr-4">{shift.isReliever ? 'Reliever' : '—'}</td>
-                  {canManage && (
-                    <td className="py-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(shift)}
-                        className="text-sm text-red-700 hover:underline"
-                      >
-                        Cancel
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {canManage && (
-        <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold">Add a shift</h3>
-          {formError && (
-            <p role="alert" className="text-sm text-red-700">
-              {formError}
-            </p>
-          )}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1 text-sm">
-              Employee
-              <select
-                required
-                className="rounded border border-gray-300 px-2 py-1"
-                value={form.userId}
-                onChange={(e) => setForm((f) => ({ ...f, userId: e.target.value }))}
-              >
-                <option value="">Select…</option>
-                {assignableUsers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.fullName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              Department
-              <select
-                className="rounded border border-gray-300 px-2 py-1"
-                value={form.department}
-                onChange={(e) => setForm((f) => ({ ...f, department: e.target.value as DepartmentKey }))}
-              >
-                {DEPARTMENT_KEYS.map((key) => (
-                  <option key={key} value={key}>
-                    {DEPARTMENT_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              Date
-              <input
-                required
-                type="date"
-                className="rounded border border-gray-300 px-2 py-1"
-                value={form.date}
-                onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-              />
-            </label>
-            <div />
-            <label className="flex flex-col gap-1 text-sm">
-              Start time
-              <input
-                required
-                type="time"
-                className="rounded border border-gray-300 px-2 py-1"
-                value={form.startTime}
-                onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              End time
-              <input
-                required
-                type="time"
-                className="rounded border border-gray-300 px-2 py-1"
-                value={form.endTime}
-                onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
-              />
-            </label>
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.isReliever}
-              onChange={(e) => setForm((f) => ({ ...f, isReliever: e.target.checked }))}
-            />
-            This shift is a reliever covering for someone
-          </label>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {submitting ? 'Adding…' : 'Add shift'}
-          </button>
-        </form>
-      )}
-    </section>
-  );
 }
 
 function TimeClockSection() {
@@ -803,16 +571,16 @@ export function ShiftsPage() {
     <div className="flex flex-col gap-10">
       <div>
         <h1 className="text-lg font-semibold">Shifts & DTR</h1>
-        <p className="text-sm text-gray-500">
-          Shift roster, reliever assignment, time in/out, and rest-day requests.
-        </p>
+        <p className="text-sm text-gray-500">Time in/out and rest-day requests.</p>
       </div>
 
       {/* Client follow-up, 2026-09-12: Time Clock moved to the top — the
-          one thing every employee needs daily, ahead of the roster/
-          rest-day/admin-only sections below. */}
+          one thing every employee needs daily, ahead of the
+          rest-day/admin-only sections below. Client decision, same day
+          (spec.md §13 decision 9): the Shift-roster section that used
+          to render here is gone — scheduling is manual, outside the
+          app — but shift:manage still gates Flagged Entries below. */}
       <TimeClockSection />
-      <ShiftRosterSection canManage={canManageShifts} />
       <RestDaySection canApprove={canApproveRestDay} />
       {canManageShifts && <FlaggedEntriesSection />}
       {canConfigureGeofence && <GeofenceSettingsSection />}

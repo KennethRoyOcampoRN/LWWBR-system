@@ -6079,3 +6079,56 @@ inputs). `apps/api`/`packages/shared` untouched, not re-run. `npm run
 build -w apps/web` clean. Verified live in a headless browser against
 the built app: screenshot confirms "Time clock" now renders above
 "Shift roster". Sent to the client.
+
+### Shift roster UI removed — DTR/rest-day/flagged/geofence unaffected (2026-09-12)
+
+Client decision (spec.md §13 decision 9): scheduling is handled
+manually outside the app — staff already know their shifts without the
+system tracking it — so the Shift roster UI comes out of `/shifts`.
+Deleted `ShiftRosterSection` from `ShiftsPage.tsx` in full: the "Add a
+shift" form, the roster list, and the Employee/Department/Date/Start-
+End-time/Reliever fields. Time Clock, Rest-day requests, Flagged
+Entries, and Geofence settings are untouched and render exactly as
+before — none of them read from or depend on the roster section.
+
+**What stays, deliberately not deleted:** the `Shift` Prisma model,
+its `shift:manage`/`shift:read` role grants, and the entire backend
+`shifts` module (`apps/api/src/modules/shifts/{schema,service,router}.ts`,
+still mounted in `app.ts`, its 18 tests still passing) — all dormant,
+none of it removed, so this is one component deletion to reverse if
+revisited, not a rebuild. `shift:manage` was gating two independent
+things: roster CRUD (now hidden) and Flagged Entries review (stays) —
+confirmed the two were never coupled in the code, so hiding the roster
+changes nothing about Flagged Entries' own gate or its review flow
+(`GET /time-logs/flagged`, `POST /time-logs/:id/review`), both
+untouched in `dtr/service.ts`.
+
+Also removed the now-dead `DEPARTMENT_KEYS`/`DEPARTMENT_LABELS`
+imports from `ShiftsPage.tsx` (only the roster form used them) and
+trimmed the page's intro paragraph.
+
+Test changes: removed the two roster-only tests ("a shift:manage
+holder can list the roster, add a shift, and cancel one" and "a
+shift:read-only holder sees the roster but no add-shift form or Cancel
+button"). Rewrote the section-order test — it asserted Time Clock
+rendered before Shift roster, which no longer exists — into "renders
+the Time clock section with no Shift roster section", asserting the
+"Shift roster" heading and "Add a shift" text are both absent. Added
+two new tests explicitly re-confirming Flagged Entries independent of
+the roster removal: a shift:manage holder sees the section and can
+mark a flagged entry reviewed end to end (upload state -> POST
+`/time-logs/:id/review` -> entry drops off the list), and a
+shift:read-only holder still doesn't see it — the same permission
+boundary as before, just no longer piggybacking on a roster-specific
+test that no longer exists.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w apps/web` — 129/129 (`ShiftsPage.test.tsx`
+still at 10 tests: 2 roster tests removed, 2 Flagged-Entries tests
+added). `apps/api`/`packages/shared` untouched, not re-run — confirmed
+via `git status` that only `ShiftsPage.tsx`, `ShiftsPage.test.tsx`, and
+`spec.md` changed. `npm run build -w apps/web` clean. Verified live in
+a headless browser against the built app: screenshot shows the roster
+section gone while Flagged Entries (with a real flagged entry and a
+working photo link) and the rest of the page render normally. Sent to
+the client.

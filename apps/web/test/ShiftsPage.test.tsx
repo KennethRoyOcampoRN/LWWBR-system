@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -40,105 +40,15 @@ const shiftManagerUser = {
   permissions: { 'shift:read': 'ALL', 'shift:manage': 'ALL', 'restday:request': 'ALL' },
 };
 
-const shift = {
-  id: 'shift_1',
-  date: '2026-09-20T00:00:00.000Z',
-  startTime: '2026-09-20T06:00:00.000Z',
-  endTime: '2026-09-20T14:00:00.000Z',
-  department: 'HOUSEKEEPING',
-  isReliever: false,
-  note: null,
-  user: { id: 'user_2', fullName: 'Room Attendant (Demo)' },
-};
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('ShiftsPage', () => {
-  it('a shift:manage holder can list the roster, add a shift, and cancel one', async () => {
-    const user = userEvent.setup();
-    let shifts = [shift];
-    let deleteCalled = false;
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    stubGeolocation('denied');
-
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { shifts });
-      }
-      if (url.endsWith('/shifts/assignable-users')) {
-        return jsonResponse(200, { users: [{ id: 'user_2', fullName: 'Room Attendant (Demo)', employeeCode: 'LWW-010', department: 'HOUSEKEEPING' }] });
-      }
-      if (url.endsWith('/shifts') && init?.method === 'POST') {
-        const body = JSON.parse(init.body as string);
-        expect(body).toMatchObject({ userId: 'user_2', department: 'HOUSEKEEPING' });
-        const created = { ...shift, id: 'shift_2' };
-        shifts = [...shifts, created];
-        return jsonResponse(201, { shift: created });
-      }
-      if (url.endsWith('/shifts/shift_1') && init?.method === 'DELETE') {
-        deleteCalled = true;
-        shifts = [];
-        return jsonResponse(204, undefined);
-      }
-      if (url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
-      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
-      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    window.history.pushState({}, '', '/shifts');
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Shifts & DTR' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText('Room Attendant (Demo)').length).toBeGreaterThan(0));
-
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(deleteCalled).toBe(true));
-
-    const rosterForm = screen.getByRole('heading', { name: 'Add a shift' }).closest('form') as HTMLElement;
-    await user.selectOptions(within(rosterForm).getByLabelText('Employee'), 'user_2');
-    await user.type(within(rosterForm).getByLabelText('Date'), '2026-09-21');
-    await user.type(within(rosterForm).getByLabelText('Start time'), '06:00');
-    await user.type(within(rosterForm).getByLabelText('End time'), '14:00');
-    await user.click(within(rosterForm).getByRole('button', { name: 'Add shift' }));
-
-    await waitFor(() => expect(screen.getAllByText('Room Attendant (Demo)').length).toBeGreaterThan(0));
-  });
-
-  it('a shift:read-only holder sees the roster but no add-shift form or Cancel button', async () => {
-    const readOnlyUser = { ...shiftManagerUser, permissions: { 'shift:read': 'ALL', 'restday:request': 'ALL' } };
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
-      if (url.endsWith('/shifts')) return jsonResponse(200, { shifts: [shift] });
-      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
-      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    window.history.pushState({}, '', '/shifts');
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByText('Room Attendant (Demo)')).toBeInTheDocument());
-    expect(screen.queryByText('Add a shift')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
-    // Flagged entries and geofence settings are also shift:manage/
-    // system:configure only — neither renders for this fixture.
-    expect(screen.queryByText('Flagged time entries')).not.toBeInTheDocument();
-    expect(screen.queryByText('DTR geofence')).not.toBeInTheDocument();
-  });
-
   it('clocking in requires a photo — no request is made without one', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts')) return jsonResponse(200, { shifts: [] });
       if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -167,7 +77,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts')) return jsonResponse(200, { shifts: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       if (url.endsWith('/files') && init?.method === 'POST') {
         return jsonResponse(201, { file: { id: 'file_1' } });
@@ -230,7 +139,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: approverUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [restDayRequest] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -259,7 +167,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [restDayRequest] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -274,6 +181,70 @@ describe('ShiftsPage', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
   });
 
+  // Explicit re-confirmation after the roster section was removed
+  // (spec.md §13 decision 9): shift:manage still gates Flagged Entries
+  // review on its own, independent of the roster UI it used to also
+  // gate — this exercises the real review action end to end.
+  it('a shift:manage holder sees Flagged Entries and can mark an entry reviewed', async () => {
+    const user = userEvent.setup();
+    let reviewCalled = false;
+    const flaggedEntry = {
+      id: 'log_1',
+      userId: 'user_2',
+      clockInAt: '2026-09-20T06:00:00.000Z',
+      clockOutAt: null,
+      clockInPhoto: { id: 'file_1', filename: 'selfie-in.jpg', url: 'https://storage.example/signed/selfie-in.jpg' },
+      clockOutPhoto: null,
+      clockInFlagged: true,
+      clockOutFlagged: false,
+      reviewedAt: null,
+      reviewNote: null,
+      user: { id: 'user_2', fullName: 'Room Attendant (Demo)' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: reviewCalled ? [] : [flaggedEntry] });
+      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      if (url.endsWith('/time-logs/log_1/review') && init?.method === 'POST') {
+        reviewCalled = true;
+        return jsonResponse(200, { timeLog: { ...flaggedEntry, reviewedAt: new Date().toISOString() } });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Flagged time entries')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('View clock-in photo')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Mark reviewed' }));
+    await waitFor(() => expect(reviewCalled).toBe(true));
+    await waitFor(() => expect(screen.getByText('No flagged entries.')).toBeInTheDocument());
+  });
+
+  it('a shift:read-only holder does not see Flagged Entries', async () => {
+    const readOnlyUser = { ...shiftManagerUser, permissions: { 'shift:read': 'ALL', 'restday:request': 'ALL' } };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
+      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Time clock' })).toBeInTheDocument());
+    expect(screen.queryByText('Flagged time entries')).not.toBeInTheDocument();
+    expect(screen.queryByText('DTR geofence')).not.toBeInTheDocument();
+  });
+
   it('a system:configure holder sees the DTR geofence settings panel; a shift:manage-only holder does not', async () => {
     const adminUser = {
       ...shiftManagerUser,
@@ -283,7 +254,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       if (url.endsWith('/dtr/geofence-setting')) return jsonResponse(200, { geofence: null });
@@ -297,14 +267,14 @@ describe('ShiftsPage', () => {
     await waitFor(() => expect(screen.getByText('DTR geofence')).toBeInTheDocument());
   });
 
-  // Client follow-up, 2026-09-12: Time Clock moved above Shift roster —
-  // the one thing every employee needs daily, ahead of lower-frequency/
-  // admin-only sections. Asserts real DOM order, not just presence.
-  it('renders Time clock before Shift roster', async () => {
+  // Client decision, 2026-09-12 (spec.md §13 decision 9): the Shift
+  // roster section is gone from this page — scheduling is manual,
+  // outside the app. Time clock still renders first (client follow-up,
+  // same day) with no "Shift roster" heading anywhere in the DOM.
+  it('renders the Time clock section with no Shift roster section', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -315,11 +285,8 @@ describe('ShiftsPage', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Time clock' })).toBeInTheDocument());
-    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-    const timeClockIndex = headings.indexOf('Time clock');
-    const rosterIndex = headings.indexOf('Shift roster');
-    expect(timeClockIndex).toBeGreaterThanOrEqual(0);
-    expect(rosterIndex).toBeGreaterThan(timeClockIndex);
+    expect(screen.queryByRole('heading', { name: 'Shift roster' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Add a shift')).not.toBeInTheDocument();
   });
 
   // capture="user" is a mobile-browser hint, not a guarantee — asserted
@@ -334,7 +301,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [openLog] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
@@ -353,7 +319,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
       if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
