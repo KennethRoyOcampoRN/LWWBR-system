@@ -296,4 +296,74 @@ describe('ShiftsPage', () => {
 
     await waitFor(() => expect(screen.getByText('DTR geofence')).toBeInTheDocument());
   });
+
+  // Client follow-up, 2026-09-12: Time Clock moved above Shift roster —
+  // the one thing every employee needs daily, ahead of lower-frequency/
+  // admin-only sections. Asserts real DOM order, not just presence.
+  it('renders Time clock before Shift roster', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
+      if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Time clock' })).toBeInTheDocument());
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    const timeClockIndex = headings.indexOf('Time clock');
+    const rosterIndex = headings.indexOf('Shift roster');
+    expect(timeClockIndex).toBeGreaterThanOrEqual(0);
+    expect(rosterIndex).toBeGreaterThan(timeClockIndex);
+  });
+
+  // capture="user" is a mobile-browser hint, not a guarantee — asserted
+  // as an attribute on both inputs so a future edit can't silently drop
+  // it, not as proof it opens the camera (that's not testable in jsdom).
+  it('both clock-in and clock-out selfie inputs request the front-facing camera via capture="user"', async () => {
+    const openLog = {
+      id: 'log_1', userId: 'user_1', clockInAt: new Date().toISOString(), clockOutAt: null,
+      clockInPhoto: null, clockOutPhoto: null, clockInFlagged: false, clockOutFlagged: false,
+      reviewedAt: null, reviewNote: null, user: { id: 'user_1', fullName: 'POC Housekeeping (Demo)' },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
+      if (url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [openLog] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Clock-out selfie')).toBeInTheDocument());
+    expect(screen.getByLabelText('Clock-out selfie')).toHaveAttribute('capture', 'user');
+  });
+
+  it('the clock-in selfie input also requests the front-facing camera via capture="user"', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/shifts') || url.endsWith('/shifts/assignable-users')) return jsonResponse(200, { shifts: [], users: [] });
+      if (url.endsWith('/time-logs') || url.endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Clock-in selfie')).toBeInTheDocument());
+    expect(screen.getByLabelText('Clock-in selfie')).toHaveAttribute('capture', 'user');
+  });
 });

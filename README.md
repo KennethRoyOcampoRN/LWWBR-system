@@ -6047,3 +6047,35 @@ No `prisma db push` note needed for the client's next live test — this
 genuinely is a schema change (`TimeLog`'s 11 new columns), so **the
 client needs to run `npx prisma db push` (from `apps/api`) before
 trying DTR live.**
+
+### Time Clock: forced live selfie + moved to top of page (2026-09-12)
+
+Two client follow-ups on the Shifts/DTR feature above, both UI-only —
+no schema or API change.
+
+**Forced live selfie**: added `capture="user"` to both the clock-in
+and clock-out selfie `<input type="file">` elements in
+`TimeClockSection`. This is a mobile-browser hint, not a spec-
+guaranteed lockout: Android Chrome and iOS Safari generally honor it
+and open the front-facing camera directly instead of the gallery, but
+desktop browsers (Chrome/Firefox/Safari on macOS/Windows/Linux)
+generally ignore `capture` entirely and still show a normal file
+picker, and even on mobile the native camera UI typically still lets
+someone back out to the gallery depending on OS/browser version. So
+this raises the bar toward "must be a photo taken right now" without
+technically guaranteeing it in every case — flagged as such in an
+inline code comment and to the client directly.
+
+**Reordered sections**: `TimeClockSection` now renders first, above
+`ShiftRosterSection`, `RestDaySection`, `FlaggedEntriesSection`, and
+`GeofenceSettingsSection` — clocking in/out is the one thing every
+employee needs daily, while the rest are lower-frequency or admin-only.
+
+Verification: `npm run typecheck` clean (all three packages), `npm run
+lint` clean, `npm run test -w apps/web` — 129/129 (up from 126; 3 new
+tests — DOM order of "Time clock" vs. "Shift roster" headings, and
+`capture="user"` present on both the clock-in and clock-out selfie
+inputs). `apps/api`/`packages/shared` untouched, not re-run. `npm run
+build -w apps/web` clean. Verified live in a headless browser against
+the built app: screenshot confirms "Time clock" now renders above
+"Shift roster". Sent to the client.

@@ -368,9 +368,17 @@ function TimeClockSection() {
             <p className="text-sm">Clocked in at {formatDateTime(openEntry.clockInAt)}</p>
             <label className="flex flex-col gap-1 text-sm">
               Clock-out selfie
+              {/* capture="user" pushes mobile browsers straight into the
+                  front-facing camera instead of the gallery/file picker
+                  — a live photo, not an old one. This is a mobile
+                  browser behavior, not a hard guarantee: desktop
+                  browsers generally ignore `capture` and still show a
+                  normal file picker, so this alone doesn't stop someone
+                  on a desktop from uploading an existing image. */}
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,image/heic"
+                capture="user"
                 disabled={busy}
                 onChange={(e) => void handleClock('clock-out', e.target.files?.[0] ?? null)}
               />
@@ -382,6 +390,7 @@ function TimeClockSection() {
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp,image/heic"
+              capture="user"
               disabled={busy}
               onChange={(e) => void handleClock('clock-in', e.target.files?.[0] ?? null)}
             />
@@ -799,8 +808,11 @@ export function ShiftsPage() {
         </p>
       </div>
 
-      <ShiftRosterSection canManage={canManageShifts} />
+      {/* Client follow-up, 2026-09-12: Time Clock moved to the top — the
+          one thing every employee needs daily, ahead of the roster/
+          rest-day/admin-only sections below. */}
       <TimeClockSection />
+      <ShiftRosterSection canManage={canManageShifts} />
       <RestDaySection canApprove={canApproveRestDay} />
       {canManageShifts && <FlaggedEntriesSection />}
       {canConfigureGeofence && <GeofenceSettingsSection />}
