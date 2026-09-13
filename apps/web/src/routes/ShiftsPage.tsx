@@ -24,6 +24,13 @@ interface TimeLogPhoto {
   url: string;
 }
 
+type FlagReason = 'NO_LOCATION' | 'OUTSIDE_ALL_GEOFENCES';
+
+const FLAG_REASON_LABELS: Record<FlagReason, string> = {
+  NO_LOCATION: 'No location captured',
+  OUTSIDE_ALL_GEOFENCES: 'Outside every configured location',
+};
+
 interface TimeLogRow {
   id: string;
   userId: string;
@@ -31,11 +38,56 @@ interface TimeLogRow {
   clockOutAt: string | null;
   clockInPhoto: TimeLogPhoto | null;
   clockOutPhoto: TimeLogPhoto | null;
+  clockInLat: number | null;
+  clockInLng: number | null;
+  clockOutLat: number | null;
+  clockOutLng: number | null;
   clockInFlagged: boolean;
   clockOutFlagged: boolean;
+  clockInFlagReason: FlagReason | null;
+  clockOutFlagReason: FlagReason | null;
   reviewedAt: string | null;
   reviewNote: string | null;
   user: { id: string; fullName: string };
+}
+
+interface GeofenceRow {
+  id: string;
+  name: string;
+  centerLat: number;
+  centerLng: number;
+  radiusMeters: number;
+}
+
+interface AssignableUser {
+  id: string;
+  fullName: string;
+}
+
+// No new dependency (spec §3: ask before adding one) — OpenStreetMap's
+// own public embed page takes a bounding box + a marker and needs no
+// API key. Tradeoff, flagged rather than hidden: this depends on
+// osm.org's embed service staying up, can't draw the geofence radius
+// on top of it, and isn't brandable — all fine at this app's scale (a
+// 15-30 person internal tool, nowhere near OSM's "self-host your own
+// tiles" heavy-traffic threshold), but worth knowing if that ever
+// changes. A real interactive library (Leaflet) would fix all three at
+// the cost of two new dependencies.
+function locationMapUrl(lat: number, lng: number): string {
+  const delta = 0.003; // roughly a 300-400m box around the pin
+  const bbox = `${lng - delta}%2C${lat - delta}%2C${lng + delta}%2C${lat + delta}`;
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lng}`;
+}
+
+function LocationMap({ lat, lng, label }: { lat: number; lng: number; label: string }) {
+  return (
+    <iframe
+      title={label}
+      src={locationMapUrl(lat, lng)}
+      className="h-40 w-full rounded border border-gray-200"
+      loading="lazy"
+    />
+  );
 }
 
 interface RestDayRequestRow {
@@ -96,6 +148,16 @@ function TimeClockSection() {
 
   const openEntry = Array.isArray(myLogs) ? myLogs.find((log) => !log.clockOutAt) : undefined;
 
+  // Client follow-up, 2026-09-13: warn the person in the moment rather
+  // than only a reviewer finding out later. Location is captured first,
+  // then checked against POST /dtr/check-location (booleans only, no
+  // geofence data) — if it comes back flagged, window.confirm (same
+  // cancel-or-continue pattern already used for every delete action in
+  // this app) gives the person a chance to back out before anything is
+  // uploaded or submitted. Continuing (or a clear check, or no
+  // geofences configured at all) proceeds exactly as before: the real
+  // clock-in/out re-evaluates the location server-side, authoritatively
+  // — this pre-check is a UX convenience, never the source of truth.
   async function handleClock(kind: 'clock-in' | 'clock-out', file: File | null) {
     if (!file) {
       setError('A selfie photo is required.');
@@ -104,8 +166,20 @@ function TimeClockSection() {
     setError(null);
     setBusy(true);
     try {
-      const uploaded = await api.upload<{ file: { id: string } }>('/files', file);
       const location = await captureLocation();
+      const check = await api.post<{ flagged: boolean; reason: FlagReason | null }>(
+        '/dtr/check-location',
+        location ? { lat: location.lat, lng: location.lng } : {},
+      );
+      if (check.flagged) {
+        const verb = kind === 'clock-in' ? 'Clock in' : 'Clock out';
+        const proceed = window.confirm(`You appear to be outside a known work location. ${verb} anyway?`);
+        if (!proceed) {
+          setBusy(false);
+          return;
+        }
+      }
+      const uploaded = await api.upload<{ file: { id: string } }>('/files', file);
       await api.post(`/time-logs/${kind}`, {
         photoFileId: uploaded.file.id,
         ...(location ? { lat: location.lat, lng: location.lng } : {}),
@@ -452,16 +526,36 @@ function FlaggedEntriesSection() {
                 {entry.user.fullName} — {formatDateTime(entry.clockInAt)}
                 {entry.clockOutAt ? ` to ${formatDateTime(entry.clockOutAt)}` : ' (still clocked in)'}
               </p>
-              <div className="flex gap-4 text-xs text-gray-600">
-                {entry.clockInFlagged && entry.clockInPhoto && (
-                  <a href={entry.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">
-                    View clock-in photo
-                  </a>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {entry.clockInFlagged && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-amber-900">
+                      Clock-in: {entry.clockInFlagReason ? FLAG_REASON_LABELS[entry.clockInFlagReason] : 'Flagged'}
+                    </p>
+                    {entry.clockInPhoto && (
+                      <a href={entry.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                        View clock-in photo
+                      </a>
+                    )}
+                    {entry.clockInLat !== null && entry.clockInLng !== null && (
+                      <LocationMap lat={entry.clockInLat} lng={entry.clockInLng} label={`${entry.user.fullName} clock-in location`} />
+                    )}
+                  </div>
                 )}
-                {entry.clockOutFlagged && entry.clockOutPhoto && (
-                  <a href={entry.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">
-                    View clock-out photo
-                  </a>
+                {entry.clockOutFlagged && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-amber-900">
+                      Clock-out: {entry.clockOutFlagReason ? FLAG_REASON_LABELS[entry.clockOutFlagReason] : 'Flagged'}
+                    </p>
+                    {entry.clockOutPhoto && (
+                      <a href={entry.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                        View clock-out photo
+                      </a>
+                    )}
+                    {entry.clockOutLat !== null && entry.clockOutLng !== null && (
+                      <LocationMap lat={entry.clockOutLat} lng={entry.clockOutLng} label={`${entry.user.fullName} clock-out location`} />
+                    )}
+                  </div>
                 )}
               </div>
               <label className="flex flex-col gap-1 text-sm">
@@ -487,63 +581,163 @@ function FlaggedEntriesSection() {
   );
 }
 
-function GeofenceSettingsSection() {
-  const [form, setForm] = useState({ centerLat: '', centerLng: '', radiusMeters: '' });
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+const EMPTY_GEOFENCE_FORM = { name: '', centerLat: '', centerLng: '', radiusMeters: '' };
+
+// Client follow-up, 2026-09-13: multiple named work locations replace
+// the single geofence — "inside any one counts" for clock-in/out (see
+// dtr/service.ts), so an admin can add, say, both "Main Resort" and a
+// second address, and either one keeps a clock-in from being flagged.
+function GeofenceManagementSection() {
+  const [geofences, setGeofences] = useState<GeofenceRow[] | 'loading' | 'error'>('loading');
+  const [form, setForm] = useState(EMPTY_GEOFENCE_FORM);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  function fetchGeofences() {
+    setGeofences('loading');
+    return api
+      .get<{ geofences: GeofenceRow[] }>('/dtr/geofences')
+      .then((res) => setGeofences(res.geofences))
+      .catch(() => setGeofences('error'));
+  }
 
   useEffect(() => {
-    api
-      .get<{ geofence: { centerLat: number; centerLng: number; radiusMeters: number } | null }>('/dtr/geofence-setting')
-      .then((res) => {
-        if (res.geofence) {
-          setForm({
-            centerLat: String(res.geofence.centerLat),
-            centerLng: String(res.geofence.centerLng),
-            radiusMeters: String(res.geofence.radiusMeters),
-          });
-        }
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
+    void fetchGeofences();
   }, []);
 
-  async function handleSave(e: FormEvent) {
+  function startEdit(geofence: GeofenceRow) {
+    setEditingId(geofence.id);
+    setFormError(null);
+    setForm({
+      name: geofence.name,
+      centerLat: String(geofence.centerLat),
+      centerLng: String(geofence.centerLng),
+      radiusMeters: String(geofence.radiusMeters),
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setFormError(null);
+    setForm(EMPTY_GEOFENCE_FORM);
+  }
+
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
-    setSaved(false);
-    setSaving(true);
+    setFormError(null);
+    setSubmitting(true);
     try {
-      await api.put('/dtr/geofence-setting', {
+      const body = {
+        name: form.name.trim(),
         centerLat: Number(form.centerLat),
         centerLng: Number(form.centerLng),
         radiusMeters: Number(form.radiusMeters),
-      });
-      setSaved(true);
+      };
+      if (editingId) {
+        await api.patch(`/dtr/geofences/${editingId}`, body);
+      } else {
+        await api.post('/dtr/geofences', body);
+      }
+      setEditingId(null);
+      setForm(EMPTY_GEOFENCE_FORM);
+      await fetchGeofences();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not save the geofence.');
+      setFormError(err instanceof ApiRequestError ? err.message : 'Could not save this work location.');
     } finally {
-      setSaving(false);
+      setSubmitting(false);
     }
   }
 
-  if (!loaded) return null;
+  async function handleDelete(geofence: GeofenceRow) {
+    if (!window.confirm(`Delete "${geofence.name}"? Clock-ins/outs will no longer be checked against it.`)) return;
+    setActionError(null);
+    try {
+      await api.delete(`/dtr/geofences/${geofence.id}`);
+      await fetchGeofences();
+    } catch (err) {
+      setActionError(err instanceof ApiRequestError ? err.message : 'Could not delete this work location.');
+    }
+  }
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">DTR geofence</h2>
+      <h2 className="text-base font-semibold">DTR work locations</h2>
       <p className="text-sm text-gray-500">
-        A clock-in/out outside this radius is never blocked — it's flagged for review instead.
+        A clock-in/out is only flagged if it falls outside every location below — any one of them counts, and it
+        works the same for everyone, not tied to a specific employee. Leave this list empty to never flag for
+        location reasons.
       </p>
-      <form onSubmit={(e) => void handleSave(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-        {error && (
+
+      {actionError && (
+        <p role="alert" className="text-sm text-red-700">
+          {actionError}
+        </p>
+      )}
+
+      {geofences === 'loading' && (
+        <table className="w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={2} columns={5} />
+          </tbody>
+        </table>
+      )}
+      {geofences === 'error' && <p role="alert">Could not load work locations.</p>}
+      {Array.isArray(geofences) && geofences.length === 0 && <EmptyState message="No work locations configured yet." />}
+      {Array.isArray(geofences) && geofences.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-gray-500">
+                <th className="py-2 pr-4 font-medium">Name</th>
+                <th className="py-2 pr-4 font-medium">Latitude</th>
+                <th className="py-2 pr-4 font-medium">Longitude</th>
+                <th className="py-2 pr-4 font-medium">Radius (m)</th>
+                <th className="py-2 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {geofences.map((geofence) => (
+                <tr key={geofence.id} className="border-b border-gray-100">
+                  <td className="py-2 pr-4 font-medium">{geofence.name}</td>
+                  <td className="py-2 pr-4">{geofence.centerLat}</td>
+                  <td className="py-2 pr-4">{geofence.centerLng}</td>
+                  <td className="py-2 pr-4">{geofence.radiusMeters}</td>
+                  <td className="py-2">
+                    <div className="flex gap-3">
+                      <button type="button" onClick={() => startEdit(geofence)} className="text-sm text-blue-700 hover:underline">
+                        Edit
+                      </button>
+                      <button type="button" onClick={() => void handleDelete(geofence)} className="text-sm text-red-700 hover:underline">
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+        <h3 className="text-sm font-semibold">{editingId ? 'Edit work location' : 'Add a work location'}</h3>
+        {formError && (
           <p role="alert" className="text-sm text-red-700">
-            {error}
+            {formError}
           </p>
         )}
-        {saved && <p className="text-sm text-green-700">Saved.</p>}
+        <label className="flex flex-col gap-1 text-sm">
+          Name
+          <input
+            required
+            placeholder="e.g. Main Resort"
+            className="rounded border border-gray-300 px-2 py-1"
+            value={form.name}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+          />
+        </label>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <label className="flex flex-col gap-1 text-sm">
             Center latitude
@@ -579,14 +773,214 @@ function GeofenceSettingsSection() {
             />
           </label>
         </div>
-        <button
-          type="submit"
-          disabled={saving}
-          className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : 'Save geofence'}
-        </button>
+        <div className="flex gap-3">
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {submitting ? 'Saving…' : editingId ? 'Save changes' : 'Add location'}
+          </button>
+          {editingId && (
+            <button type="button" onClick={cancelEdit} className="w-fit rounded border border-gray-300 px-4 py-2 text-sm font-medium">
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
+    </section>
+  );
+}
+
+function defaultAuditRange() {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - 13); // last 14 days, inclusive of today
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  return { from: iso(from), to: iso(to) };
+}
+
+// Client follow-up, 2026-09-13: a general audit view for a shift:manage
+// holder to browse every clock-in/out, selfie + map included — not
+// just the flagged exceptions above. Bounded by date range (defaults to
+// the last 14 days) so it never fetches the property's entire DTR
+// history unbounded as the pilot accumulates data; the employee filter
+// reuses GET /shifts/assignable-users, the same shift:manage-gated
+// picker built for (and currently dormant in) the roster module — see
+// spec.md §13 decision 9.
+function AllTimeLogsSection() {
+  const [range, setRange] = useState(defaultAuditRange);
+  const [userId, setUserId] = useState('');
+  const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [logs, setLogs] = useState<TimeLogRow[] | 'loading' | 'error'>('loading');
+  const [noteById, setNoteById] = useState<Record<string, string>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<{ users: AssignableUser[] }>('/shifts/assignable-users')
+      .then((res) => setUsers(res.users))
+      .catch(() => setUsers([]));
+  }, []);
+
+  function fetchLogs() {
+    setLogs('loading');
+    const params = new URLSearchParams({ from: range.from, to: range.to });
+    if (userId) params.set('userId', userId);
+    return api
+      .get<{ timeLogs: TimeLogRow[] }>(`/time-logs?${params.toString()}`)
+      .then((res) => setLogs(res.timeLogs))
+      .catch(() => setLogs('error'));
+  }
+
+  useEffect(() => {
+    void fetchLogs();
+  }, [range.from, range.to, userId]);
+
+  async function review(id: string) {
+    setActionError(null);
+    try {
+      await api.post(`/time-logs/${id}/review`, { reviewNote: noteById[id]?.trim() || undefined });
+      await fetchLogs();
+    } catch (err) {
+      setActionError(err instanceof ApiRequestError ? err.message : 'Could not mark this entry reviewed.');
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-4">
+      <h2 className="text-base font-semibold">All time logs</h2>
+      <p className="text-sm text-gray-500">
+        Every clock-in/out in range, not just flagged ones — Flagged Entries above is for exceptions needing a
+        decision; this is the full record, for a look at any time.
+      </p>
+
+      <div className="flex flex-wrap gap-3">
+        <label className="flex flex-col gap-1 text-sm">
+          From
+          <input
+            type="date"
+            className="rounded border border-gray-300 px-2 py-1"
+            value={range.from}
+            onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          To
+          <input
+            type="date"
+            className="rounded border border-gray-300 px-2 py-1"
+            value={range.to}
+            onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Employee
+          <select
+            className="rounded border border-gray-300 px-2 py-1"
+            value={userId}
+            onChange={(e) => setUserId(e.target.value)}
+          >
+            <option value="">Everyone</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.fullName}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {actionError && (
+        <p role="alert" className="text-sm text-red-700">
+          {actionError}
+        </p>
+      )}
+
+      {logs === 'loading' && (
+        <table className="w-full text-sm">
+          <tbody>
+            <SkeletonTableRows rows={3} columns={4} />
+          </tbody>
+        </table>
+      )}
+      {logs === 'error' && <p role="alert">Could not load time logs.</p>}
+      {Array.isArray(logs) && logs.length === 0 && <EmptyState message="No time logs in this range." />}
+      {Array.isArray(logs) && logs.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {logs.map((log) => {
+            const isFlagged = log.clockInFlagged || log.clockOutFlagged;
+            return (
+              <div key={log.id} className="flex flex-col gap-2 rounded border border-gray-200 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">
+                    {log.user.fullName} — {formatDateTime(log.clockInAt)}
+                    {log.clockOutAt ? ` to ${formatDateTime(log.clockOutAt)}` : ' (still clocked in)'}
+                  </p>
+                  <span
+                    className={
+                      !isFlagged
+                        ? 'rounded border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-700'
+                        : log.reviewedAt
+                          ? 'rounded border border-green-300 bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-900'
+                          : 'rounded border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900'
+                    }
+                  >
+                    {!isFlagged ? 'Normal' : log.reviewedAt ? 'Reviewed' : 'Flagged'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-gray-600">Clock-in</p>
+                    {log.clockInPhoto && (
+                      <a href={log.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                        View photo
+                      </a>
+                    )}
+                    {log.clockInLat !== null && log.clockInLng !== null ? (
+                      <LocationMap lat={log.clockInLat} lng={log.clockInLng} label={`${log.user.fullName} clock-in location`} />
+                    ) : (
+                      <p className="text-xs text-gray-400">No location captured</p>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-gray-600">Clock-out</p>
+                    {log.clockOutPhoto && (
+                      <a href={log.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                        View photo
+                      </a>
+                    )}
+                    {log.clockOutLat !== null && log.clockOutLng !== null ? (
+                      <LocationMap lat={log.clockOutLat} lng={log.clockOutLng} label={`${log.user.fullName} clock-out location`} />
+                    ) : (
+                      <p className="text-xs text-gray-400">{log.clockOutAt ? 'No location captured' : 'Not clocked out yet'}</p>
+                    )}
+                  </div>
+                </div>
+                {isFlagged && !log.reviewedAt && (
+                  <>
+                    <label className="flex flex-col gap-1 text-sm">
+                      Review note (optional)
+                      <input
+                        className="rounded border border-gray-300 px-2 py-1"
+                        value={noteById[log.id] ?? ''}
+                        onChange={(e) => setNoteById((prev) => ({ ...prev, [log.id]: e.target.value }))}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void review(log.id)}
+                      className="w-fit rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white"
+                    >
+                      Mark reviewed
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -613,7 +1007,8 @@ export function ShiftsPage() {
       <TimeClockSection />
       <RestDaySection canApprove={canApproveRestDay} />
       {canManageShifts && <FlaggedEntriesSection />}
-      {canConfigureGeofence && <GeofenceSettingsSection />}
+      {canManageShifts && <AllTimeLogsSection />}
+      {canConfigureGeofence && <GeofenceManagementSection />}
     </div>
   );
 }

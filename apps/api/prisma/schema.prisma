@@ -1014,6 +1014,20 @@ enum TimeLogSource {
   MANUAL
 }
 
+// Client follow-up, 2026-09-13: distinguishes *why* a clock event was
+// flagged — the browser never provided a location at all (denied/
+// failed geolocation) vs. a location was captured but didn't fall
+// inside any configured Geofence. Null when not flagged. Being flagged
+// can only happen when at least one Geofence exists (an empty list
+// never flags anything — see Geofence's own header comment), so there
+// is no ambiguity between "nothing configured" and "outside every
+// fence" at the flag level; this only separates the two flagged cases
+// from each other, for the reviewer's benefit.
+enum TimeLogFlagReason {
+  NO_LOCATION
+  OUTSIDE_ALL_GEOFENCES
+}
+
 // Client-directed feature, 2026-09-18: DTR (time in/out) — photo +
 // location capture on both clock-in and clock-out, plus a geofence
 // review flag. See dtr/service.ts's own header comment for the full
@@ -1021,26 +1035,28 @@ enum TimeLogSource {
 // flagged rather than blocked, why review is one pass covering both
 // flags rather than two).
 model TimeLog {
-  id              String        @id @default(cuid())
-  userId          String
-  clockInAt       DateTime
-  clockOutAt      DateTime?
-  source          TimeLogSource
-  note            String?
-  clockInPhotoId  String?
-  clockOutPhotoId String?
-  clockInLat      Float?
-  clockInLng      Float?
-  clockOutLat     Float?
-  clockOutLng     Float?
-  clockInFlagged  Boolean       @default(false)
-  clockOutFlagged Boolean       @default(false)
-  reviewedById    String?
-  reviewedAt      DateTime?
-  reviewNote      String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  deletedAt       DateTime?
+  id                 String             @id @default(cuid())
+  userId             String
+  clockInAt          DateTime
+  clockOutAt         DateTime?
+  source             TimeLogSource
+  note               String?
+  clockInPhotoId     String?
+  clockOutPhotoId    String?
+  clockInLat         Float?
+  clockInLng         Float?
+  clockOutLat        Float?
+  clockOutLng        Float?
+  clockInFlagged     Boolean            @default(false)
+  clockOutFlagged    Boolean            @default(false)
+  clockInFlagReason  TimeLogFlagReason?
+  clockOutFlagReason TimeLogFlagReason?
+  reviewedById       String?
+  reviewedAt         DateTime?
+  reviewNote         String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  deletedAt          DateTime?
 
   user          User        @relation(fields: [userId], references: [id])
   clockInPhoto  FileObject? @relation("TimeLogClockInPhoto", fields: [clockInPhotoId], references: [id])
@@ -1050,6 +1066,26 @@ model TimeLog {
   @@index([userId, clockInAt])
   @@index([clockInFlagged])
   @@index([clockOutFlagged])
+}
+
+// Client follow-up, 2026-09-13: multiple named work locations, replacing
+// the single Setting-backed geofence. "Any configured location works
+// for anyone" — deliberately not tied to a specific employee (client's
+// explicit call), so there's no userId here. Soft-delete, matching
+// spec §4.5's stated default (nothing else references Geofence.id, so
+// there's no history-orphaning concern either way — same reasoning
+// that put Shift's cancel action on soft-delete over the Option-B
+// hard-delete MenuItem/AmenityItem use). An empty (all-deleted) list
+// means nothing is flagged for location reasons — see dtr/service.ts.
+model Geofence {
+  id           String    @id @default(cuid())
+  name         String
+  centerLat    Float
+  centerLng    Float
+  radiusMeters Float
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 }
 
 // ————————————————————————————————————————————————————————————

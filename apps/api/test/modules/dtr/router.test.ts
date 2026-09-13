@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   fileObject: { findFirst: vi.fn() },
-  setting: { findUnique: vi.fn(), upsert: vi.fn() },
+  geofence: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   timeLog: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
 };
@@ -37,7 +37,20 @@ function authCookie() {
   return [`lwwbr_access=${signAccessToken('user_1')}`];
 }
 
-const GEOFENCE = { centerLat: 13.75, centerLng: 121.05, radiusMeters: 200 };
+// Two named fences, deliberately far apart — used throughout to prove
+// "inside any one counts" rather than only ever testing a single fence.
+const MAIN_RESORT = { id: 'geo_1', name: 'Main Resort', centerLat: 13.75, centerLng: 121.05, radiusMeters: 200 };
+const SATELLITE_SITE = { id: 'geo_2', name: "Maria's Home", centerLat: 14.60, centerLng: 120.98, radiusMeters: 150 };
+
+function fakeGeofence(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    ...MAIN_RESORT,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    deletedAt: null,
+    ...overrides,
+  };
+}
 
 function fakeTimeLog(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -55,6 +68,8 @@ function fakeTimeLog(overrides: Partial<Record<string, unknown>> = {}) {
     clockOutLng: null,
     clockInFlagged: false,
     clockOutFlagged: false,
+    clockInFlagReason: null,
+    clockOutFlagReason: null,
     reviewedById: null,
     reviewedAt: null,
     reviewNote: null,
@@ -78,11 +93,11 @@ beforeEach(() => {
 });
 
 describe('POST /api/v1/time-logs/clock-in', () => {
-  it('clocks in successfully with a photo and a location inside the configured geofence — not flagged', async () => {
+  it('clocks in successfully with a photo and a location inside a configured geofence — not flagged', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
     mockPrisma.timeLog.findFirst.mockResolvedValue(null);
-    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence()]);
     mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog());
 
     const res = await request(createApp())
@@ -92,7 +107,7 @@ describe('POST /api/v1/time-logs/clock-in', () => {
 
     expect(res.status).toBe(201);
     expect(mockPrisma.timeLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: false }) }),
+      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: false, clockInFlagReason: null }) }),
     );
     expect(res.body.timeLog.clockInPhoto).toEqual({
       id: 'file_1',
@@ -103,30 +118,54 @@ describe('POST /api/v1/time-logs/clock-in', () => {
     expect(res.body.timeLog.clockInPhoto.storageKey).toBeUndefined();
   });
 
-  it('clocks in successfully with a location outside the configured geofence — flagged, not blocked', async () => {
+  // The multi-fence case the client specifically asked for: inside the
+  // second configured fence, nowhere near the first — still not flagged.
+  it('clocks in inside the second of two configured fences — "inside any one counts"', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
     mockPrisma.timeLog.findFirst.mockResolvedValue(null);
-    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
-    mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog({ clockInFlagged: true }));
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence(), fakeGeofence(SATELLITE_SITE)]);
+    mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog());
 
     const res = await request(createApp())
       .post('/api/v1/time-logs/clock-in')
       .set('Cookie', authCookie())
-      .send({ photoFileId: 'file_1', lat: 14.5, lng: 121.05 });
+      .send({ photoFileId: 'file_1', lat: 14.6001, lng: 120.9801 });
 
     expect(res.status).toBe(201);
     expect(mockPrisma.timeLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: true }) }),
+      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: false, clockInFlagReason: null }) }),
     );
   });
 
-  it('clocks in successfully with no location at all (denied/failed geolocation) — flagged when a geofence is configured', async () => {
+  it('clocks in with a location outside every configured fence — flagged OUTSIDE_ALL_GEOFENCES, not blocked', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
     mockPrisma.timeLog.findFirst.mockResolvedValue(null);
-    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
-    mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog({ clockInFlagged: true, clockInLat: null, clockInLng: null }));
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence(), fakeGeofence(SATELLITE_SITE)]);
+    mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog({ clockInFlagged: true, clockInFlagReason: 'OUTSIDE_ALL_GEOFENCES' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/time-logs/clock-in')
+      .set('Cookie', authCookie())
+      .send({ photoFileId: 'file_1', lat: 0, lng: 0 });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.timeLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ clockInFlagged: true, clockInFlagReason: 'OUTSIDE_ALL_GEOFENCES' }),
+      }),
+    );
+  });
+
+  it('clocks in with no location at all (denied/failed geolocation) — flagged NO_LOCATION when a fence is configured', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
+    mockPrisma.timeLog.findFirst.mockResolvedValue(null);
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence()]);
+    mockPrisma.timeLog.create.mockResolvedValue(
+      fakeTimeLog({ clockInFlagged: true, clockInFlagReason: 'NO_LOCATION', clockInLat: null, clockInLng: null }),
+    );
 
     const res = await request(createApp())
       .post('/api/v1/time-logs/clock-in')
@@ -135,15 +174,17 @@ describe('POST /api/v1/time-logs/clock-in', () => {
 
     expect(res.status).toBe(201);
     expect(mockPrisma.timeLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: true }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({ clockInFlagged: true, clockInFlagReason: 'NO_LOCATION' }),
+      }),
     );
   });
 
-  it('never flags for location reasons when no geofence is configured at all', async () => {
+  it('never flags for location reasons when the geofence list is empty', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
     mockPrisma.timeLog.findFirst.mockResolvedValue(null);
-    mockPrisma.setting.findUnique.mockResolvedValue(null);
+    mockPrisma.geofence.findMany.mockResolvedValue([]);
     mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog());
 
     const res = await request(createApp())
@@ -153,7 +194,7 @@ describe('POST /api/v1/time-logs/clock-in', () => {
 
     expect(res.status).toBe(201);
     expect(mockPrisma.timeLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: false }) }),
+      expect.objectContaining({ data: expect.objectContaining({ clockInFlagged: false, clockInFlagReason: null }) }),
     );
   });
 
@@ -198,7 +239,7 @@ describe('POST /api/v1/time-logs/clock-in', () => {
       mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
       mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_1' });
       mockPrisma.timeLog.findFirst.mockResolvedValue(null);
-      mockPrisma.setting.findUnique.mockResolvedValue(null);
+      mockPrisma.geofence.findMany.mockResolvedValue([]);
       mockPrisma.timeLog.create.mockResolvedValue(fakeTimeLog());
 
       const res = await request(createApp())
@@ -216,7 +257,7 @@ describe('POST /api/v1/time-logs/clock-out', () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     mockPrisma.fileObject.findFirst.mockResolvedValue({ id: 'file_2' });
     mockPrisma.timeLog.findFirst.mockResolvedValue(fakeTimeLog());
-    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence()]);
     mockPrisma.timeLog.update.mockResolvedValue(
       fakeTimeLog({ clockOutAt: new Date(), clockOutPhotoId: 'file_2', clockOutFlagged: false }),
     );
@@ -230,7 +271,7 @@ describe('POST /api/v1/time-logs/clock-out', () => {
     expect(mockPrisma.timeLog.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'timelog_1' },
-        data: expect.objectContaining({ clockOutPhotoId: 'file_2', clockOutFlagged: false }),
+        data: expect.objectContaining({ clockOutPhotoId: 'file_2', clockOutFlagged: false, clockOutFlagReason: null }),
       }),
     );
   });
@@ -256,6 +297,66 @@ describe('POST /api/v1/time-logs/clock-out', () => {
   });
 });
 
+describe('POST /api/v1/dtr/check-location', () => {
+  it('warns (flagged: true, reason: OUTSIDE_ALL_GEOFENCES) for a location outside every fence, leaking no geofence data', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence(), fakeGeofence(SATELLITE_SITE)]);
+
+    const res = await request(createApp())
+      .post('/api/v1/dtr/check-location')
+      .set('Cookie', authCookie())
+      .send({ lat: 0, lng: 0 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ flagged: true, reason: 'OUTSIDE_ALL_GEOFENCES' });
+    // Privacy call: no name, no coordinates, no radius — just a verdict.
+    expect(JSON.stringify(res.body)).not.toMatch(/Main Resort|Maria|centerLat|radiusMeters/);
+  });
+
+  it('warns (flagged: true, reason: NO_LOCATION) when no coordinates were provided at all', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence()]);
+
+    const res = await request(createApp()).post('/api/v1/dtr/check-location').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ flagged: true, reason: 'NO_LOCATION' });
+  });
+
+  it('does not warn for a location inside any configured fence', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence(), fakeGeofence(SATELLITE_SITE)]);
+
+    const res = await request(createApp())
+      .post('/api/v1/dtr/check-location')
+      .set('Cookie', authCookie())
+      .send({ lat: 14.6001, lng: 120.9801 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ flagged: false, reason: null });
+  });
+
+  it('does not warn when the geofence list is empty, even with no location', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    mockPrisma.geofence.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).post('/api/v1/dtr/check-location').set('Cookie', authCookie()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ flagged: false, reason: null });
+  });
+
+  it.each(['SYSTEM_ADMIN', 'OWNER', 'HOUSEKEEPING_STAFF', 'RESTAURANT_STAFF'])(
+    'allows %s to pre-check a location — no shift:* permission required, same identity-only precedent as clock-in',
+    async (roleKey) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+      mockPrisma.geofence.findMany.mockResolvedValue([]);
+      const res = await request(createApp()).post('/api/v1/dtr/check-location').set('Cookie', authCookie()).send({});
+      expect(res.status).toBe(200);
+    },
+  );
+});
+
 describe('GET /api/v1/time-logs', () => {
   it('a shift:manage holder sees everyone\'s entries by default', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
@@ -276,6 +377,20 @@ describe('GET /api/v1/time-logs', () => {
     expect(mockPrisma.timeLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ userId: 'user_1' }) }),
     );
+  });
+
+  // Client follow-up, 2026-09-13: the "all time logs" audit view bounds
+  // its query by date range so it never fetches unbounded history.
+  it('applies from/to as a clockInAt range when the audit view passes them', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.timeLog.findMany.mockResolvedValue([]);
+
+    await request(createApp()).get('/api/v1/time-logs?from=2026-09-01&to=2026-09-13').set('Cookie', authCookie());
+
+    const call = mockPrisma.timeLog.findMany.mock.calls[0]![0];
+    expect(call.where.clockInAt.gte).toBeInstanceOf(Date);
+    expect(call.where.clockInAt.lt).toBeInstanceOf(Date);
+    expect(call.where.clockInAt.lt.getTime()).toBeGreaterThan(call.where.clockInAt.gte.getTime());
   });
 });
 
@@ -345,37 +460,101 @@ describe('POST /api/v1/time-logs/:id/review', () => {
   });
 });
 
-describe('GET/PUT /api/v1/dtr/geofence-setting', () => {
-  it('allows system:configure to read the geofence setting', async () => {
+describe('GET/POST/PATCH/DELETE /api/v1/dtr/geofences', () => {
+  it('allows system:configure to list geofences', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
-    mockPrisma.setting.findUnique.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
+    mockPrisma.geofence.findMany.mockResolvedValue([fakeGeofence(), fakeGeofence(SATELLITE_SITE)]);
 
-    const res = await request(createApp()).get('/api/v1/dtr/geofence-setting').set('Cookie', authCookie());
+    const res = await request(createApp()).get('/api/v1/dtr/geofences').set('Cookie', authCookie());
 
     expect(res.status).toBe(200);
-    expect(res.body.geofence).toEqual(GEOFENCE);
-  });
-
-  it('allows system:configure to set the geofence setting', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
-    mockPrisma.setting.upsert.mockResolvedValue({ key: 'dtr.geofence', value: GEOFENCE });
-
-    const res = await request(createApp())
-      .put('/api/v1/dtr/geofence-setting')
-      .set('Cookie', authCookie())
-      .send(GEOFENCE);
-
-    expect(res.status).toBe(200);
-    expect(mockPrisma.setting.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { key: 'dtr.geofence' } }),
+    expect(res.body.geofences).toHaveLength(2);
+    expect(mockPrisma.geofence.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null } }),
     );
   });
 
+  it('allows system:configure to add a named geofence', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.geofence.create.mockResolvedValue(fakeGeofence(SATELLITE_SITE));
+
+    const res = await request(createApp())
+      .post('/api/v1/dtr/geofences')
+      .set('Cookie', authCookie())
+      .send({ name: "Maria's Home", centerLat: 14.60, centerLng: 120.98, radiusMeters: 150 });
+
+    expect(res.status).toBe(201);
+    expect(res.body.geofence.name).toBe("Maria's Home");
+    expect(mockPrisma.geofence.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ name: "Maria's Home" }) }),
+    );
+  });
+
+  it('rejects adding a geofence with a blank name', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    const res = await request(createApp())
+      .post('/api/v1/dtr/geofences')
+      .set('Cookie', authCookie())
+      .send({ name: '', centerLat: 13.75, centerLng: 121.05, radiusMeters: 200 });
+    expect(res.status).toBe(422);
+    expect(mockPrisma.geofence.create).not.toHaveBeenCalled();
+  });
+
+  it('allows system:configure to edit a geofence', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.geofence.findFirst.mockResolvedValue(fakeGeofence());
+    mockPrisma.geofence.update.mockResolvedValue(fakeGeofence({ radiusMeters: 300 }));
+
+    const res = await request(createApp())
+      .patch('/api/v1/dtr/geofences/geo_1')
+      .set('Cookie', authCookie())
+      .send({ name: 'Main Resort', centerLat: 13.75, centerLng: 121.05, radiusMeters: 300 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.geofence.radiusMeters).toBe(300);
+  });
+
+  it('404s editing a geofence that does not exist (or was already deleted)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.geofence.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .patch('/api/v1/dtr/geofences/missing')
+      .set('Cookie', authCookie())
+      .send({ name: 'Main Resort', centerLat: 13.75, centerLng: 121.05, radiusMeters: 200 });
+
+    expect(res.status).toBe(404);
+    expect(mockPrisma.geofence.update).not.toHaveBeenCalled();
+  });
+
+  it('allows system:configure to delete (soft-delete) a geofence', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.geofence.findFirst.mockResolvedValue(fakeGeofence());
+    mockPrisma.geofence.update.mockResolvedValue(fakeGeofence({ deletedAt: new Date() }));
+
+    const res = await request(createApp()).delete('/api/v1/dtr/geofences/geo_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(204);
+    expect(mockPrisma.geofence.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'geo_1' }, data: expect.objectContaining({ deletedAt: expect.any(Date) }) }),
+    );
+  });
+
+  it('404s deleting a geofence that does not exist', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+    mockPrisma.geofence.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp()).delete('/api/v1/dtr/geofences/missing').set('Cookie', authCookie());
+
+    expect(res.status).toBe(404);
+    expect(mockPrisma.geofence.update).not.toHaveBeenCalled();
+  });
+
   it.each(['RESORT_MANAGER', 'HOUSEKEEPING_STAFF', 'OWNER'])(
-    'refuses %s — geofence config is system:configure only',
+    'refuses %s — geofence management is system:configure only',
     async (roleKey) => {
       mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
-      const res = await request(createApp()).get('/api/v1/dtr/geofence-setting').set('Cookie', authCookie());
+      const res = await request(createApp()).get('/api/v1/dtr/geofences').set('Cookie', authCookie());
       expect(res.status).toBe(403);
     },
   );

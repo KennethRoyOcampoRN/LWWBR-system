@@ -3,20 +3,24 @@ import { asyncHandler } from '../../lib/asyncHandler.js';
 import { requireAuth } from '../auth/middleware.js';
 import { requirePermission } from '../auth/requirePermission.js';
 import {
+  checkLocationSchema,
   clockInSchema,
   clockOutSchema,
-  geofenceSettingSchema,
+  geofenceInputSchema,
   listTimeLogsQuerySchema,
   reviewTimeLogSchema,
 } from './schema.js';
 import {
+  checkLocation,
   clockIn,
   clockOut,
-  getGeofenceSetting,
+  createGeofence,
+  deleteGeofence,
   listFlaggedTimeLogs,
+  listGeofences,
   listTimeLogs,
   reviewTimeLog,
-  setGeofenceSetting,
+  updateGeofence,
 } from './service.js';
 
 export const dtrRouter = Router();
@@ -43,6 +47,22 @@ dtrRouter.post(
     const body = clockOutSchema.parse(req.body);
     const timeLog = await clockOut(body, { id: req.userId as string });
     res.status(200).json({ timeLog });
+  }),
+);
+
+// Client follow-up, 2026-09-13: a pre-check the client calls right
+// before clocking in/out, so it can warn the person in the moment
+// instead of only a reviewer finding out later. requireAuth only, same
+// self-service precedent as clock-in/out itself — and deliberately
+// returns no geofence data (see service.ts's own header comment on why
+// leaking configured location names/coordinates to every employee would
+// be an unnecessary exposure).
+dtrRouter.post(
+  '/dtr/check-location',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = checkLocationSchema.parse(req.body);
+    res.status(200).json(await checkLocation(body));
   }),
 );
 
@@ -81,24 +101,44 @@ dtrRouter.post(
   }),
 );
 
-// Client-directed feature, 2026-09-18: the resort's DTR geofence,
-// System-Admin-configurable — the first real use of system:configure,
-// which existed as a permission key but had never been wired to an
-// endpoint before this.
+// Client-directed feature, 2026-09-18 (client follow-up, 2026-09-13:
+// now a list of named geofences, not one setting) — System-Admin-
+// configurable, the first real use of system:configure, which existed
+// as a permission key but had never been wired to an endpoint before
+// this feature.
 dtrRouter.get(
-  '/dtr/geofence-setting',
+  '/dtr/geofences',
   requirePermission('system:configure'),
   asyncHandler(async (_req, res) => {
-    res.status(200).json({ geofence: await getGeofenceSetting() });
+    res.status(200).json({ geofences: await listGeofences() });
   }),
 );
 
-dtrRouter.put(
-  '/dtr/geofence-setting',
+dtrRouter.post(
+  '/dtr/geofences',
   requirePermission('system:configure'),
   asyncHandler(async (req, res) => {
-    const body = geofenceSettingSchema.parse(req.body);
-    const geofence = await setGeofenceSetting(body, { id: req.authUser!.id });
+    const body = geofenceInputSchema.parse(req.body);
+    const geofence = await createGeofence(body);
+    res.status(201).json({ geofence });
+  }),
+);
+
+dtrRouter.patch(
+  '/dtr/geofences/:id',
+  requirePermission('system:configure'),
+  asyncHandler(async (req, res) => {
+    const body = geofenceInputSchema.parse(req.body);
+    const geofence = await updateGeofence(req.params.id as string, body);
     res.status(200).json({ geofence });
+  }),
+);
+
+dtrRouter.delete(
+  '/dtr/geofences/:id',
+  requirePermission('system:configure'),
+  asyncHandler(async (req, res) => {
+    await deleteGeofence(req.params.id as string);
+    res.status(204).send();
   }),
 );

@@ -40,3 +40,14 @@ export interface Geofence {
 export function isWithinGeofence(lat: number, lng: number, geofence: Geofence): boolean {
   return haversineDistanceMeters(lat, lng, geofence.centerLat, geofence.centerLng) <= geofence.radiusMeters;
 }
+
+// Client follow-up, 2026-09-13: multiple named geofences replace the
+// single one — "inside any one counts," so a location is only ever
+// considered outside if it misses every configured fence. An empty
+// list is vacuously "not within any," which is correct here: the
+// caller (dtr/service.ts) is expected to check for an empty list
+// separately before treating that as a flaggable miss, since an
+// unconfigured property has nothing to be outside of.
+export function isWithinAnyGeofence(lat: number, lng: number, geofences: Geofence[]): boolean {
+  return geofences.some((geofence) => isWithinGeofence(lat, lng, geofence));
+}

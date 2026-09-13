@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { haversineDistanceMeters, isWithinGeofence } from '../src/geo.js';
+import { haversineDistanceMeters, isWithinAnyGeofence, isWithinGeofence } from '../src/geo.js';
 
 describe('haversineDistanceMeters', () => {
   it('returns 0 for identical points', () => {
@@ -49,5 +49,26 @@ describe('isWithinGeofence', () => {
 
   it('is outside well beyond the radius', () => {
     expect(isWithinGeofence(13.80, 121.05, geofence)).toBe(false);
+  });
+});
+
+describe('isWithinAnyGeofence', () => {
+  const fenceA = { centerLat: 13.75, centerLng: 121.05, radiusMeters: 200 };
+  const fenceB = { centerLat: 14.60, centerLng: 120.98, radiusMeters: 200 };
+
+  it('is true when inside the second fence but outside the first — "inside any one counts"', () => {
+    expect(isWithinAnyGeofence(14.6001, 120.9801, [fenceA, fenceB])).toBe(true);
+  });
+
+  it('is true when inside the first fence but outside the second', () => {
+    expect(isWithinAnyGeofence(13.7501, 121.0501, [fenceA, fenceB])).toBe(true);
+  });
+
+  it('is false when outside every configured fence', () => {
+    expect(isWithinAnyGeofence(0, 0, [fenceA, fenceB])).toBe(false);
+  });
+
+  it('is false for an empty list — the caller decides what that means, not this function', () => {
+    expect(isWithinAnyGeofence(13.75, 121.05, [])).toBe(false);
   });
 });

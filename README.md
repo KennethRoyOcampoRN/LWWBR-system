@@ -6172,3 +6172,125 @@ now at 12 tests, up from 10). `npm run build -w apps/web` clean.
 Verified live in a headless browser against the built app: screenshots
 of both button states (before/after clocking in) sent to the client
 for a look ahead of rollout.
+
+### DTR: multiple named geofences, in-the-moment warning, and a real audit view (2026-09-13)
+
+Three related client follow-ups on DTR, same slice.
+
+**Multiple named geofences.** The single `Setting`-backed geofence is
+gone, replaced by a real `Geofence` model — `name`, `centerLat`,
+`centerLng`, `radiusMeters`, soft-deleted (matching spec §4.5's default;
+nothing else references `Geofence.id`, same reasoning that put Shift's
+own cancel action on soft-delete over the Option-B hard-delete
+`MenuItem`/`AmenityItem` use). "Inside any one counts": a clock-in/out
+is only flagged if it falls outside every configured fence — new
+`isWithinAnyGeofence` in `packages/shared/src/geo.ts` (`.some()` over
+`isWithinGeofence`), covered by 4 new tests including the specific case
+the client asked for (inside the second fence, nowhere near the first
+— still not flagged). Any configured location works for anyone —
+deliberately no `userId` on `Geofence`, the client's explicit call. An
+empty list keeps the exact old behavior: nothing gets flagged for
+location reasons. CRUD (`GET/POST/PATCH/DELETE /dtr/geofences`) stays
+`system:configure`-only, same as the old single-geofence setting.
+**Migration**: no automatic carry-forward (client's explicit choice,
+option (a) of two offered) — the old `Setting` row is simply abandoned,
+dormant and harmless, and whoever configured the original geofence
+re-adds it once as a named entry through the new list UI.
+
+**Distinguishing why an entry was flagged.** `TimeLog` gained
+`clockInFlagReason`/`clockOutFlagReason` (`NO_LOCATION` |
+`OUTSIDE_ALL_GEOFENCES`, null when not flagged) — being flagged can only
+happen when at least one geofence exists (an empty list never flags
+anything), so there's no ambiguity between "nothing configured" and
+"outside every fence" at the flag level; this only separates the two
+flagged cases from each other, which a reviewer benefits from knowing
+apart. Both `clockIn`/`clockOut` now share one `evaluateLocation`
+function with the new pre-check endpoint below, so there's no risk of
+the warning and the authoritative server-side flag ever disagreeing.
+
+**Warn in the moment, not just flag silently.** New `POST
+/dtr/check-location` (`requireAuth` only, same self-service precedent as
+clock-in/out itself) — takes optional `lat`/`lng`, returns `{ flagged,
+reason }` and nothing else: no geofence names, coordinates, or radius.
+That's a deliberate privacy call, not an oversight — the client's own
+example named a location "Maria's Home," and there's no reason every
+employee needs to be able to enumerate the property's configured
+locations (some of which might be someone's home address) just by
+probing this endpoint. The client (`TimeClockSection.handleClock`) now
+captures location, calls this endpoint, and — if it comes back flagged —
+shows `window.confirm('You appear to be outside a known work location.
+Clock in anyway?')` before uploading the photo or submitting anything,
+reusing the exact cancel-or-continue pattern already used for every
+delete action in this app (`AmenitiesPage`, `StockPage`, `FnbPage`,
+`UnitsPage`). Cancel aborts with nothing sent — no wasted upload, no
+clock event. Continue proceeds exactly as before: the real clock-in/out
+re-evaluates the location server-side, authoritatively — this pre-check
+is a UX convenience, never the source of truth.
+
+**A map, and a real audit view beyond flagged-only.** Confirmed first
+that location wasn't shown anywhere at all, not even as raw numbers —
+true gap, now closed for management views only (an employee's own "My
+recent time logs" list still shows no coordinates, deliberately — no
+reason to expose that to the person the location is about). Chose an
+OpenStreetMap public embed `<iframe>` for the map — no new dependency
+(spec §3: ask before adding one), no API key, works today. Tradeoff,
+flagged rather than hidden: this depends on `openstreetmap.org`'s own
+embed service staying up, can't draw the geofence radius on top of it,
+and isn't brandable — all fine at this app's scale (15-30 users,
+nowhere near OSM's "self-host your tiles" heavy-traffic threshold), but
+a real interactive library (Leaflet) would fix all three at the cost of
+two new dependencies. Flagged Entries now shows this map plus the flag
+reason per clock event, alongside the existing photo link. New "All
+time logs" section (`shift:manage`-gated, same as Flagged Entries,
+rendered alongside it rather than replacing it) is the general audit
+view the client asked for — every clock-in/out in a date range
+(defaults to the last 14 days, so it never fetches the property's
+entire DTR history unbounded as the pilot accumulates data), selfie +
+map per entry, a Normal/Flagged/Reviewed badge, and an employee filter
+reusing `GET /shifts/assignable-users` — the shift:manage-gated picker
+built for (and, per spec.md §13 decision 9, currently dormant in) the
+roster module. The same "Mark reviewed" action works inline here too,
+for anything still flagged and unreviewed, so a manager isn't forced to
+jump between two sections to close one out. `listTimeLogs` gained
+optional `from`/`to` query params (same `YYYY-MM-DD` + Asia/Manila
+`resolveDate` convention as `reports/service.ts`) to back this — the
+self-scoped "my recent time logs" list never sends them, so its
+behavior is unchanged.
+
+**Confirmed, unchanged**: `RESORT_MANAGER` (and every other
+`shift:manage` holder) still sees Flagged Entries exactly as before —
+that gate is untouched by any of this.
+
+Test plan: `packages/shared` — 4 new `isWithinAnyGeofence` tests
+(inside the second fence only, inside the first only, outside both,
+empty list). `apps/api` — rewrote the `dtr` router test file around
+`Geofence` CRUD replacing the old `Setting` mock: the multi-fence
+"inside any one counts" case end to end through clock-in, `NO_LOCATION`
+vs `OUTSIDE_ALL_GEOFENCES` reason coding on both clock-in and clock-out,
+the empty-list fallback, `POST /dtr/check-location` returning the same
+verdict as a real clock-in without leaking geofence data (asserted by
+scanning the response body for the fixture's own names/fields), full
+Geofence CRUD including the `system:configure` permission boundary and
+404s on editing/deleting a missing or already-deleted one, and
+`listTimeLogs`'s new date-range filtering. `apps/web` — the warning
+dialog's Cancel-aborts and Continue-submits paths, no dialog when the
+pre-check is clear, the map `<iframe>` rendering (asserted via its
+`title` and that its `src` contains the right `marker=lat,lng`) in both
+Flagged Entries and the new audit section, the audit section's presence
+for `shift:manage` vs. absence for `shift:read`-only, and the
+geofence-management add/edit/delete flow. `apps/api` 560/563 (same 3
+pre-existing sandbox-network-only failures), `packages/shared` 94/94,
+`apps/web` 136/136. `npm run typecheck`/`lint` clean across all three
+packages, `npm run build` clean across all three. Verified live in a
+headless browser against the built app: a System-Admin fixture showing
+two named work locations and a full audit view with both a flagged and
+a normal entry, each with a photo link and a map. Sent to the client —
+noted that this session's own network sandbox blocks the headless
+browser from reaching `openstreetmap.org`, so the map tiles show broken
+in that particular screenshot even though the `<iframe>` itself is
+correctly wired (confirmed via the `src`-content test assertions); a
+normal browser with real internet access renders actual map tiles.
+
+**Client needs to run `npx prisma db push` (from `apps/api`) again**
+before testing this live — `TimeLog` gained two enum columns and a new
+`Geofence` table exists now.
