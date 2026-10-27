@@ -6294,3 +6294,221 @@ normal browser with real internet access renders actual map tiles.
 **Client needs to run `npx prisma db push` (from `apps/api`) again**
 before testing this live — `TimeLog` gained two enum columns and a new
 `Geofence` table exists now.
+
+### Major architectural change: local self-hosting on a mini PC, off Netlify + Supabase (2026-10-27)
+
+Client decision (spec.md §13 decision 11, reversing decision 3 and
+§3.1 in full): the resort runs self-hosted on a dedicated mini PC
+on-site now, not Netlify + Supabase. Reason given: frequent internet
+outages meant cloud hosting left staff unable to work at all during an
+outage — worse than the remote-access inconvenience of going local.
+Staff are on-site; the owner and client reach the system via
+TeamViewer into the mini PC instead of over the public internet. Full
+setup instructions: `docs/local-hosting-setup.md`.
+
+**Postgres** — schema unchanged. Confirmed portable (no RLS, no
+Postgres extensions, no Supabase-only column types) by actually
+standing up a real local Postgres 16 in this session's sandbox,
+`prisma db push`-ing against it, and seeding it — not just by reading
+the schema. `DATABASE_URL`/`DIRECT_URL` point at `localhost`; no
+pooler needed (that pooled/direct split was a serverless-cold-start
+workaround specific to the Netlify path).
+
+**Storage** — new `LocalDiskStorageAdapter` (`StorageAdapter`
+interface unchanged). `upload`/`download`/`delete` are plain `fs`
+calls under a configured `UPLOADS_DIR`. `getSignedUrl()` is the one
+place the Supabase shape didn't translate directly: Supabase hands
+back a link on its own storage host; there isn't a separate host here,
+so this mints an HMAC-signed, time-limited link back at this same API
+(`GET /files/signed`) instead — same short-lived-unguessable-link
+security shape as what ships today, not a regression, not the
+stricter session-authenticated route spec §3.1.1 describes but that
+was never actually built (flagging that pre-existing gap here, not
+silently working around it — see `docs/local-hosting-setup.md`'s own
+"Known pre-existing gaps" section).
+
+**Realtime** — new `SocketIoRealtimeAdapter` (`RealtimeAdapter`
+interface unchanged), returning to spec §9.1's own pre-Supabase-pivot
+design (namespace `/rt`, `user:{id}`/`dept:{department}`/`property`
+rooms, the same event names already specified there) rather than
+inventing a new one. Auth happens once, at the socket handshake — the
+same access-token cookie `requireAuth` already verifies, since a
+same-origin WebSocket carries cookies automatically — and room
+membership is decided server-side from that verified token, never from
+anything the client claims, so a socket can't join someone else's
+`user:{id}` room by asking for it (covered by a real client-against-
+real-server test, not a mock, specifically proving that). The frontend
+(`apps/web/src/lib/realtime.ts`) keeps its exact three exported
+functions and connection-status contract — only the implementation
+underneath swapped from `@supabase/supabase-js` to `socket.io-client`,
+so nothing calling these (`UnitsPage`, `FnbPage`, the notification
+bell) needed to change. **The 60-second poll fallback is completely
+untouched** — it was already adapter-agnostic.
+
+**Scheduled jobs** — Netlify Scheduled Functions don't exist in this
+deployment. The jobs (`amenity-overdue`, `exception-alerts`) were
+already plain `JOB_SECRET`-protected HTTP endpoints, built specifically
+so the trigger is swappable — Windows Task Scheduler now calls the
+same endpoints on the same 15-minute cadence `netlify.toml` used.
+`scripts/check-serverless-safety.sh` (bans `setInterval` in API code)
+needed no changes — nothing here introduced an in-process timer; the
+cron-like behavior stayed external, just a different scheduler.
+
+**Auto-start on reboot** — NSSM wraps the long-running Node process
+(API + Socket.IO + the built SPA, one process, one port — see below)
+as a real Windows service: starts before login, survives reboots,
+auto-restarts on crash. Chosen over PM2 (not native to Windows, needs
+a community wrapper to become a real service) and over a plain Task
+Scheduler "at startup" trigger (doesn't manage process lifecycle
+anywhere near as cleanly). Postgres's own Windows service already
+auto-starts via the installer default.
+
+**One process serves everything now.** `createApp()` gained an
+optional `serveStaticDir` option — registered after the `/api/v1`
+routers but before the catch-all 404, so an unmatched non-API GET
+falls through to `index.html` (the SPA-router pattern) instead of a
+JSON 404. The self-hosted entrypoint (`apps/api/src/index.ts`) turns
+this on via `SERVE_WEB_DIST=true`, off by default so ordinary
+`npm run dev` (Vite serving the frontend separately) is unaffected.
+This also means CORS is moot for this deployment (everything's
+same-origin) — the `cors()` middleware stays configured but does
+nothing harmful either way.
+
+**`LAN_MODE` — the single most important finding from the pre-work
+audit.** Running this app in `NODE_ENV=production` (the right mode for
+everything else production needs — no stack traces, etc.) over plain
+HTTP would previously have been **completely broken**: `forceHttps`
+403s every non-TLS request in production, `cookies.ts` sets the
+`Secure` flag in production (a `Secure` cookie is simply never sent
+over plain HTTP — login would silently fail), and `helmet()` sends an
+unconditional HSTS header regardless of environment. New `LAN_MODE` env
+flag — an explicit opt-in, not a loosened default — turns all three off
+together. A cloud deployment that never sets it keeps forcing HTTPS
+exactly as before; confirmed by a real end-to-end run in this session
+(login over plain HTTP, inspected the actual `Set-Cookie` header: no
+`Secure` flag; confirmed `strict-transport-security` absent from the
+response). `forceHttps.ts` and `cookies.ts` read `process.env.LAN_MODE`
+directly rather than through `getEnv()`'s cached singleton — the
+existing `forceHttps.test.ts` already flips `NODE_ENV` per test case,
+which a cached `getEnv()` read would have silently ignored after its
+first call; matching that file's own existing convention kept it
+passing unchanged instead of needing a rewrite.
+
+Credential exposure on plain HTTP is mitigated by putting the mini PC
+and staff devices on a **separate wifi SSID** from the guest network —
+network segmentation, not certificates (`docs/local-hosting-setup.md`
+§9). The client's own correction mid-plan, recorded accurately in
+spec.md decision 10 rather than left wrong: GPS itself works fully
+offline — the reason geofencing can't work here is the browser's
+secure-origin requirement for `navigator.geolocation`, not internet
+connectivity, so a future reader shouldn't conclude that restoring
+internet access (rather than going HTTPS) would bring it back.
+
+**Geofencing — dormant, not deleted (spec.md §13 decision 10).** New
+`GEOFENCE_CHECK_ENABLED` env flag (default `true`, unaffected cloud
+behavior) turns the *entire* flagging mechanism off together with
+geolocation when `false` — not just the location-capture half. Without
+this, every single clock-in/out would be `NO_LOCATION`-flagged forever
+(nothing can ever provide a location on an insecure origin), burying
+Flagged Entries in 100% noise. The `Geofence` model, `evaluateLocation`,
+`/dtr/check-location`, the map, and the full audit-view stack from the
+previous slice all stay in the codebase, tested and working, exactly
+per the dormant-not-deleted pattern decisions 8 and 9 already
+established — not something invented new for this slice.
+
+**Dormant vs. deleted, the client's explicit split.** Both
+`StorageAdapter` and `RealtimeAdapter` keep **both** implementations —
+Supabase and local/Socket.IO — selected by new `STORAGE_ADAPTER`/
+`REALTIME_ADAPTER` env vars (default `supabase`, unaffected cloud
+behavior); a future cloud move is a config change, not a rewrite. The
+Netlify function wrapper (`netlify/functions/api.ts`), `netlify.toml`,
+and the Netlify-specific dependencies (`@netlify/functions`,
+`serverless-http`, `netlify-cli`) were **deleted outright** — no
+interface protects those, so leaving them would invite someone to
+believe a Netlify deploy still works when it won't. Recoverable from
+git history if ever needed.
+
+**Backups**: a nightly PowerShell script (Task Scheduler) runs
+`pg_dump` plus a `robocopy /MIR` of the uploads directory to an
+external drive — works with zero internet, and prunes anything older
+than 30 days so the drive doesn't fill silently. A second, more
+frequent Task Scheduler entry runs `rclone sync` from that external
+drive to a **fresh Backblaze B2 bucket** (client's explicit call — not
+reusing Supabase Storage, specifically to avoid keeping a cloud
+dependency alive in a system being deliberately taken off the cloud's
+critical path). `rclone sync` only transfers what's changed and simply
+does nothing (no error, no special handling needed) when the
+connection is down — the next successful run catches up on its own.
+
+**Fresh start on data, not migrated** — confirmed with the client that
+everything currently in the Supabase project (stock items,
+remittances, quotations, test clock-ins) is their own test data from
+earlier sessions, nothing real, so standing up the mini PC's database
+fresh is correct rather than needing a migration path.
+
+A genuine bug caught only by manually running the real server end to
+end, not by any mocked test: `LocalDiskStorageAdapter.getSignedUrl()`
+originally minted a link at `/files/signed`, missing the `/api/v1`
+prefix `GET /files/signed` is actually mounted under
+(`app.use('/api/v1', filesRouter)` in `app.ts`). The link silently
+resolved to the SPA's own `index.html` fallback instead of the file —
+in a real browser, a selfie photo would have shown nothing, with no
+error anywhere, and every unit test for the adapter itself would still
+have passed, since none of them exercised the actual mounted route.
+Fixed, and now covered two ways: a unit test pinning the URL's prefix,
+and a real `supertest`-against-the-actual-route test exercising
+`GET /api/v1/files/signed` end to end (upload → sign → fetch
+unauthenticated → bytes match; a tampered signature correctly 403s).
+A second real bug, caught the same way: `z.coerce.boolean()` in the
+env schema is `Boolean(value)` under the hood, so the literal string
+`"false"` coerces to `true` (a non-empty string is always truthy) —
+`GEOFENCE_CHECK_ENABLED=false` would have silently meant "on". Fixed
+with a proper string-literal-to-boolean transform
+(`z.enum(['true','false'])`), applied to all three new boolean flags
+(`LAN_MODE`, `GEOFENCE_CHECK_ENABLED`, `SERVE_WEB_DIST`).
+
+Test plan: `apps/api` — a `LocalDiskStorageAdapter` round-trip test
+against a real temp directory (upload/download/delete, a valid signed
+URL, expiry, tampered signature, wrong-key signature) that — unlike
+the existing Supabase round-trip tests — actually runs in this sandbox
+rather than skipping; a `GET /files/signed` route test using a real
+adapter instance (not mocked) against a real temp directory, including
+the 404 when `STORAGE_ADAPTER` resolves to something else; a real
+`SocketIoRealtimeAdapter` round-trip (real `http.Server` + real
+`socket.io-client`, not mocked) covering a successful authenticated
+broadcast, a refused unauthenticated connection, a refused connection
+for a deleted user, and — the part Supabase's single global channel
+never had to prove — that a broadcast on a different user's own room
+is never received; `LAN_MODE` tests covering `forceHttps`'s 403/allow,
+the HSTS header's presence/absence, and the cookie `Secure` flag's
+on/off, each confirming the cloud-default case is unaffected;
+`GEOFENCE_CHECK_ENABLED` tests confirming `false` skips the geofence
+query entirely and never flags, while unset preserves exact prior
+behavior. All of the above (and the existing `forceHttps.test.ts`,
+kept passing unchanged) are deliberately surgical about `process.env`
+in their setup/teardown — save and restore only the specific keys each
+file touches, never `process.env` wholesale, since vitest can run
+multiple test files in the same worker process and a blanket
+reassignment risks clobbering ambient state a sibling file depends on.
+`apps/api` 582/585 (3 pre-existing sandbox-network-only Supabase
+round-trip skips, unchanged), `apps/web` 138/138, `packages/shared`
+94/94 (unchanged this slice). `npm run typecheck`/`lint` clean across
+all three packages, `npm run build` clean across all three. Beyond
+unit tests: a real end-to-end run against a real local Postgres 16 and
+a real built server in this session's own sandbox — login over plain
+HTTP with the `Secure` flag confirmed absent from `Set-Cookie`, HSTS
+confirmed absent, an authenticated Socket.IO connection succeeding
+while an unauthenticated one was refused, and a full file upload →
+clock-in → signed-URL → fetch round trip with byte-for-byte verified
+contents — not just unit tests asserting the pieces in isolation.
+
+`spec.md` §3.1 kept as the historical record of the cloud decision and
+the dormant cloud path's own documentation, with inline notes at each
+point decision 11 supersedes it, rather than rewritten — same
+established pattern as decisions 8 and 9, which never edited the spec
+text they reversed either, only the §13 table and its consequences
+section. §13 decision 8's own consequences bullet needed a correction
+in the same pass: it referenced re-adding a `netlify.toml` schedule
+entry to revive the owner digest, which no longer exists now that
+`netlify.toml` is deleted — updated to reference Task Scheduler
+instead.

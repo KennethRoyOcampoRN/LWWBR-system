@@ -1,13 +1,15 @@
-import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
+import { io, type Socket } from 'socket.io-client';
 
-// Spec §9.1 / §3: MVP realtime transport is Supabase Realtime broadcast
-// only (no Socket.IO implementation is built) — channel `property`,
-// event `unit.status.changed`, payload `{ entityId, actorId, at, summary, ... }`.
-// This mirrors apps/api's SupabaseRealtimeAdapter.emit() exactly: the
-// backend broadcasts on the `property` channel after every unit status
-// write (normal, override, or forced correction), and this is the
-// browser-side subscriber. Uses the public anon key — never the service
-// role key, which must never reach the browser bundle.
+// Client decision, 2026-10-27 (spec.md §13 decision 11): local self-
+// hosting on a mini PC — Socket.IO per spec §9.1's original design
+// (namespace /rt), not Supabase Realtime. Same exported functions, same
+// payload shapes, same connecting/connected/reconnecting/disabled status
+// contract as before this swap, so nothing calling these (UnitsPage,
+// FnbPage, the notification bell) needed to change at all — only what's
+// underneath changed. Auth happens server-side at the socket handshake
+// (apps/api's socketIoServer.ts reads the same access-token cookie
+// requireAuth does, since a same-origin WebSocket carries cookies
+// automatically) — this client never sends credentials of its own.
 export interface UnitStatusChangedPayload {
   entityId: string;
   actorId: string;
@@ -21,50 +23,64 @@ export interface UnitStatusChangedPayload {
 
 // Connection health for the drawer/grid's "reconnecting" indicator (spec
 // §3's resiliency rule: "a dropped socket must never leave a stale board
-// with no recovery path"). 'disabled' means no Supabase env vars were
-// configured — realtime is simply off, not broken; the 60s poll fallback
-// in UnitsPage still keeps the grid current either way.
+// with no recovery path"). 'disabled' is reachable only via VITE_REALTIME_
+// DISABLED (an explicit opt-out, e.g. for a test harness); ordinarily the
+// socket always attempts to connect, same-origin, no separate config
+// needed — the 60s poll fallback in UnitsPage still keeps the grid
+// current regardless of whether the socket is up.
 export type RealtimeConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disabled';
 
-let cachedClient: ReturnType<typeof createClient> | undefined | null;
+let cachedSocket: Socket | undefined | null;
 
-function getSupabaseClient() {
-  if (cachedClient !== undefined) {
-    return cachedClient;
+function getSocket(): Socket | null {
+  if (cachedSocket !== undefined) {
+    return cachedSocket;
   }
-  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-  if (!url || !anonKey) {
-    console.warn(
-      'VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are not set — realtime status updates are disabled; the grid still refreshes via its 60s poll fallback.',
-    );
-    cachedClient = null;
-    return cachedClient;
+  if (import.meta.env.VITE_REALTIME_DISABLED === 'true') {
+    cachedSocket = null;
+    return cachedSocket;
   }
-  try {
-    // Real bug, found live 2026-08-22: .env.example's placeholder
-    // (`https://<project-ref>.supabase.co`) left in .env untouched
-    // crashed createClient() with an uncaught "Invalid supabaseUrl" —
-    // thrown synchronously from inside a React effect, with no error
-    // boundary in this app, so it took down the whole Units page to a
-    // blank screen with no visible message. A malformed value (leftover
-    // placeholder, typo) must degrade to 'disabled' the same way a
-    // missing one does, not crash the tree.
-    cachedClient = createClient(url, anonKey);
-  } catch (error) {
-    console.error(
-      `VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are set but invalid (still a placeholder from .env.example, or a typo?) — realtime status updates are disabled; the grid still refreshes via its 60s poll fallback. Underlying error: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    cachedClient = null;
-  }
-  return cachedClient;
+  cachedSocket = io({ path: '/rt', withCredentials: true, autoConnect: true });
+  return cachedSocket;
 }
 
-// Spec §9.1: `notification.new` — emitted on either a `user:{id}` channel
-// (a notification targeted at one person, e.g. a work order assigned to
-// them) or a `dept:{department}` channel (e.g. an urgent work order,
-// §7.2 — everyone in the target department). This is the browser-side
-// payload shape apps/api's notifications module emits on both.
+// Spec §9.1: `unit.status.changed`, emitted on the `property` channel —
+// this is the browser-side payload shape apps/api's units/service.ts
+// broadcasts after every unit status write (normal, override, or forced
+// correction).
+export function subscribeToUnitStatusChanges(
+  onEvent: (payload: UnitStatusChangedPayload) => void,
+  onStatusChange: (status: RealtimeConnectionStatus) => void,
+): () => void {
+  const socket = getSocket();
+  if (!socket) {
+    onStatusChange('disabled');
+    return () => {};
+  }
+
+  onStatusChange(socket.connected ? 'connected' : 'connecting');
+  const handleEvent = (payload: UnitStatusChangedPayload) => onEvent(payload);
+  const handleConnect = () => onStatusChange('connected');
+  const handleDisconnect = () => onStatusChange('reconnecting');
+
+  socket.on('unit.status.changed', handleEvent);
+  socket.on('connect', handleConnect);
+  socket.on('disconnect', handleDisconnect);
+  socket.on('reconnect_attempt', handleDisconnect);
+
+  return () => {
+    socket.off('unit.status.changed', handleEvent);
+    socket.off('connect', handleConnect);
+    socket.off('disconnect', handleDisconnect);
+    socket.off('reconnect_attempt', handleDisconnect);
+  };
+}
+
+// Spec §9.1: `notification.new`, emitted on either a `user:{id}` channel
+// (a notification targeted at one person) or a `dept:{department}`
+// channel (everyone in a target department, §7.2). The server already
+// joins both rooms for every connected socket at handshake time
+// (socketIoServer.ts), so the browser doesn't need to request them.
 export interface NotificationPayload {
   entityId: string;
   actorId: string;
@@ -78,43 +94,11 @@ export interface NotificationPayload {
 }
 
 /**
- * Subscribes to the `property` channel's `unit.status.changed` broadcast.
- * Returns an unsubscribe function safe to call from a React effect
- * cleanup even if the client was never created (env vars unset).
+ * Subscribes to the `property` channel's `fnb.order.created` and
+ * `fnb.order.status.changed` broadcasts. Same disabled/connecting/
+ * connected/reconnecting status contract and cleanup-safety as
+ * subscribeToUnitStatusChanges.
  */
-export function subscribeToUnitStatusChanges(
-  onEvent: (payload: UnitStatusChangedPayload) => void,
-  onStatusChange: (status: RealtimeConnectionStatus) => void,
-): () => void {
-  const client = getSupabaseClient();
-  if (!client) {
-    onStatusChange('disabled');
-    return () => {};
-  }
-
-  let channel: RealtimeChannel | null = client.channel('property');
-  onStatusChange('connecting');
-  channel.on('broadcast', { event: 'unit.status.changed' }, ({ payload }) => {
-    onEvent(payload as UnitStatusChangedPayload);
-  });
-  channel.subscribe((status) => {
-    onStatusChange(status === 'SUBSCRIBED' ? 'connected' : 'reconnecting');
-  });
-
-  return () => {
-    if (channel) {
-      void client.removeChannel(channel);
-      channel = null;
-    }
-  };
-}
-
-// Spec §9.1: `fnb.order.created`/`fnb.order.status.changed`, same
-// `property` channel and `{ entityId, actorId, at, summary }` shape as
-// `unit.status.changed` — see apps/api's fnb/service.ts
-// broadcastFnbOrderChanged. The kitchen board only needs "something
-// changed, refetch," not a patch-in-place payload, so both event names
-// feed the same callback.
 export interface FnbOrderChangedPayload {
   entityId: string;
   actorId: string;
@@ -122,95 +106,70 @@ export interface FnbOrderChangedPayload {
   summary: string;
 }
 
-/**
- * Subscribes to the `property` channel's `fnb.order.created` and
- * `fnb.order.status.changed` broadcasts. Same disabled/connecting/
- * connected/reconnecting status contract and cleanup-safety as
- * subscribeToUnitStatusChanges.
- */
 export function subscribeToFnbOrderChanges(
   onEvent: (payload: FnbOrderChangedPayload) => void,
   onStatusChange: (status: RealtimeConnectionStatus) => void,
 ): () => void {
-  const client = getSupabaseClient();
-  if (!client) {
+  const socket = getSocket();
+  if (!socket) {
     onStatusChange('disabled');
     return () => {};
   }
 
-  let channel: RealtimeChannel | null = client.channel('property');
-  onStatusChange('connecting');
-  const handleBroadcast = ({ payload }: { payload: unknown }) => onEvent(payload as FnbOrderChangedPayload);
-  channel.on('broadcast', { event: 'fnb.order.created' }, handleBroadcast);
-  channel.on('broadcast', { event: 'fnb.order.status.changed' }, handleBroadcast);
-  channel.subscribe((status) => {
-    onStatusChange(status === 'SUBSCRIBED' ? 'connected' : 'reconnecting');
-  });
+  onStatusChange(socket.connected ? 'connected' : 'connecting');
+  const handleEvent = (payload: FnbOrderChangedPayload) => onEvent(payload);
+  const handleConnect = () => onStatusChange('connected');
+  const handleDisconnect = () => onStatusChange('reconnecting');
+
+  socket.on('fnb.order.created', handleEvent);
+  socket.on('fnb.order.status.changed', handleEvent);
+  socket.on('connect', handleConnect);
+  socket.on('disconnect', handleDisconnect);
+  socket.on('reconnect_attempt', handleDisconnect);
 
   return () => {
-    if (channel) {
-      void client.removeChannel(channel);
-      channel = null;
-    }
+    socket.off('fnb.order.created', handleEvent);
+    socket.off('fnb.order.status.changed', handleEvent);
+    socket.off('connect', handleConnect);
+    socket.off('disconnect', handleDisconnect);
+    socket.off('reconnect_attempt', handleDisconnect);
   };
 }
 
 /**
- * Subscribes to both channels a signed-in user's notifications can arrive
- * on: their own `user:{id}` channel (assigned-to-you, reopened-on-you)
- * and their `dept:{department}` channel (urgent tickets filed for their
- * department, §7.2). Same disabled/connecting/connected/reconnecting
- * status contract as subscribeToUnitStatusChanges — the notification bell
- * degrades to poll-only rather than crashing when realtime is off.
+ * Subscribes to `notification.new`. userId/department are accepted for
+ * signature compatibility with the pre-swap API (and because the server
+ * independently joins the caller to exactly these two rooms at handshake
+ * time, from the verified token — never from what the client claims) —
+ * this function doesn't need to tell the server anything, there's simply
+ * nothing more to send; the socket connection itself is already scoped.
  */
 export function subscribeToNotifications(
-  userId: string,
-  department: string,
+  _userId: string,
+  _department: string,
   onEvent: (payload: NotificationPayload) => void,
   onStatusChange: (status: RealtimeConnectionStatus) => void,
 ): () => void {
-  const client = getSupabaseClient();
-  if (!client) {
+  const socket = getSocket();
+  if (!socket) {
     onStatusChange('disabled');
     return () => {};
   }
 
-  let userChannel: RealtimeChannel | null = client.channel(`user:${userId}`);
-  let deptChannel: RealtimeChannel | null = client.channel(`dept:${department}`);
-  onStatusChange('connecting');
+  onStatusChange(socket.connected ? 'connected' : 'connecting');
+  const handleEvent = (payload: NotificationPayload) => onEvent(payload);
+  const handleConnect = () => onStatusChange('connected');
+  const handleDisconnect = () => onStatusChange('reconnecting');
 
-  const handleBroadcast = ({ payload }: { payload: unknown }) => onEvent(payload as NotificationPayload);
-  userChannel.on('broadcast', { event: 'notification.new' }, handleBroadcast);
-  deptChannel.on('broadcast', { event: 'notification.new' }, handleBroadcast);
-
-  // Both channels report their own subscribe status independently;
-  // 'connected' only once both have confirmed, 'reconnecting' the moment
-  // either drops.
-  const statuses = { user: 'connecting', dept: 'connecting' };
-  const reportCombinedStatus = () => {
-    if (statuses.user === 'SUBSCRIBED' && statuses.dept === 'SUBSCRIBED') {
-      onStatusChange('connected');
-    } else {
-      onStatusChange('reconnecting');
-    }
-  };
-  userChannel.subscribe((status) => {
-    statuses.user = status;
-    reportCombinedStatus();
-  });
-  deptChannel.subscribe((status) => {
-    statuses.dept = status;
-    reportCombinedStatus();
-  });
+  socket.on('notification.new', handleEvent);
+  socket.on('connect', handleConnect);
+  socket.on('disconnect', handleDisconnect);
+  socket.on('reconnect_attempt', handleDisconnect);
 
   return () => {
-    if (userChannel) {
-      void client.removeChannel(userChannel);
-      userChannel = null;
-    }
-    if (deptChannel) {
-      void client.removeChannel(deptChannel);
-      deptChannel = null;
-    }
+    socket.off('notification.new', handleEvent);
+    socket.off('connect', handleConnect);
+    socket.off('disconnect', handleDisconnect);
+    socket.off('reconnect_attempt', handleDisconnect);
   };
 }

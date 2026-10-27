@@ -3,6 +3,7 @@ import { TZDate } from '@date-fns/tz';
 import { addDays } from 'date-fns';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { ApiError } from '../../lib/apiError.js';
+import { getEnv } from '../../lib/env.js';
 import { prisma } from '../../lib/prisma.js';
 import type {
   CheckLocationInput,
@@ -107,13 +108,33 @@ async function validatePhoto(photoFileId: string) {
 
 type FlagReason = 'NO_LOCATION' | 'OUTSIDE_ALL_GEOFENCES';
 
-// Flags only when at least one Geofence is configured and the location
-// is either missing (can't be verified) or outside every one of them —
-// see this module's own header comment.
+// Client decision, 2026-10-27 (spec.md §13 decision 10): dormant, not
+// deleted, together with the rest of the geofence/flagging mechanism —
+// `navigator.geolocation` is only ever exposed to a page on a secure
+// origin, and the self-hosted mini PC deployment is deliberately plain
+// HTTP (spec.md §13 decision 11; GPS itself needs no internet and would
+// work fine offline — the blocker is the browser's secure-origin
+// requirement, not connectivity, so this is NOT re-enabled just by the
+// internet coming back). GEOFENCE_CHECK_ENABLED=false turns the *whole*
+// flagging mechanism off together, not just the geolocation half of it:
+// with location always unavailable on an insecure origin, leaving
+// flagging on would mark every single clock-in/out NO_LOCATION forever,
+// burying the Flagged Entries queue in 100% noise instead of the
+// genuine exceptions it exists to surface. Flipping this back to true
+// (going HTTPS) is what actually restores geofencing — nothing else
+// needs to change.
+function isGeofenceCheckEnabled(): boolean {
+  return getEnv().GEOFENCE_CHECK_ENABLED;
+}
+
+// Flags only when geofence checking is enabled, at least one Geofence is
+// configured, and the location is either missing (can't be verified) or
+// outside every one of them — see this module's own header comment.
 async function evaluateLocation(
   lat: number | undefined,
   lng: number | undefined,
 ): Promise<{ flagged: boolean; reason: FlagReason | null }> {
+  if (!isGeofenceCheckEnabled()) return { flagged: false, reason: null };
   const geofences = await listActiveGeofences();
   if (geofences.length === 0) return { flagged: false, reason: null };
   if (lat === undefined || lng === undefined) return { flagged: true, reason: 'NO_LOCATION' };

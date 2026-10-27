@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
@@ -34,6 +35,14 @@ export interface CreateAppOptions {
   // route without it falling through to the catch-all 404 — production
   // never passes this.
   extraRouters?: RequestHandler[];
+  // Client decision, 2026-10-27 (spec.md §13 decision 11): the self-
+  // hosted mini PC deployment serves the built SPA from this same
+  // process/port — there's no separate Netlify CDN anymore. Registered
+  // after the /api/v1 routers (so nothing here can shadow an API route)
+  // but before the catch-all 404 (so an unmatched non-API GET falls
+  // through to index.html, the normal SPA-router pattern, rather than a
+  // JSON 404). Absent for every other deployment and for tests.
+  serveStaticDir?: string;
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -43,7 +52,20 @@ export function createApp(options: CreateAppOptions = {}) {
   // default already sets Strict-Transport-Security; the explicit config
   // here makes that a deliberate choice rather than an unexamined
   // default. maxAge is 180 days, a conventional HSTS duration.
-  app.use(helmet({ hsts: { maxAge: 15552000, includeSubDomains: true } }));
+  //
+  // LAN_MODE (spec.md §13 decision 11) turns this off: HSTS is a promise
+  // to the browser "always use HTTPS with this host from now on," which
+  // is actively wrong to send on a deployment that's deliberately plain
+  // HTTP — a browser that ever received it would then refuse to connect
+  // over HTTP for the next 180 days. Reads process.env directly, not
+  // through getEnv() — getEnv() validates the *entire* env schema
+  // (DATABASE_URL, JWT_SECRET, ...) the moment it's first called, and
+  // createApp() runs in every test in this suite, most of which have no
+  // reason to ever provide real values for those; forcing that
+  // validation here, unconditionally, broke hundreds of unrelated tests
+  // the first time this was tried.
+  const lanMode = process.env.LAN_MODE === 'true';
+  app.use(helmet({ hsts: lanMode ? false : { maxAge: 15552000, includeSubDomains: true } }));
   app.use(forceHttps);
   app.use(cors({ credentials: true }));
   app.use(express.json());
@@ -88,6 +110,17 @@ export function createApp(options: CreateAppOptions = {}) {
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);
+  }
+
+  if (options.serveStaticDir) {
+    const distDir = options.serveStaticDir;
+    app.use(express.static(distDir));
+    // SPA fallback — anything not already matched by /api/v1 or a static
+    // asset above is a client-side route (React Router), so it gets
+    // index.html and the browser's own router takes it from there.
+    app.get(/^(?!\/api\/).*/, (_req, res) => {
+      res.sendFile(join(distDir, 'index.html'));
+    });
   }
 
   app.use((_req: Request, res: Response) => {
