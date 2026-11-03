@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -40,6 +40,17 @@ const dashboardPayload = {
   dirtyRooms: [], slaBreachedWorkOrders: [], overdueAmenityRequests: [], lowStockItems: [],
 };
 
+// Visual redesign, step 1 (client-directed, 2026-11-xx): converted to
+// DataTable, which renders every row twice in the DOM — a real <table>
+// (visible from md up) and a stacked-card <ul> (visible below md),
+// switched by CSS alone (see DataTable.tsx's own comment for why: same
+// approach as AppShell's mobile nav, CSS-only responsive switching has
+// no effect in jsdom, so both sides are always present for a test to
+// see). Assertions about catalog *row* content below are scoped to
+// `within(screen.getByRole('table'))` so they check the one real table,
+// not "whichever of the two matches came first" — a bare `getByText`
+// would throw on finding the same text twice. Assertions about the
+// movement/add-item *forms* are unaffected, since those render once.
 describe('StockPage', () => {
   it('a STOCK_MANAGER holder can list items, add a catalog item, and log a movement', async () => {
     const user = userEvent.setup();
@@ -72,25 +83,34 @@ describe('StockPage', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Stock' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+    // Every action below re-fetches the catalog, which cycles DataTable
+    // through its loading skeleton — a different <table> element each
+    // time, not the same one updated in place. `getTable()` is called
+    // fresh right before each use, rather than a `table` reference
+    // captured once, so each assertion/interaction sees the current
+    // post-load table instead of a stale, now-detached one.
+    const getTable = () => screen.getByRole('table');
+    await waitFor(() => expect(within(getTable()).getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
 
-    // Log a movement on the existing item. Once the form opens there are
-    // two "Log movement" buttons — the row trigger and the form's own
-    // submit button — so disambiguate by position.
-    await user.click(screen.getAllByRole('button', { name: 'Log movement' })[0]!);
-    await user.type(screen.getByLabelText('Quantity'), '10');
-    const logButtons = screen.getAllByRole('button', { name: 'Log movement' });
-    await user.click(logButtons[logButtons.length - 1]!);
-    await waitFor(() => expect(screen.getByText('30')).toBeInTheDocument());
+    // Open the movement form from the table row (the mobile card below
+    // md also has its own "Log movement" button, same action — the
+    // table is the one scoped here since it's guaranteed to be exactly
+    // one match).
+    await user.click(within(getTable()).getByRole('button', { name: 'Log movement' }));
+    const movementForm = screen.getByRole('form', { name: 'Log movement' });
+    await user.type(within(movementForm).getByLabelText('Quantity'), '10');
+    await user.click(within(movementForm).getByRole('button', { name: 'Log movement' }));
+    await waitFor(() => expect(within(getTable()).getByText('30')).toBeInTheDocument());
 
     // Add a new catalog item.
-    await user.type(screen.getByLabelText('Name'), 'Dish Soap');
-    await user.selectOptions(screen.getByLabelText('Category'), 'KITCHEN');
-    await user.type(screen.getByLabelText('Unit of measure'), 'bottle');
-    await user.type(screen.getByLabelText('Reorder threshold'), '5');
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
+    const addForm = screen.getByRole('form', { name: 'Add an item' });
+    await user.type(within(addForm).getByLabelText('Name'), 'Dish Soap');
+    await user.selectOptions(within(addForm).getByLabelText('Category'), 'KITCHEN');
+    await user.type(within(addForm).getByLabelText('Unit of measure'), 'bottle');
+    await user.type(within(addForm).getByLabelText('Reorder threshold'), '5');
+    await user.click(within(addForm).getByRole('button', { name: 'Add item' }));
 
-    await waitFor(() => expect(screen.getByText('Dish Soap')).toBeInTheDocument());
+    await waitFor(() => expect(within(getTable()).getByText('Dish Soap')).toBeInTheDocument());
   });
 
   // Client decision, 2026-09-11, same "Option B" convention as Amenities/
@@ -126,16 +146,22 @@ describe('StockPage', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+    // Same re-fetch-remounts-the-table caveat as the test above.
+    const getTable = () => screen.getByRole('table');
+    await screen.findByRole('table');
+    await waitFor(() => expect(within(getTable()).getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
     // Active item: no Delete button yet.
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(within(getTable()).queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Deactivate' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument());
+    await user.click(within(getTable()).getByRole('button', { name: 'Deactivate' }));
+    await waitFor(() => expect(within(getTable()).getByRole('button', { name: 'Delete' })).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(within(getTable()).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(deleteCalled).toBe(true));
+    // The catalog is empty now — DataTable renders its EmptyState
+    // instead of a table at all, so there's no more duplicate source
+    // and a bare, unscoped query is safe here.
     await waitFor(() => expect(screen.queryByText('Toilet Paper (12-roll pack)')).not.toBeInTheDocument());
   });
 
@@ -152,7 +178,8 @@ describe('StockPage', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+    await screen.findByRole('table');
+    await waitFor(() => expect(within(screen.getByRole('table')).getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
     expect(screen.queryByText('Add an item')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Log movement' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument();
@@ -185,10 +212,15 @@ describe('StockPage', () => {
       await waitFor(() => expect(screen.getByRole('heading', { name: 'Stock' })).toBeInTheDocument());
 
       // Read-only content renders: both real items, including the
-      // below-threshold one — not an empty or broken page.
-      await waitFor(() => expect(screen.getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
-      expect(screen.getByText('Dish Soap')).toBeInTheDocument();
-      expect(screen.getByText('2')).toBeInTheDocument();
+      // below-threshold one — not an empty or broken page. The loading
+      // skeleton is also a <table>, a different element than the one
+      // that replaces it once data arrives — re-querying inside
+      // waitFor (rather than capturing a `table` reference beforehand)
+      // is what makes this wait for the real, post-load table.
+      await waitFor(() => expect(within(screen.getByRole('table')).getByText('Toilet Paper (12-roll pack)')).toBeInTheDocument());
+      const table = screen.getByRole('table');
+      expect(within(table).getByText('Dish Soap')).toBeInTheDocument();
+      expect(within(table).getByText('2')).toBeInTheDocument();
 
       // No Actions column at all — canLogMovement and canManage are both
       // false, so the column header and every cell in it are absent.
@@ -199,7 +231,7 @@ describe('StockPage', () => {
       expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
 
       // No catalog form anywhere on the page.
-      expect(screen.queryByText('Add an item')).not.toBeInTheDocument();
+      expect(screen.queryByRole('form', { name: 'Add an item' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Add item' })).not.toBeInTheDocument();
     },
   );

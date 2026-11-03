@@ -7,9 +7,14 @@
 // feed, notifications), and a KPI/stat tile (Dashboard, report
 // summaries).
 
-// The one atomic primitive everything else composes from.
+// Visual redesign, step 1 (client-directed, 2026-11-xx): folded into the
+// new primitive set. `rounded-md` (was plain `rounded`, 4px) and
+// `bg-ink-muted/15` (was `bg-gray-200`, an untokenized gray) bring this
+// in line with the radius/color scale the rest of the primitives use —
+// purely cosmetic, no shape/behavior change, so every existing call site
+// keeps working unmodified.
 export function Skeleton({ className = '' }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-gray-200 ${className}`} />;
+  return <div className={`animate-pulse rounded-md bg-ink-muted/15 ${className}`} />;
 }
 
 export function SkeletonTableRows({ rows = 3, columns = 4 }: { rows?: number; columns?: number }) {
@@ -43,7 +48,7 @@ export function SkeletonList({ items = 3 }: { items?: number }) {
 
 export function SkeletonCard() {
   return (
-    <div className="rounded border border-gray-200 p-3">
+    <div className="rounded-2xl border border-gray-200 p-3">
       <Skeleton className="mb-2 h-7 w-12" />
       <Skeleton className="h-3 w-20" />
     </div>

@@ -6645,3 +6645,125 @@ Verification: `npm run typecheck`/`lint` clean across all three
 packages. `packages/shared` 94/94 (unchanged), `apps/api` 588/591
 (unchanged), `apps/web` 142/142 (one new regression test). `npm run
 build` clean across all three packages.
+
+## Visual redesign, step 1: shared primitives, before the page-by-page recolor (2026-11-xx)
+
+Client-directed change of plan, before any further pages were recolored:
+`apps/web/src/components/` held one reusable presentational component
+(`EmptyState`) plus chrome (`ErrorBoundary`, `InstallButton`, `Skeleton`,
+`icons`); nine pages (Amenities, F&B, Quotations, Remittance, Reports,
+Sessions, Shifts, Stock, Users) each hand-roll their own `<table>`; and
+responsive breakpoint usage per page was near-zero (WorkOrdersPage 1,
+UsersPage 1, RolesPage 2, StockPage 3, FnbPage 3, UnitsPage 4). Recoloring
+page by page would have baked that inconsistency in permanently and left
+every one of those tables unusable on a phone. The client's own
+complaints — "looks plain/dated," "hard to find things," "hard to use on
+a phone" — all trace to this missing foundation, not the palette, so the
+foundation came first.
+
+**Seven primitives**, extracted from Command Center's own existing visual
+language (`DashboardPage.tsx`'s `rounded-2xl bg-white shadow-card`
+surface, its `text-xl font-semibold text-ink` title, its semantic-color
+KPI cards) and pushed further, not redesigned from scratch — the client's
+verdict on Command Center was "mostly right but needs more polish."
+`EmptyState` and `Skeleton` were folded into the set (retinted to the new
+tokens, no shape/behavior change) rather than left as outliers.
+
+- **`PageHeader`** — title (a real `<h1>`), optional one-line description, optional actions slot.
+- **`Card` / `Section`** (`Card.tsx`) — `Card` is the bare `shadow-card` surface; `Section` adds a titled header (heading, description, actions) with the Card surface opt-in via `surface` (Command Center's own KPI strip has a heading but no card background, so this isn't baked in unconditionally).
+- **`DataTable`** — the keystone; see its own section below.
+- **`StatusBadge`** — `success`/`warning`/`danger`/`info`/`accent`/`neutral` variants, consuming the semantic tokens — see the contrast section below for why it fills solid rather than using the `-50`/`-600` tint pairing.
+- **`Button`** — `primary`/`secondary`/`danger` variants, replacing nine pages' worth of one-off `<button className="...">` strings.
+- **`Field`** — label + input (passed as `children`, so it stays input-type-agnostic: text input, select, the hidden-file-input-plus-button pattern ShiftsPage uses) + error/hint, always in the same place. `INPUT_CLASSES` exported alongside for whatever input a page passes in.
+- **`FilterBar`** — the From/To/Employee row pattern (ShiftsPage's `AllTimeLogsSection` today), named and shared rather than a hand-typed `flex flex-wrap gap-3` div.
+
+A new `typography.ts` defines the type scale the client asked for —
+`PAGE_TITLE`/`SECTION_TITLE`/`BODY`/`CAPTION`, replacing the de facto
+"two sizes" every page had collapsed onto (`text-base font-semibold` for
+every heading, `text-sm text-gray-500` for every description, no
+distinction between a heading and a caption) — and a spacing rhythm
+(`STACK_GAP`/`CARD_GAP`/`INLINE_GAP`, three gap values instead of the
+`gap-1` through `gap-10` mix pages used ad hoc), both applied through the
+primitives rather than hand-typed per page.
+
+**`DataTable`** is the keystone: a real `<table>` from `md` up, the same
+rows re-rendered as stacked cards below `md` (phones), switched by CSS
+alone (`hidden md:block` / `md:hidden` — same approach `AppShell.tsx`'s
+own mobile nav already uses, for the same reason: no JS viewport
+measurement needed, and it degrades to "both in the DOM, CSS picks one"
+rather than a layout-measurement race). Its column API
+(`{ key, header, render, className?, headerClassName?, hideOnMobile? }`)
+was designed against the actual shapes surveyed across all nine
+hand-rolled tables before writing it — a Status column on every page
+(`render` returning a `<StatusBadge>`), a conditional Actions column on
+most (the caller just omits the column object, DataTable never sees
+permissions), per-row conditional cell styling (StockPage's low-qty
+amber highlight — lives inside that column's own `render`, since
+`className` is static per-column, not told about the row), and
+link/image cells (FnbPage's photo links, ShiftsPage's map embeds —
+`render` returns arbitrary `ReactNode`, not just a string). A column's
+own `hideOnMobile` keeps it off the stacked card's label:value list
+(e.g. an Actions column, rendered instead via the separate
+`renderMobileActions` prop so action buttons sit at the card's bottom,
+not inline with data).
+
+**Measured contrast, not eyeballed** (WCAG 2.1 relative-luminance
+contrast ratio, computed from the token hex values — see `StatusBadge.tsx`'s
+own comment for the full numbers and method): tailwind.config.js's own
+comment had already measured the semantic `-50`/`-600` tint pairing
+(icon-on-its-own-tint) at a 3.72:1 floor — enough for a graphical object
+(WCAG 1.4.11's 3:1), nowhere near WCAG 1.4.3's 4.5:1 floor for *text*,
+which this badge renders (`text-xs`, never "large text" regardless of
+weight). Re-measuring that exact pairing as text: success 5.34:1 and
+info 6.20:1 pass; warning 4.31:1, danger 4.23:1, and accent 4.27:1 all
+**fail** 4.5:1. Three of five failing outright meant `StatusBadge` could
+not use the pairing the client asked it to "consume" as-is — it fills
+solid with the `-600` color and white text instead (same five tokens,
+inverted), which clears 4.5:1 on every variant with real margin
+(success 6.39:1, warning 5.02:1, danger 5.67:1, info 7.90:1, accent
+5.39:1). `Button` (white text on `brand-600`/`danger-600`, `brand-700`
+text on white for `secondary`) and `Field`'s error text
+(`text-danger-600` on white) were measured the same way: 4.86:1, 5.67:1,
+6.25:1, and 5.67:1 respectively, all passing. `neutral` (StatusBadge's
+"no semantic meaning" variant, e.g. "Normal") uses `ink` on `gray-100`,
+measured at 14.90:1.
+
+**Real bug, caught converting the reference page**: `Field`'s hint/error
+text was originally a sibling of the label text *inside* the same
+`<label>` element. An implicit label's accessible name concatenates all
+its text content, so the moment a hint was added
+(`<Field label="Unit of measure" hint="e.g. pack, bottle, pcs">`), the
+real accessible name became "Unit of measure e.g. pack, bottle, pcs" —
+`getByLabelText('Unit of measure')` broke. Fixed by moving hint/error
+outside the `<label>` (sibling in a wrapping `<div>`, not inside it);
+covered by a new `Field.test.tsx` regression test asserting the label's
+accessible name stays exactly the label text with a hint present.
+
+**`StockPage.tsx` converted** as the reference page — small, has a
+table, exercises most of the primitive set (PageHeader, Section/Card,
+DataTable, StatusBadge, Button, Field), low risk. Page logic (fetch,
+create, toggle, delete, log movement) is unchanged; only the markup
+changed. The page's own description under its title was shortened from
+a full sentence to one line, per the density goal (every page's heading
+currently carries a full explanatory paragraph, tripling scroll length
+on phones) — the explanation it used to carry (no approval workflow)
+wasn't load-bearing there and isn't repeated elsewhere. `StockPage.test.tsx`
+was updated to scope its catalog-row assertions to
+`within(screen.getByRole('table'))`, since DataTable now renders every
+row twice in the DOM (real table + stacked-card list, CSS-picks-one) —
+a bare `getByText` would otherwise throw on finding the same text twice;
+form-field assertions were unaffected, those still render once. Two
+forms gained `aria-label`s (`"Log movement"`, `"Add an item"`) so tests
+can scope to the right form by role once the page has two of them.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94 (unchanged), `apps/api` 588/591
+(unchanged), `apps/web` 181/181 (39 new: `PageHeader` 4, `Card`/`Section`
+7, `StatusBadge` 7, `Button` 5, `Field` 5, `FilterBar` 2, `DataTable` 9,
+`StockPage` conversion kept at 7). `npm run build` clean across all
+three packages. Manually verified in a real browser (Playwright against
+a running `vite dev` with mocked API responses, not just jsdom): `/stock`
+at 1280px renders the real table with StatusBadge pills and Button
+actions; at 390px (phone width) it renders the same data as stacked
+cards with the same actions at the bottom of each card, PageHeader/
+Section/form styling all intact.
