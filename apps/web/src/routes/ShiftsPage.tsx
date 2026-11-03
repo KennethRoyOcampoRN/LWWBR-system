@@ -127,7 +127,15 @@ function captureLocation(): Promise<{ lat: number; lng: number } | null> {
   });
 }
 
-function TimeClockSection() {
+// Real bug, found live-testing, 2026-11-03: after a clock-out, "My
+// recent time logs" (this section's own state) updated correctly, but
+// "All time logs" and Flagged Entries — separate sibling sections with
+// their own independent fetches — kept showing the pre-clock-out
+// snapshot until a full page reload. onLogsChanged is how TimeClockSection
+// tells its siblings a clock action just happened; ShiftsPage owns the
+// actual refresh signal (see its own comment) since no single section
+// should reach into another's state.
+function TimeClockSection({ onLogsChanged }: { onLogsChanged: () => void }) {
   const [myLogs, setMyLogs] = useState<TimeLogRow[] | 'loading' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +201,7 @@ function TimeClockSection() {
         ...(location ? { lat: location.lat, lng: location.lng } : {}),
       });
       await fetchMyLogs();
+      onLogsChanged();
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : `Could not ${kind === 'clock-in' ? 'clock in' : 'clock out'}.`);
     } finally {
@@ -476,7 +485,12 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
   );
 }
 
-function FlaggedEntriesSection() {
+// refreshSignal: bumped by ShiftsPage whenever a clock action happens
+// elsewhere on the page (see TimeClockSection's onLogsChanged) — this
+// section has no fetch of its own tied to that event otherwise, so
+// without it a just-completed clock-out keeps showing "(still clocked
+// in)" here until a full page reload.
+function FlaggedEntriesSection({ refreshSignal }: { refreshSignal: number }) {
   const [entries, setEntries] = useState<TimeLogRow[] | 'loading' | 'error'>('loading');
   const [noteById, setNoteById] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<string | null>(null);
@@ -491,7 +505,7 @@ function FlaggedEntriesSection() {
 
   useEffect(() => {
     void fetchFlagged();
-  }, []);
+  }, [refreshSignal]);
 
   async function review(id: string) {
     setActionError(null);
@@ -816,7 +830,12 @@ function defaultAuditRange() {
 // reuses GET /shifts/assignable-users, the same shift:manage-gated
 // picker built for (and currently dormant in) the roster module — see
 // spec.md §13 decision 9.
-function AllTimeLogsSection() {
+// refreshSignal: same purpose as FlaggedEntriesSection's own — this
+// section's existing fetchLogs effect already re-runs on range/userId
+// changes; adding refreshSignal to its dependency array is what makes a
+// clock action taken elsewhere on the page (e.g. a shift:manage holder
+// clocking themselves in/out above) show up here without a reload.
+function AllTimeLogsSection({ refreshSignal }: { refreshSignal: number }) {
   const [range, setRange] = useState(defaultAuditRange);
   const [userId, setUserId] = useState('');
   const [users, setUsers] = useState<AssignableUser[]>([]);
@@ -843,7 +862,7 @@ function AllTimeLogsSection() {
 
   useEffect(() => {
     void fetchLogs();
-  }, [range.from, range.to, userId]);
+  }, [range.from, range.to, userId, refreshSignal]);
 
   async function review(id: string) {
     setActionError(null);
@@ -999,6 +1018,21 @@ export function ShiftsPage() {
   const canApproveRestDay = Boolean(user?.permissions['restday:approve']);
   const canConfigureGeofence = Boolean(user?.permissions['system:configure']);
 
+  // Real bug, found live-testing, 2026-11-03: the four sections below
+  // are independent siblings, each with its own fetch and no shared
+  // state — after a clock-out, TimeClockSection's own "My recent time
+  // logs" updated correctly, but Flagged Entries and All Time Logs kept
+  // showing the pre-clock-out snapshot (e.g. "(still clocked in)") until
+  // a full page reload, since neither one's fetch is triggered by
+  // anything happening in TimeClockSection. Server data was never wrong
+  // — this was a stale-read bug in this one browser tab only. Minimal
+  // fix: a counter bumped by TimeClockSection's onLogsChanged whenever a
+  // clock action completes, which the other two log-reading sections
+  // depend on in their own fetch effects — one clock action now
+  // refreshes all three, without merging the sections into one
+  // component or adding any cross-section state beyond this counter.
+  const [logsRefreshSignal, setLogsRefreshSignal] = useState(0);
+
   return (
     <div className="flex flex-col gap-10">
       <div>
@@ -1012,10 +1046,10 @@ export function ShiftsPage() {
           (spec.md §13 decision 9): the Shift-roster section that used
           to render here is gone — scheduling is manual, outside the
           app — but shift:manage still gates Flagged Entries below. */}
-      <TimeClockSection />
+      <TimeClockSection onLogsChanged={() => setLogsRefreshSignal((n) => n + 1)} />
       <RestDaySection canApprove={canApproveRestDay} />
-      {canManageShifts && <FlaggedEntriesSection />}
-      {canManageShifts && <AllTimeLogsSection />}
+      {canManageShifts && <FlaggedEntriesSection refreshSignal={logsRefreshSignal} />}
+      {canManageShifts && <AllTimeLogsSection refreshSignal={logsRefreshSignal} />}
       {canConfigureGeofence && <GeofenceManagementSection />}
     </div>
   );

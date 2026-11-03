@@ -527,6 +527,83 @@ describe('ShiftsPage', () => {
     expect(within(auditSection).getByRole('combobox', { name: 'Employee' })).toBeInTheDocument();
   });
 
+  // Real bug, found live-testing, 2026-11-03: after a clock-out, "My
+  // recent time logs" (TimeClockSection's own state) updated correctly,
+  // but "All time logs" — a separate sibling section with its own
+  // independent fetch — kept showing the stale "(still clocked in)" /
+  // "Not clocked out yet" snapshot until a full page reload, since
+  // nothing in AllTimeLogsSection's fetch effect was tied to a clock
+  // action happening elsewhere on the page. Server data was never
+  // wrong; this is a same-tab stale-read bug. Fixed with ShiftsPage's
+  // own logsRefreshSignal counter, bumped by TimeClockSection on every
+  // completed clock action and depended on by AllTimeLogsSection's
+  // (and FlaggedEntriesSection's) own fetch effect. This test's mock
+  // for both GET /time-logs/mine and GET /time-logs returns the same
+  // log row, open until clockedOut flips, closed after — so the "All
+  // time logs" section can only show the post-clock-out time if it
+  // actually refetched.
+  it('clocking out refreshes All time logs too, not just My recent time logs, with no page reload', async () => {
+    const user = userEvent.setup();
+    let clockedOut = false;
+    const clockOutAt = '2026-09-10T14:00:00.000Z';
+    const ownLog = () => ({
+      id: 'log_1',
+      userId: 'user_1',
+      clockInAt: '2026-09-10T06:00:00.000Z',
+      clockOutAt: clockedOut ? clockOutAt : null,
+      clockInPhoto: null,
+      clockOutPhoto: null,
+      clockInLat: null,
+      clockInLng: null,
+      clockOutLat: null,
+      clockOutLng: null,
+      clockInFlagged: false,
+      clockOutFlagged: false,
+      clockInFlagReason: null,
+      clockOutFlagReason: null,
+      reviewedAt: null,
+      reviewNote: null,
+      user: { id: 'user_1', fullName: 'POC Housekeeping (Demo)' },
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      if (url.endsWith('/files') && init?.method === 'POST') {
+        return jsonResponse(201, { file: { id: 'file_1' } });
+      }
+      if (url.endsWith('/time-logs/clock-out') && init?.method === 'POST') {
+        clockedOut = true;
+        return jsonResponse(200, { timeLog: ownLog() });
+      }
+      if (path(url).endsWith('/time-logs/mine') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { timeLogs: [ownLog()] });
+      }
+      const defaulted = shiftManagerDefaults(url, init);
+      if (defaulted) return defaulted;
+      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [ownLog()] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('All time logs')).toBeInTheDocument());
+    const auditSection = screen.getByText('All time logs').closest('section') as HTMLElement;
+    await waitFor(() => expect(within(auditSection).getByText(/\(still clocked in\)/)).toBeInTheDocument());
+    expect(within(auditSection).getByText('Not clocked out yet')).toBeInTheDocument();
+
+    await user.upload(
+      screen.getByLabelText('Clock-out selfie'),
+      new File(['x'], 'selfie.jpg', { type: 'image/jpeg' }),
+    );
+
+    await waitFor(() => expect(within(auditSection).queryByText(/\(still clocked in\)/)).not.toBeInTheDocument());
+    expect(within(auditSection).queryByText('Not clocked out yet')).not.toBeInTheDocument();
+  });
+
   it('a system:configure holder sees the DTR work-locations panel; a shift:manage-only holder does not', async () => {
     const adminUser = {
       ...shiftManagerUser,

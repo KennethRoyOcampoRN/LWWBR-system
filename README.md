@@ -6601,3 +6601,47 @@ sandbox-network-only Supabase round-trip skips, unchanged), `apps/web`
 the restored-and-updated `RemittancePage.test.tsx`/
 `QuotationsPage.test.tsx` all included). `npm run build` clean across
 all three packages.
+
+## ShiftsPage stale-read bug after clock-out; DTR realtime gap recorded (2026-11-03)
+
+Real bug, caught on review of the above: after a clock-out,
+`ShiftsPage.tsx`'s "My recent time logs" (`TimeClockSection`'s own
+state) updated correctly, but "All time logs" (`AllTimeLogsSection`)
+kept showing the entry as "(still clocked in)" / "Not clocked out yet"
+until a full page reload — server data was correct throughout; this
+was a same-tab stale-read bug. Cause: the four sections on this page
+are independent siblings, each with its own fetch and no shared state,
+so nothing in `AllTimeLogsSection`'s (or `FlaggedEntriesSection`'s)
+fetch effect was tied to a clock action completing elsewhere on the
+page. Minimal fix, kept local rather than restructuring the sections
+into one component: `ShiftsPage` now owns a `logsRefreshSignal` counter,
+bumped by a new `onLogsChanged` callback `TimeClockSection` calls after
+every completed clock action, and passed as a `refreshSignal` prop that
+both `AllTimeLogsSection` and `FlaggedEntriesSection` add to their
+existing fetch effects' dependency arrays. Added a regression test
+(`ShiftsPage.test.tsx`) exercising exactly this: a shift:manage holder
+clocks themselves out, and "All time logs" is asserted to lose its
+"(still clocked in)"/"Not clocked out yet" text without any reload.
+Confirmed the test actually catches the regression by reverting the
+fix and rerunning it (fails as expected), then restoring the fix
+(passes again).
+
+Separately confirmed, recorded, not fixed (spec.md §13.1, new bullet
+tied to decision 9's DTR context): `apps/api/src/modules/dtr/service.ts`
+and its `router.ts` emit no realtime event on clock-in or clock-out —
+no `emit`/`publish`/`broadcast`/`getRealtimeAdapter()` call anywhere in
+either file, confirmed by direct grep, unlike `bookings/service.ts`'s
+own `getRealtimeAdapter().emit('property', 'booking.checkin', …)`
+pattern. Consequence: a `shift:manage` holder with the Shifts page
+open — the actual intended use of its audit sections, watching staff
+clock in/out from their phones — sees nothing update until a manual
+reload, regardless of the fix above, which only covers an action taken
+in the same browser tab. Not built now; DTR real-time usage is shelved
+along with the rest of this feature's live rollout. The fix, when
+picked back up, is the same `getRealtimeAdapter().emit(...)` call
+already used elsewhere, in the same try/catch-and-log pattern.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94 (unchanged), `apps/api` 588/591
+(unchanged), `apps/web` 142/142 (one new regression test). `npm run
+build` clean across all three packages.
