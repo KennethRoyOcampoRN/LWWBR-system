@@ -6578,17 +6578,26 @@ permission-scoped omit-don't-zero computation of the removed fields are
 all untouched and still mounted. The two routes themselves were removed
 from the router outright, not left reachable by direct URL — a
 half-hidden route with no nav entry pointing at it was judged worse than
-no route at all. The frontend-only test files for the two now-unreachable
-pages (`QuotationsPage.test.tsx`, `RemittancePage.test.tsx`) were removed
-along with the routes they exercised to reach them through `<App />`;
-`App.smoke.test.tsx`'s KPI-card/queue-row assertions were updated to
-reflect unconditional absence rather than permission-gated absence.
-Clock in/out (DTR) is unaffected, stays visible and working, and simply
-won't be used initially either, by the client's own account.
+no route at all. `RemittancePage.tsx`/`QuotationsPage.tsx` and their own
+frontend test files (`RemittancePage.test.tsx`/`QuotationsPage.test.tsx`)
+stay in the codebase untouched and dormant — the tests were updated only
+to render the component directly (`AuthProvider` + the page, no `<App/>`,
+no router) instead of navigating to the now-deleted route, since that's
+no longer how they'd be reached; every permission-gated assertion they
+made (who sees the create form, who sees verify/status controls, the
+full submit → verify/mark-done → revert flow) is unchanged. (An earlier pass of this same change deleted those two test files
+outright, on the mistaken premise that they were routing tests —
+caught on review after the first push and corrected here.)
+`App.smoke.test.tsx`'s KPI-card/queue-row
+assertions were updated to reflect unconditional absence rather than
+permission-gated absence. Clock in/out (DTR) is unaffected, stays
+visible and working, and simply won't be used initially either, by the
+client's own account.
 
 Verification: `npm run typecheck`/`lint` clean across all three
 packages. `packages/shared` 94/94, `apps/api` 588/591 (3 pre-existing
 sandbox-network-only Supabase round-trip skips, unchanged), `apps/web`
-134/134 (new `/time-logs/mine` tests and `viteDevServerConfig.test.ts`
-included; two obsolete tests removed per item 3 above). `npm run build`
-clean across all three packages.
+141/141 (new `/time-logs/mine` tests, `viteDevServerConfig.test.ts`, and
+the restored-and-updated `RemittancePage.test.tsx`/
+`QuotationsPage.test.tsx` all included). `npm run build` clean across
+all three packages.
