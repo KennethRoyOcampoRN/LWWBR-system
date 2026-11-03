@@ -134,10 +134,18 @@ function TimeClockSection() {
   const clockInInputRef = useRef<HTMLInputElement>(null);
   const clockOutInputRef = useRef<HTMLInputElement>(null);
 
+  // Real bug, found live-testing on the mini PC, 2026-11-03: this used
+  // to call the shared GET /time-logs, which only self-scopes for a
+  // caller who lacks shift:manage — a manage-holder got everyone's
+  // entries back here, so "My recent time logs" could show (and the
+  // Clock-out button could act on) a different employee's open
+  // clock-in. GET /time-logs/mine is hardcoded self-scoped server-side,
+  // with no way for any caller, regardless of permissions, to get back
+  // anyone but themselves.
   function fetchMyLogs() {
     setMyLogs('loading');
     return api
-      .get<{ timeLogs: TimeLogRow[] }>('/time-logs')
+      .get<{ timeLogs: TimeLogRow[] }>('/time-logs/mine')
       .then((res) => setMyLogs(res.timeLogs))
       .catch(() => setMyLogs('error'));
   }

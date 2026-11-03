@@ -6512,3 +6512,83 @@ in the same pass: it referenced re-adding a `netlify.toml` schedule
 entry to revive the owner digest, which no longer exists now that
 `netlify.toml` is deleted — updated to reference Task Scheduler
 instead.
+
+## Three fixes from live-testing on the mini PC (2026-11-03)
+
+**1. Real privacy/correctness bug: a `shift:manage` holder's "My recent
+time logs" leaked other staff's clock times and selfies, and Clock out
+409'd.** `ShiftsPage.tsx`'s self-scoped `TimeClockSection` called the
+shared `GET /time-logs`, whose own self-scoping (`listTimeLogs`,
+`dtr/service.ts`) depends on the caller's `shift:manage` permission
+rather than on what's actually being asked for — so a manage-holder with
+no query params got everyone's entries back, and the frontend's "find my
+open entry" logic could pick a different employee's open clock-in,
+rendering a working-looking Clock out button that then 409'd
+(`NOT_CLOCKED_IN`) against a row that didn't exist for the real caller.
+Fixed with a new, dedicated `GET /time-logs/mine` endpoint
+(`listMyTimeLogs`, `dtr/service.ts`/`router.ts`) that hardcodes
+`userId: actor.id` with no overridable parameter and no permission
+check beyond `requireAuth` — considered and rejected a query-param
+convention (`?mine=true`, matching `restday`'s own existing pattern) for
+this specific case, since the data being over-exposed (another
+employee's selfie photos and clock times) is a privacy leak, not just a
+UX inconsistency, and a hardcoded endpoint can't regress the way a
+parameter can if a future caller forgets to pass it. `ShiftsPage.tsx`'s
+`TimeClockSection` now calls only `/time-logs/mine`; the existing
+`GET /time-logs` audit-view endpoint (`shift:manage`'s "All time logs")
+is unchanged. Tests: `apps/api` gained 4 new router tests (a
+`shift:manage` holder with no open entry of their own sees none, even
+with another user's open entry present; sees their own when they have
+one; no query param can override the scoping; no `shift:*` permission
+is required). `apps/web` gained a new `ShiftsPage` test asserting the
+same at the UI level, plus updated every existing test's mock routing
+for the new endpoint.
+
+**2. Committed the two `vite.config.ts` dev-server fixes that kept
+getting reverted on every pull.** `server.host: true` (without it the
+dev server only binds localhost, so a phone on the resort LAN can't
+reach it) and a `/rt` proxy entry with `ws: true` (the Socket.IO client
+connects to `/rt` on the page's own origin — `:5173` in dev — but only
+`/api` was proxied to the real server on `:3001`, so realtime silently
+never connected in dev and every session quietly fell back to the
+60-second poll; a room status change took up to a minute to reach a
+second device). Both were previously only ever applied by hand, locally,
+on two separate machines — never committed, so every `git pull`
+silently reverted them. Production is unaffected (same-origin on `:3001`
+via `SERVE_WEB_DIST`, decision 11), which is why the existing Socket.IO
+adapter round-trip test never caught this — it exercises the adapter
+in-process, never through Vite. Added `apps/web/test/
+viteDevServerConfig.test.ts` — a deliberately cheap, not full-E2E,
+regression test (flagged as disproportionate by the client for this)
+that asserts the config values directly (`server.host`, the `/rt`
+proxy's `target`/`ws`, `/api` still proxied). Named limitation, stated
+in the test file's own comment: this proves the config can't silently
+regress again; it does not prove the proxy actually connects end to end
+at runtime, which would need a real dev server, a real API server, and
+a real `socket.io-client` running together.
+
+**3. Client decision: Payment Verification and Quotations removed from
+the UI** — nav items, `/payment-verification` and `/quotations` routes,
+Command Center KPI cards, and attention-queue rows, all gone; not needed
+for the initial rollout, not a technical blocker. Recorded as spec.md
+§13 decision 12, same dormant-not-deleted shape as decision 9: the
+`remittance:*`/`quotation:*` Prisma models, permissions, backend
+modules' routes/service/schema/tests, and `getUnitsDashboard`'s
+permission-scoped omit-don't-zero computation of the removed fields are
+all untouched and still mounted. The two routes themselves were removed
+from the router outright, not left reachable by direct URL — a
+half-hidden route with no nav entry pointing at it was judged worse than
+no route at all. The frontend-only test files for the two now-unreachable
+pages (`QuotationsPage.test.tsx`, `RemittancePage.test.tsx`) were removed
+along with the routes they exercised to reach them through `<App />`;
+`App.smoke.test.tsx`'s KPI-card/queue-row assertions were updated to
+reflect unconditional absence rather than permission-gated absence.
+Clock in/out (DTR) is unaffected, stays visible and working, and simply
+won't be used initially either, by the client's own account.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94, `apps/api` 588/591 (3 pre-existing
+sandbox-network-only Supabase round-trip skips, unchanged), `apps/web`
+134/134 (new `/time-logs/mine` tests and `viteDevServerConfig.test.ts`
+included; two obsolete tests removed per item 3 above). `npm run build`
+clean across all three packages.

@@ -48,8 +48,7 @@ const NAV_ITEMS: {
   // Client-directed feature, 2026-08-31: stock monitoring and
   // purchasing, in/out only — see permissions.ts's stock:* comment for
   // why this isn't inventory:*. Placed alongside the other operational
-  // catalog pages (Amenities, Restaurant), not the admin request-log
-  // pair below (Payment Verification, Quotations).
+  // catalog pages (Amenities, Restaurant).
   { to: '/stock', label: 'Stock', permission: 'stock:read' },
   // M6, report builder (2026-08-25): starting with occupancy/unit status
   // history and work-order stats (spec §8.4 items 1 and 4) — the two
@@ -62,11 +61,11 @@ const NAV_ITEMS: {
   // universal floor every role holds (see rolePermissions.ts), so this
   // is effectively always visible, same as Work Orders above.
   { to: '/shifts', label: 'Shifts & DTR', permission: 'shift:read' },
-  // Client-directed feature, 2026-08-31: two standalone administrative
-  // request-and-status modules — see the modules' own README entry for
-  // why these are remittance:*/quotation:*, not payment:*/booking:*.
-  { to: '/payment-verification', label: 'Payment Verification', permission: 'remittance:read' },
-  { to: '/quotations', label: 'Quotations', permission: 'quotation:read' },
+  // Client decision, 2026-11-03 (spec.md §13, same dormant-not-deleted
+  // shape as decision 9): Payment Verification and Quotations nav
+  // entries removed — not needed for the initial rollout. Were
+  // remittance:*/quotation:* (see the modules' own README entry for why
+  // not payment:*/booking:*), which stay fully intact server-side.
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
   // Self-service account settings, not a permission-scoped resource —

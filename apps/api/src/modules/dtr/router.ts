@@ -18,6 +18,7 @@ import {
   deleteGeofence,
   listFlaggedTimeLogs,
   listGeofences,
+  listMyTimeLogs,
   listTimeLogs,
   reviewTimeLog,
   updateGeofence,
@@ -66,10 +67,31 @@ dtrRouter.post(
   }),
 );
 
+// Real bug, 2026-11-03 (see listMyTimeLogs's own comment in
+// service.ts): a shift:manage holder's "my recent time logs" list was
+// quietly getting everyone's entries back from GET /time-logs below,
+// because that route's self-scoping depends on the caller's own
+// permissions rather than on what's actually being asked for.
+// requireAuth only, no permission check at all — same self-service
+// precedent as clock-in/out itself, and there is no query param or
+// permission grant that can make this return anyone but the caller.
+dtrRouter.get(
+  '/time-logs/mine',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const timeLogs = await listMyTimeLogs({ id: req.userId as string });
+    res.status(200).json({ timeLogs });
+  }),
+);
+
 // requirePermission('shift:read') just to get req.authUser populated
 // with a fresh permission set — shift:read is the universal floor, so
 // this never actually refuses anyone; the real scoping (own records vs
-// everyone's) happens inside listTimeLogs based on shift:manage.
+// everyone's) happens inside listTimeLogs based on shift:manage. This
+// is the "All time logs" audit view's own endpoint (shift:manage-only
+// in practice, since a shift:read-only holder gets self-scoped results
+// here too) — GET /time-logs/mine above is for a plain self-view that
+// must never depend on the caller's permission level at all.
 dtrRouter.get(
   '/time-logs',
   requirePermission('shift:read'),

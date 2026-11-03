@@ -357,6 +357,63 @@ describe('POST /api/v1/dtr/check-location', () => {
   );
 });
 
+// Real bug, found live-testing on the mini PC, 2026-11-03: a
+// shift:manage holder's self-scoped "my recent time logs" list was
+// calling GET /time-logs with no params, which only self-scopes for a
+// caller *without* shift:manage — so a manage-holder saw everyone's
+// entries (including other employees' selfies), and could pick up a
+// different employee's open clock-in, making their own Clock-out
+// action 409. GET /time-logs/mine is hardcoded self-scoped regardless
+// of the caller's own permissions, closing that off structurally.
+describe('GET /api/v1/time-logs/mine', () => {
+  it('a shift:manage holder with no open entry of their own sees no entries, even though another user has one open', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.timeLog.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/time-logs/mine').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.timeLogs).toEqual([]);
+    expect(mockPrisma.timeLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ userId: 'user_1' }) }),
+    );
+  });
+
+  it('a shift:manage holder with their own open entry sees exactly that entry, not anyone else\'s', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.timeLog.findMany.mockResolvedValue([fakeTimeLog({ userId: 'user_1' })]);
+
+    const res = await request(createApp()).get('/api/v1/time-logs/mine').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.timeLogs).toHaveLength(1);
+    expect(res.body.timeLogs[0].userId).toBe('user_1');
+    const call = mockPrisma.timeLog.findMany.mock.calls[0]![0];
+    expect(call.where).toEqual(expect.objectContaining({ userId: 'user_1', deletedAt: null }));
+  });
+
+  it('a userId query param cannot override the self-scoping — there is no such param at all', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.timeLog.findMany.mockResolvedValue([]);
+
+    await request(createApp()).get('/api/v1/time-logs/mine?userId=someone_else').set('Cookie', authCookie());
+
+    expect(mockPrisma.timeLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ userId: 'user_1' }) }),
+    );
+  });
+
+  it.each(['RESORT_MANAGER', 'HOUSEKEEPING_STAFF', 'OWNER'])(
+    'allows %s — no shift:* permission required, identity only, same precedent as clock-in/out',
+    async (roleKey) => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole(roleKey));
+      mockPrisma.timeLog.findMany.mockResolvedValue([]);
+      const res = await request(createApp()).get('/api/v1/time-logs/mine').set('Cookie', authCookie());
+      expect(res.status).toBe(200);
+    },
+  );
+});
+
 describe('GET /api/v1/time-logs', () => {
   it('a shift:manage holder sees everyone\'s entries by default', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));

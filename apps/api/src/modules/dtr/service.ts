@@ -199,6 +199,29 @@ export async function clockOut(input: ClockOutInput, actor: DtrActor) {
   return timeLogToJson(timeLog);
 }
 
+// Real bug, found live-testing on the mini PC, 2026-11-03: the self-
+// scoped "my recent time logs" list (TimeClockSection) called the same
+// GET /time-logs a shift:manage holder's "All time logs" audit view
+// uses, relying on listTimeLogs's own canManage-based scoping — so a
+// shift:manage holder with no query params got *everyone's* entries
+// back, including other employees' selfies and clock times, and the
+// frontend's own "find my open entry" logic could then pick someone
+// else's open clock-in, making Clock out 409 NOT_CLOCKED_IN against a
+// row that looked open on screen. A query-param convention (like
+// restday's own `mine=true`) was considered and rejected here
+// specifically because this is a privacy leak, not just a UX bug — a
+// dedicated endpoint that hardcodes `userId: actor.id` with no
+// parameter able to override it cannot be gotten wrong by a future
+// caller forgetting to pass a flag, the same way this one was.
+export async function listMyTimeLogs(actor: DtrActor) {
+  const timeLogs = await prisma.timeLog.findMany({
+    where: { userId: actor.id, deletedAt: null },
+    include: TIME_LOG_INCLUDE,
+    orderBy: [{ clockInAt: 'desc' }],
+  });
+  return Promise.all(timeLogs.map(timeLogToJson));
+}
+
 interface ListTimeLogsActor {
   id: string;
   canManage: boolean;

@@ -53,6 +53,14 @@ const shiftManagerUser = {
 // isn't exercising them directly.
 function shiftManagerDefaults(url: string, init?: RequestInit): Promise<Response> | undefined {
   if (path(url).endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
+  // GET /time-logs/mine — TimeClockSection's own self-scoped fetch
+  // (real bug, 2026-11-03: it used to call plain /time-logs, which a
+  // shift:manage holder's own permissions turned into "everyone's
+  // entries" — see dtr/service.ts's listMyTimeLogs for the fix). Tests
+  // that need specific self-scoped content (an open entry, a post-
+  // clock-in refetch) define their own /time-logs/mine branch instead
+  // of relying on this default.
+  if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
   if (path(url).endsWith('/shifts/assignable-users')) return jsonResponse(200, { users: [] });
   if (path(url).endsWith('/dtr/check-location') && init?.method === 'POST') {
     return jsonResponse(200, { flagged: false, reason: null });
@@ -91,6 +99,50 @@ describe('ShiftsPage', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/files'), expect.anything());
   });
 
+  // Real bug, found live-testing on the mini PC, 2026-11-03: a
+  // shift:manage holder with no open clock-in of their own saw a
+  // different employee's open entry rendered as "Clocked in at..."
+  // with a working Clock-out button — because the self-scoped fetch
+  // used to call the shared GET /time-logs, which only self-scopes for
+  // a caller without shift:manage. Clicking Clock out then 409'd
+  // (NOT_CLOCKED_IN) since the real clock-out looks up the caller's
+  // own open entry, which didn't exist. Asserts the fix at the UI
+  // level: even if the API were to misbehave and return someone else's
+  // row here, GET /time-logs/mine is the only endpoint this section
+  // calls, and it's hardcoded self-scoped server-side (see the
+  // dedicated backend tests in dtr/router.test.ts for that guarantee).
+  it('a shift:manage holder with no open entry of their own sees no Clock-out button, even though another user has one open', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      // GET /time-logs/mine correctly returns nothing for this caller —
+      // the other user's open entry would show up only on GET
+      // /time-logs (the audit view), never here.
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
+      const defaulted = shiftManagerDefaults(url, init);
+      if (defaulted) return defaulted;
+      if (path(url).endsWith('/time-logs')) {
+        return jsonResponse(200, { timeLogs: [{
+          id: 'log_other', userId: 'user_2', clockInAt: new Date().toISOString(), clockOutAt: null,
+          clockInPhoto: null, clockOutPhoto: null, clockInLat: null, clockInLng: null,
+          clockOutLat: null, clockOutLng: null, clockInFlagged: false, clockOutFlagged: false,
+          clockInFlagReason: null, clockOutFlagReason: null,
+          reviewedAt: null, reviewNote: null, user: { id: 'user_2', fullName: 'Room Attendant (Demo)' },
+        }] });
+      }
+      if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/shifts');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Clock in' })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Clock out' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Clocked in at/)).not.toBeInTheDocument();
+  });
+
   it('clocks in successfully even when geolocation is denied — never blocks on location', async () => {
     const user = userEvent.setup();
     stubGeolocation('denied');
@@ -99,8 +151,6 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
-      const defaulted = shiftManagerDefaults(url, init);
-      if (defaulted) return defaulted;
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       if (url.endsWith('/files') && init?.method === 'POST') {
         return jsonResponse(201, { file: { id: 'file_1' } });
@@ -132,7 +182,7 @@ describe('ShiftsPage', () => {
           },
         });
       }
-      if (path(url).endsWith('/time-logs') && (!init || init.method === undefined)) {
+      if (path(url).endsWith('/time-logs/mine') && (!init || init.method === undefined)) {
         return jsonResponse(200, { timeLogs: clockInCalled ? [{
           id: 'log_1', userId: 'user_1', clockInAt: new Date().toISOString(), clockOutAt: null,
           clockInPhoto: null, clockOutPhoto: null, clockInLat: null, clockInLng: null,
@@ -141,6 +191,9 @@ describe('ShiftsPage', () => {
           reviewedAt: null, reviewNote: null, user: { id: 'user_1', fullName: 'POC Housekeeping (Demo)' },
         }] : [] });
       }
+      const defaulted = shiftManagerDefaults(url, init);
+      if (defaulted) return defaulted;
+      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -174,7 +227,7 @@ describe('ShiftsPage', () => {
         return jsonResponse(200, { flagged: true, reason: 'OUTSIDE_ALL_GEOFENCES' });
       }
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
-      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/files') && init?.method === 'POST') {
         uploadCalled = true;
         return jsonResponse(201, { file: { id: 'file_1' } });
@@ -228,7 +281,7 @@ describe('ShiftsPage', () => {
           },
         });
       }
-      if (path(url).endsWith('/time-logs')) {
+      if (path(url).endsWith('/time-logs/mine')) {
         return jsonResponse(200, { timeLogs: clockInCalled ? [{
           id: 'log_1', userId: 'user_1', clockInAt: new Date().toISOString(), clockOutAt: null,
           clockInPhoto: null, clockOutPhoto: null, clockInLat: 0, clockInLng: 0,
@@ -379,6 +432,7 @@ describe('ShiftsPage', () => {
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
       if (path(url).endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: reviewCalled ? [] : [flaggedEntry] });
       if (path(url).endsWith('/shifts/assignable-users')) return jsonResponse(200, { users: [] });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
       if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       if (url.endsWith('/time-logs/log_1/review') && init?.method === 'POST') {
@@ -410,6 +464,7 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
       if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -452,6 +507,7 @@ describe('ShiftsPage', () => {
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
       if (path(url).endsWith('/time-logs/flagged')) return jsonResponse(200, { timeLogs: [] });
       if (path(url).endsWith('/shifts/assignable-users')) return jsonResponse(200, { users: [{ id: 'user_2', fullName: 'Room Attendant (Demo)' }] });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [] });
       if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [normalLog] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -600,9 +656,10 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [openLog] });
       const defaulted = shiftManagerDefaults(url, init);
       if (defaulted) return defaulted;
-      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [openLog] });
+      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -676,9 +733,10 @@ describe('ShiftsPage', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: shiftManagerUser });
+      if (path(url).endsWith('/time-logs/mine')) return jsonResponse(200, { timeLogs: [openLog] });
       const defaulted = shiftManagerDefaults(url, init);
       if (defaulted) return defaulted;
-      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [openLog] });
+      if (path(url).endsWith('/time-logs')) return jsonResponse(200, { timeLogs: [] });
       if (url.endsWith('/restday-requests')) return jsonResponse(200, { restDayRequests: [] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });

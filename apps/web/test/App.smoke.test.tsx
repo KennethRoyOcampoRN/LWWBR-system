@@ -739,16 +739,17 @@ describe('App', () => {
     expect(screen.queryByRole('link', { name: /Open F&B tickets/ })).not.toBeInTheDocument();
   });
 
-  // Client-directed feature, 2026-08-31: the first Command Center data
-  // that isn't universally visible to every unit:read holder (see
-  // getUnitsDashboard's own doc comment). This is the frontend half of
-  // that gate — a viewer without remittance:read/quotation:read must see
-  // neither card nor either queue row type, even if the mocked backend
-  // response were to (hypothetically) include the fields, since the real
-  // backend never actually would. Testing the frontend gate itself, not
-  // just that the backend omitted the data, so a future refactor on
-  // either side can't reintroduce a leak without this catching it.
-  it('a viewer without remittance:read/quotation:read sees neither KPI card nor queue rows, even if the payload includes the data', async () => {
+  // Client decision, 2026-11-03 (spec.md §13, same dormant-not-deleted
+  // shape as decision 9): Payment Verification and Quotations removed
+  // from the Command Center UI outright — no longer a permission gate,
+  // unconditionally absent regardless of what the backend payload
+  // includes. getUnitsDashboard (apps/api) still computes and
+  // permission-omits pendingRemittances/pendingQuotations/
+  // remittanceRequests/quotationRequests, untouched, for when this is
+  // revisited; this test proves the frontend never renders them even if
+  // a (hypothetical, since the real backend wouldn't for this fixture
+  // either) response were to include the fields.
+  it('never shows the Pending payment verifications / Pending quotations KPI cards or queue rows, even if the payload includes the data', async () => {
     const housekeepingUser = {
       ...currentUser,
       roles: ['POC_HOUSEKEEPING'],
@@ -816,66 +817,13 @@ describe('App', () => {
     expect(screen.queryByRole('link', { name: /low stock/i })).not.toBeInTheDocument();
   });
 
-  // A viewer with both permissions sees both cards with the real counts
-  // and both queue row types, and each — card and row alike — is a real
-  // link to its own page.
-  it('a viewer with remittance:read and quotation:read sees both KPI cards and queue rows, each navigating to its own page', async () => {
-    const user = userEvent.setup();
-    const adminStaffUser = {
-      ...currentUser,
-      roles: ['ADMIN_STAFF'],
-      permissions: { 'unit:read': 'ALL', 'remittance:read': 'ALL', 'quotation:read': 'ALL' },
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: adminStaffUser });
-      if (url.includes('/units/dashboard')) {
-        return jsonResponse(200, {
-          kpi: {
-            occupied: 0,
-            ready: 0,
-            dirty: 0,
-            outOfOrder: 0,
-            urgentOpenWorkOrders: 0,
-            checkinsToday: 0,
-            checkoutsToday: 0,
-            openFnbOrders: 0,
-            pendingRemittances: 1,
-            pendingQuotations: 1,
-            lowStockItems: 0,
-          },
-          dirtyRooms: [],
-          slaBreachedWorkOrders: [],
-          overdueAmenityRequests: [],
-          remittanceRequests: [{ id: 'remit_1', referenceNo: 'RM-260831-0001', name: 'Juan Dela Cruz', waitingMinutes: 30 }],
-          quotationRequests: [{ id: 'quote_1', referenceNo: 'QT-260831-0001', name: 'Maria Santos', waitingMinutes: 20 }],
-          lowStockItems: [],
-        });
-      }
-      if (url.includes('/units/activity')) return jsonResponse(200, { events: [] });
-      if (url.endsWith('/remittance-requests')) return jsonResponse(200, { remittanceRequests: [] });
-      if (url.endsWith('/quotation-requests')) return jsonResponse(200, { quotationRequests: [] });
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(<App />);
-
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Command Center' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText('Pending payment verifications')).toBeInTheDocument());
-    expect(screen.getByText('Pending payment verifications').parentElement).toHaveTextContent('1');
-    expect(screen.getByText('Pending quotations').parentElement).toHaveTextContent('1');
-    expect(screen.getByText(/RM-260831-0001 — Juan Dela Cruz awaiting verification/i)).toBeInTheDocument();
-    expect(screen.getByText(/QT-260831-0001 — Maria Santos awaiting quotation/i)).toBeInTheDocument();
-
-    const kpiLink = screen.getByRole('link', { name: /Pending payment verifications/ });
-    expect(kpiLink).toHaveAttribute('href', '/payment-verification');
-    const rowLink = screen.getByRole('link', { name: /RM-260831-0001 — Juan Dela Cruz awaiting verification/i });
-    expect(rowLink).toHaveAttribute('href', '/payment-verification');
-
-    await user.click(screen.getByRole('link', { name: /Pending quotations/ }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Quotations' })).toBeInTheDocument());
-  });
+  // Client decision, 2026-11-03 (spec.md §13): the test that used to live
+  // here ("a viewer with remittance:read and quotation:read sees both KPI
+  // cards and queue rows, each navigating to its own page") asserted
+  // exactly the UI surface removed by this decision — both cards'
+  // presence, their /payment-verification and /quotations hrefs, and
+  // navigation to the (now route-less) Quotations page. Removed rather
+  // than adapted, since there is no remaining behavior for it to assert.
 
   // Real feature, this slice: clicking either hero KPI card navigates.
   // Open F&B tickets only links when the viewer holds fnb:read — this
