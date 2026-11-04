@@ -104,6 +104,27 @@ export const PERMISSION_KEYS = [
   'stock:read',
   'stock:manage',
   'stock:log_movement',
+  // Client-directed feature, 2026-11-04 (spec.md §13 decision 13):
+  // cashier billing / acknowledgement receipts, reversing decision 7
+  // for Payment and Folio specifically. `receipt:issue`/`receipt:read`
+  // gate the document action itself (generate/print/view a Receipt) —
+  // deliberately separate from `payment:*`/`folio:*` above, which
+  // already gate the underlying money operations (posting a
+  // FolioCharge, submitting/verifying a Payment) a receipt is built
+  // from. A role could hold one set without the other — e.g.
+  // folio:charge without receipt:issue would let someone post charges
+  // but never print the resulting document.
+  'receipt:issue',
+  'receipt:read',
+  // Gates the resort-identity Setting (name/address/contact numbers/
+  // website/Facebook/logo) a Receipt's header snapshot is sourced
+  // from. Deliberately NOT `system:configure` — that key already
+  // gates LAN_MODE/geofence config (see its own comment above), and
+  // the client's ask here ("System Admin and Resort Manager can edit
+  // this") is narrower than everyone who holds system:configure today
+  // (SYSTEM_ADMIN only) and would be wrong to fold into a key that
+  // also hands out geofence editing.
+  'resort:configure',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

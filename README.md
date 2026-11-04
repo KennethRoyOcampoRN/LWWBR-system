@@ -6767,3 +6767,93 @@ at 1280px renders the real table with StatusBadge pills and Button
 actions; at 390px (phone width) it renders the same data as stacked
 cards with the same actions at the bottom of each card, PageHeader/
 Section/form styling all intact.
+
+## Cashier billing / acknowledgement receipts — stage 1: schema, permissions, seed grants only (2026-11-04)
+
+Client-directed new feature, reversing spec.md §13 decision 7
+("Payment, Folio and CashCount tracking are unbuilt") for Payment and
+Folio specifically — recorded as decision 13 (`fc985b5`). **CashCount
+stays untouched and out of scope** — this reversal is deliberately
+partial; see decision 13's own §13.1 consequence bullet for why that
+distinction matters for anyone picking up a later stage. A full build
+plan was reviewed and approved by the client first (not committed
+anywhere — delivered in chat), including two corrections from the
+client's own look at the actual sample receipt that changed the schema
+below from what the plan first proposed: deductions are rows
+(`ReceiptDeduction`), not scalar columns, since the sample's
+"Deductions" block can hold more than one kind at once (a downpayment
+*and* a discount together); and the sample's single `"2 COUPLE B -
+BALI"` line (price 2,200, qty 1 — the leading "2" meaning two rooms is
+embedded in free text, multiplying nothing) becomes two `ReceiptLine`
+rows going forward, one per room, so `amount` is a genuinely derived
+value instead of unverifiable arithmetic.
+
+This stage is schema + permissions + seed grants only — no routes, no
+service logic, no UI. Stages 2–6 (resort-identity settings endpoint,
+the billing module backend, the cashier-facing billing UI, reports
+integration, and the F&B-auto-pull/PDF stretch) are separate, later
+reviews.
+
+**New models** (`apps/api/prisma/schema.prisma`): `Receipt` (the
+issued document — billing number fields, a scalar resort-header
+snapshot, guest-block snapshot, totals, `ISSUED`/`VOIDED` status),
+`ReceiptLine` (one row per priced item, `sourceChargeId` kept only for
+audit traceability back to a `FolioCharge`, never read to render the
+line), `ReceiptDeduction` (one row per deduction —
+`DOWNPAYMENT`/`DISCOUNT_PROMO`/`DISCOUNT_SENIOR`/`DISCOUNT_PWD`/
+`REFUND_CORRECTION`; senior and PWD discounts get their own enum
+values rather than one generic `DISCOUNT` since both are PH statutory
+discounts the owner will eventually want reported separately — cheap
+to split now, a real migration to split later). Every value on a
+`Receipt`/`ReceiptLine`/`ReceiptDeduction` is a snapshot, nothing is a
+live reference re-read at render time — the client's own stated
+requirement ("a superseding -02 must not change what -01 shows")
+means a later `FolioCharge` edit, logo replacement, or resort-address
+change can never retroactively change an already-issued receipt.
+`Booking` gained one nullable field, `guestAddress` — nothing
+previously covered the sample's Address line.
+
+**Numbering**: no new numbering logic shipped this stage (that's stage
+3) — the schema reflects the design (`billingNumberScope` = cashier-
+typed prefix + `MMDDYYYY` in Asia/Manila, indexed for the duplicate-
+billing-number lookup; `billingSeq`/`billingNumberFull` alongside it),
+reusing `ReferenceSequence`'s existing `scope`/`seq` shape rather than
+adding new sequencing machinery — `scope` deliberately has no unique
+constraint, since a hard DB constraint can't distinguish a legitimate
+reissue (same booking) from a cashier's typo (different booking) the
+way the stage-3 service layer's own booking-aware check will.
+
+**Permissions** (`packages/shared/src/permissions.ts`/`rolePermissions.ts`):
+three new keys — `receipt:issue`, `receipt:read` (seeded to `CASHIER`,
+`RESORT_MANAGER`, `ADMIN_STAFF`, `ADMIN_HEAD`, `SYSTEM_ADMIN`, the
+client's own list) and `resort:configure` (seeded to `SYSTEM_ADMIN`,
+`RESORT_MANAGER` only — deliberately not folded into `system:configure`,
+which already gates unrelated LAN/geofence settings and would have
+silently handed Resort Manager geofence editing too). No hardcoded
+role-name checks anywhere — same plain `PERMISSION_KEYS`/
+`ROLE_PERMISSIONS` entries as every other key, extensible by System
+Admin through the existing Roles page with no new mechanism. Confirmed
+useful side-finding from the build plan: `folio:charge`/`folio:read`/
+`folio:settle`/`payment:read`/`payment:submit` are *already* seeded to
+exactly those same five roles, per spec §5.4's original role matrix —
+they've simply never been wired to a route before now, so this stage
+is activating existing access-control plumbing, not inventing one.
+
+No database migration ships with this commit — this project has no
+tracked migration history (confirmed: `prisma/migrations/` doesn't
+exist); every prior schema change in this README was applied with
+`npx prisma db push` against the real database before the next live
+test, and this one is no different. **Run `npx prisma db push` from
+`apps/api` before the next live test** — `Receipt`, `ReceiptLine`,
+`ReceiptDeduction`, `Booking.guestAddress`, and the new permission/role-
+permission seed rows all need it.
+
+Verification: `npx prisma validate`/`generate` clean (no live DB
+reachable in this sandbox — confirmed via `prisma db pull --print`
+failing with `P1001`, consistent with every prior schema-change entry
+in this README). `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94, `apps/api` 588/591 (3 pre-existing
+sandbox-network-only skips, unchanged), `apps/web` 181/181 (none of
+these touch frontend code, so this is confirming no regression, not
+new coverage — stage 4 is where this feature gets its own tests).
+`npm run build` clean across all three packages.

@@ -108,10 +108,15 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     // resolve every quotation without also being able to create one.
     'quotation:read': 'ALL',
     'quotation:update_status': 'ALL',
+    // Client-directed feature, 2026-11-04 (spec.md §13 decision 13) —
+    // see permissions.ts's receipt:*/resort:configure comment.
+    'receipt:issue': 'ALL',
+    'receipt:read': 'ALL',
     'remittance:create': 'ALL',
     'remittance:read': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
+    'resort:configure': 'ALL',
     'restday:approve': 'ALL',
     'restday:request': 'ALL',
     'role:manage': 'ALL',
@@ -222,10 +227,15 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     // remittance:*/quotation:* comment.
     'quotation:create': 'ALL',
     'quotation:read': 'ALL',
+    // Client-directed feature, 2026-11-04 (spec.md §13 decision 13) —
+    // see permissions.ts's receipt:*/resort:configure comment.
+    'receipt:issue': 'ALL',
+    'receipt:read': 'ALL',
     'remittance:create': 'ALL',
     'remittance:read': 'ALL',
     'report:export': 'ALL',
     'report:view': 'ALL',
+    'resort:configure': 'ALL',
     'restday:approve': 'ALL',
     'restday:request': 'ALL',
     'shift:manage': 'ALL',
@@ -309,6 +319,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     // remittance:*/quotation:* comment.
     'quotation:create': 'ALL',
     'quotation:read': 'ALL',
+    // Client-directed feature, 2026-11-04 (spec.md §13 decision 13) —
+    // see permissions.ts's receipt:*/resort:configure comment.
+    'receipt:issue': 'ALL',
+    'receipt:read': 'ALL',
     'remittance:create': 'ALL',
     'remittance:read': 'ALL',
     'report:export': 'ALL',
@@ -342,6 +356,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     // remittance:*/quotation:* comment.
     'quotation:create': 'ALL',
     'quotation:read': 'ALL',
+    // Client-directed feature, 2026-11-04 (spec.md §13 decision 13) —
+    // see permissions.ts's receipt:*/resort:configure comment.
+    'receipt:issue': 'ALL',
+    'receipt:read': 'ALL',
     'remittance:create': 'ALL',
     'remittance:read': 'ALL',
     'restday:request': 'ALL',
@@ -368,6 +386,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'incident:create': 'ALL',
     'payment:read': 'ALL',
     'payment:submit': 'ALL',
+    // Client-directed feature, 2026-11-04 (spec.md §13 decision 13) —
+    // see permissions.ts's receipt:*/resort:configure comment.
+    'receipt:issue': 'ALL',
+    'receipt:read': 'ALL',
     'report:view': 'ALL',
     'restday:request': 'ALL',
     'shift:read': 'ALL',
