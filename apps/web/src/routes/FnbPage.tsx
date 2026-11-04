@@ -7,13 +7,20 @@ import {
   type FnbOrderTypeKey,
   type FnbSettlementKey,
 } from '@lwwbr/shared';
-import { useEffect, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList, SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { FNB_ORDER_STATUS_LABELS, FNB_ORDER_TYPE_LABELS } from '../lib/fnbOrderStyle.js';
 import { subscribeToFnbOrderChanges } from '../lib/realtime.js';
+
+interface MenuItemPhoto {
+  id: string;
+  filename: string;
+  mimeType: string;
+  url: string;
+}
 
 interface MenuItemRow {
   id: string;
@@ -23,6 +30,9 @@ interface MenuItemRow {
   isAvailable: boolean;
   prepMinutes: number | null;
   sortOrder: number;
+  // Setup Restaurant (client-directed feature, 2026-11-04): one photo
+  // per dish, same shape as the resort logo.
+  photo: MenuItemPhoto | null;
 }
 
 interface OrderLineRow {
@@ -126,6 +136,43 @@ export function FnbPage() {
   const [category, setCategory] = useState('');
   const [price, setPrice] = useState('0');
   const [prepMinutes, setPrepMinutes] = useState('');
+  const [photo, setPhoto] = useState<MenuItemPhoto | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+
+  // Which row currently has its photo uploader open (there's no
+  // existing edit-in-place panel for a MenuItem's other fields — this
+  // adds just enough to attach/replace a photo on an item already
+  // created, without building a parallel edit surface for everything
+  // else).
+  const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
+  const [rowPhotoUploading, setRowPhotoUploading] = useState(false);
+  const [rowPhotoError, setRowPhotoError] = useState<string | null>(null);
+
+  // Same generic POST /files + GET /files/signed round trip as the
+  // resort logo and Setup Rooms/Amenities.
+  async function uploadMenuItemPhoto(
+    file: File,
+    setUploading: (v: boolean) => void,
+    setPhotoState: (p: MenuItemPhoto | null) => void,
+    setErr: (e: string | null) => void,
+  ) {
+    setUploading(true);
+    setErr(null);
+    try {
+      const uploaded = await api.upload<{ file: { id: string; filename: string; mimeType: string } }>('/files', file);
+      setPhotoState({ id: uploaded.file.id, filename: uploaded.file.filename, mimeType: uploaded.file.mimeType, url: URL.createObjectURL(file) });
+    } catch (err) {
+      setErr(err instanceof ApiRequestError ? err.message : 'Could not upload the photo.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function saveRowPhoto(item: MenuItemRow, nextPhoto: MenuItemPhoto | null) {
+    await api.patch(`/menu-items/${item.id}`, { photoFileId: nextPhoto?.id ?? null });
+    setEditingPhotoId(null);
+    await fetchItems();
+  }
 
   const fetchItems = () => {
     setItems('loading');
@@ -232,11 +279,13 @@ export function FnbPage() {
         category,
         price: Number(price),
         prepMinutes: prepMinutes ? Number(prepMinutes) : undefined,
+        photoFileId: photo?.id ?? null,
       });
       setName('');
       setCategory('');
       setPrice('0');
       setPrepMinutes('');
+      setPhoto(null);
       await fetchItems();
     } catch (err) {
       setFormError(err instanceof ApiRequestError ? err.message : 'Could not add the menu item.');
@@ -764,55 +813,112 @@ export function FnbPage() {
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
                   <thead>
                     <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                      <th className="py-2 pr-4" />
                       <th className="py-2 pr-4">Name</th>
                       <th className="py-2 pr-4">Price</th>
                       <th className="py-2 pr-4">Prep time</th>
                       <th className="py-2 pr-4">Status</th>
-                      {canManageMenu && <th className="py-2 pr-4" colSpan={2} />}
+                      {canManageMenu && <th className="py-2 pr-4" colSpan={3} />}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {(items as MenuItemRow[])
                       .filter((item) => item.category === cat)
                       .map((item) => (
-                        <tr key={item.id} className={item.isAvailable ? '' : 'text-gray-400'}>
-                          <td className="py-2 pr-4 font-medium">{item.name}</td>
-                          <td className="py-2 pr-4">{formatPeso(item.price)}</td>
-                          <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
-                          <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
-                          {canManageMenu && (
-                            <>
-                              <td className="py-2 pr-4">
-                                <button
-                                  type="button"
-                                  onClick={() => void toggleAvailable(item)}
-                                  className="text-xs font-medium text-blue-700 hover:underline"
-                                >
-                                  {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
-                                </button>
-                              </td>
-                              <td className="py-2 pr-4">
-                                {/*
-                                  Client decision, 2026-08-25 (Option B):
-                                  only offered once the item is already
-                                  unavailable — matches the server's own
-                                  409 ITEM_STILL_AVAILABLE guard, so this
-                                  never fires a request that's certain to
-                                  be refused.
-                                */}
-                                {!item.isAvailable && (
+                        <Fragment key={item.id}>
+                          <tr className={item.isAvailable ? '' : 'text-gray-400'}>
+                            <td className="py-2 pr-4">
+                              {item.photo ? (
+                                <img src={item.photo.url} alt="" className="h-8 w-8 rounded object-cover" />
+                              ) : (
+                                <div className="h-8 w-8 rounded bg-gray-100" />
+                              )}
+                            </td>
+                            <td className="py-2 pr-4 font-medium">{item.name}</td>
+                            <td className="py-2 pr-4">{formatPeso(item.price)}</td>
+                            <td className="py-2 pr-4">{item.prepMinutes ? `${item.prepMinutes} min` : '—'}</td>
+                            <td className="py-2 pr-4">{item.isAvailable ? 'Available' : 'Unavailable'}</td>
+                            {canManageMenu && (
+                              <>
+                                <td className="py-2 pr-4">
                                   <button
                                     type="button"
-                                    onClick={() => void deleteItem(item)}
-                                    className="text-xs font-medium text-red-700 hover:underline"
+                                    onClick={() => {
+                                      setRowPhotoError(null);
+                                      setEditingPhotoId(editingPhotoId === item.id ? null : item.id);
+                                    }}
+                                    className="text-xs font-medium text-blue-700 hover:underline"
                                   >
-                                    Delete
+                                    {editingPhotoId === item.id ? 'Close' : 'Edit photo'}
                                   </button>
-                                )}
+                                </td>
+                                <td className="py-2 pr-4">
+                                  <button
+                                    type="button"
+                                    onClick={() => void toggleAvailable(item)}
+                                    className="text-xs font-medium text-blue-700 hover:underline"
+                                  >
+                                    {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
+                                  </button>
+                                </td>
+                                <td className="py-2 pr-4">
+                                  {/*
+                                    Client decision, 2026-08-25 (Option B):
+                                    only offered once the item is already
+                                    unavailable — matches the server's own
+                                    409 ITEM_STILL_AVAILABLE guard, so this
+                                    never fires a request that's certain to
+                                    be refused.
+                                  */}
+                                  {!item.isAvailable && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteItem(item)}
+                                      className="text-xs font-medium text-red-700 hover:underline"
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                          {editingPhotoId === item.id && (
+                            <tr>
+                              <td colSpan={8} className="bg-gray-50 p-3">
+                                <div className="flex flex-col gap-2">
+                                  {rowPhotoError && <p role="alert" className="text-sm text-red-700">{rowPhotoError}</p>}
+                                  {item.photo && (
+                                    <img src={item.photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />
+                                  )}
+                                  <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/webp,image/heic"
+                                    disabled={rowPhotoUploading}
+                                    aria-label={`Photo for ${item.name}`}
+                                    onChange={async (e) => {
+                                      const file = e.target.files?.[0];
+                                      if (!file) return;
+                                      let uploaded: MenuItemPhoto | null = null;
+                                      await uploadMenuItemPhoto(file, setRowPhotoUploading, (p) => (uploaded = p), setRowPhotoError);
+                                      if (uploaded) await saveRowPhoto(item, uploaded);
+                                    }}
+                                  />
+                                  {item.photo && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void saveRowPhoto(item, null)}
+                                      disabled={rowPhotoUploading}
+                                      className="w-fit text-xs font-medium text-red-700 hover:underline"
+                                    >
+                                      Remove photo
+                                    </button>
+                                  )}
+                                </div>
                               </td>
-                            </>
+                            </tr>
                           )}
-                        </tr>
+                        </Fragment>
                       ))}
                   </tbody>
                 </table>
@@ -868,9 +974,33 @@ export function FnbPage() {
                 />
               </label>
             </div>
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-medium text-gray-600">Photo (optional)</span>
+              {photo && <img src={photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic"
+                disabled={photoUploading}
+                aria-label="Dish photo"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void uploadMenuItemPhoto(file, setPhotoUploading, setPhoto, setFormError);
+                }}
+              />
+              {photo && (
+                <button
+                  type="button"
+                  onClick={() => setPhoto(null)}
+                  disabled={photoUploading}
+                  className="w-fit text-xs font-medium text-red-700 hover:underline"
+                >
+                  Remove photo
+                </button>
+              )}
+            </div>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || photoUploading}
               className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               {submitting ? 'Adding…' : 'Add menu item'}

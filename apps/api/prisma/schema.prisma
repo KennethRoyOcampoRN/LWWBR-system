@@ -256,12 +256,18 @@ model UnitType {
   dayTourRate     Decimal?  @db.Decimal(12, 2)
   extraPersonRate Decimal?  @db.Decimal(12, 2)
   colorHex        String?
+  // Setup Rooms (client-directed feature, 2026-11-04): one representative
+  // photo per room type, same shape as Receipt.logoFileId — a catalog
+  // listing needs one thumbnail, not WorkOrderPhoto's many-photos
+  // before/after model.
+  photoFileId     String?
   isActive        Boolean   @default(true)
   sortOrder       Int       @default(0)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
 
+  photo FileObject? @relation("UnitTypePhoto", fields: [photoFileId], references: [id], onDelete: SetNull)
   units Unit[]
 }
 
@@ -936,11 +942,23 @@ model AmenityItem {
   condition       String
   requiresDeposit Boolean         @default(false)
   depositAmount   Decimal         @default(0) @db.Decimal(12, 2)
+  // Setup Amenities (client-directed feature, 2026-11-04): a real rental
+  // charge, distinct from depositAmount above (a refundable deposit,
+  // never billed — see service.ts's "monitoring, not transactions"
+  // comment). Nullable: some items (board games, etc.) may stay
+  // deposit-only/free to use. Whether this is a flat fee or a per-day
+  // rate, and wiring it into FolioCharge/receipt lines, is deliberately
+  // not decided here — raised to the client, not resolved — this field
+  // only exposes the number in Setup Amenities for now.
+  rentalPrice     Decimal?        @db.Decimal(12, 2)
+  // Same one-photo-per-item reasoning as UnitType.photoFileId above.
+  photoFileId     String?
   isActive        Boolean         @default(true)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   deletedAt       DateTime?
 
+  photo    FileObject?      @relation("AmenityItemPhoto", fields: [photoFileId], references: [id], onDelete: SetNull)
   requests AmenityRequest[]
 }
 
@@ -1016,10 +1034,13 @@ model MenuItem {
   isAvailable Boolean   @default(true)
   prepMinutes Int?
   sortOrder   Int       @default(0)
+  // Same one-photo-per-item reasoning as UnitType.photoFileId.
+  photoFileId String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
+  photo      FileObject?    @relation("MenuItemPhoto", fields: [photoFileId], references: [id], onDelete: SetNull)
   orderLines FnbOrderLine[]
 }
 
@@ -1554,6 +1575,9 @@ model FileObject {
   timeLogClockInPhotos  TimeLog[]           @relation("TimeLogClockInPhoto")
   timeLogClockOutPhotos TimeLog[]           @relation("TimeLogClockOutPhoto")
   receiptLogoSnapshots  Receipt[]           @relation("ReceiptLogoSnapshot")
+  unitTypePhotos        UnitType[]          @relation("UnitTypePhoto")
+  amenityItemPhotos     AmenityItem[]       @relation("AmenityItemPhoto")
+  menuItemPhotos        MenuItem[]          @relation("MenuItemPhoto")
 }
 
 model Setting {

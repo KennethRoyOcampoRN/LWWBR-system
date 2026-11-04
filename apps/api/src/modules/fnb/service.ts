@@ -1,4 +1,5 @@
 import { DEFAULT_FNB_ADVANCE_ORDER_LEAD_MINUTES, getFnbOrderTransition, type PermissionKey, type PermissionScope } from '@lwwbr/shared';
+import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { prisma } from '../../lib/prisma.js';
@@ -25,10 +26,28 @@ const FNB_ORDER_INCLUDE = {
   lines: { include: { menuItem: { select: { id: true, name: true } } } },
 } as const;
 
+// Same signed-URL-not-raw-storageKey reasoning as settings/service.ts's
+// own logoToJson.
+async function photoToJson(photoFileId: string | null) {
+  if (!photoFileId) return null;
+  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
+  if (!file) return null;
+  return { id: file.id, filename: file.filename, mimeType: file.mimeType, url: await getStorageAdapter().getSignedUrl(file.storageKey) };
+}
+
 // Prisma's Decimal doesn't serialize to a plain JSON number on its own —
 // same reasoning and pattern as amenities/service.ts's amenityItemToJson.
-function menuItemToJson<T extends { price: unknown }>(item: T) {
-  return { ...item, price: Number(item.price) };
+async function menuItemToJson<T extends { price: unknown; photoFileId: string | null }>(item: T) {
+  const { photoFileId, ...rest } = item;
+  return { ...rest, price: Number(item.price), photo: await photoToJson(photoFileId) };
+}
+
+async function assertPhotoFileExists(photoFileId: string | null | undefined) {
+  if (!photoFileId) return;
+  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
+  if (!file) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'The referenced photo file could not be found.');
+  }
 }
 
 // Spec §6: the restaurant menu. Order/kitchen-kanban is a separate,
@@ -41,10 +60,11 @@ export async function listMenuItems() {
     where: { deletedAt: null },
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
   });
-  return items.map(menuItemToJson);
+  return Promise.all(items.map(menuItemToJson));
 }
 
 export async function createMenuItem(input: CreateMenuItemInput) {
+  await assertPhotoFileExists(input.photoFileId);
   const item = await prisma.menuItem.create({
     data: {
       name: input.name,
@@ -53,6 +73,7 @@ export async function createMenuItem(input: CreateMenuItemInput) {
       isAvailable: input.isAvailable ?? true,
       prepMinutes: input.prepMinutes,
       sortOrder: input.sortOrder ?? 0,
+      photoFileId: input.photoFileId ?? null,
     },
   });
   return menuItemToJson(item);
@@ -63,6 +84,7 @@ export async function updateMenuItem(id: string, input: UpdateMenuItemInput) {
   if (!existing) {
     throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
   }
+  await assertPhotoFileExists(input.photoFileId);
   const item = await prisma.menuItem.update({ where: { id }, data: input });
   return menuItemToJson(item);
 }

@@ -295,3 +295,76 @@ describe('UnitsPage — billing entry point', () => {
     expect(screen.queryByRole('link', { name: 'Bill guest' })).not.toBeInTheDocument();
   });
 });
+
+// Setup Rooms (client-directed feature, 2026-11-04): POST/PATCH
+// /unit-types already existed server-side but nothing in the web app
+// ever called them until this section.
+describe('UnitsPage — Setup Rooms', () => {
+  const standardRoom = {
+    id: 'type_1',
+    name: 'Standard Room',
+    description: null,
+    defaultCapacity: 2,
+    baseRate: 1500,
+    dayTourRate: null,
+    extraPersonRate: 300,
+    colorHex: null,
+    photo: null,
+    isActive: true,
+    sortOrder: 0,
+  };
+
+  function stubFetch(userFixture: typeof managerUser, opts: { onCreate?: (body: Record<string, unknown>) => void } = {}) {
+    return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: userFixture });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/unit-types') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { unitTypes: [standardRoom] });
+      }
+      if (url.endsWith('/unit-types') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        opts.onCreate?.(body);
+        return jsonResponse(201, { unitType: { ...standardRoom, id: 'type_2', ...body } });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+  }
+
+  it('shows the Setup: Rooms section for an unittype:manage holder', async () => {
+    const managerWithUnitType = { ...managerUser, permissions: { ...managerUser.permissions, 'unittype:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithUnitType));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Setup: Rooms')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Standard Room').length).toBeGreaterThan(0));
+  });
+
+  it('hides the Setup: Rooms section from a holder without unittype:manage', async () => {
+    vi.stubGlobal('fetch', stubFetch(managerUser));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Units' })).toBeInTheDocument());
+    expect(screen.queryByText('Setup: Rooms')).not.toBeInTheDocument();
+  });
+
+  it('adds a room type, submitting the rate fields as numbers', async () => {
+    const user = userEvent.setup();
+    let createdBody: Record<string, unknown> | null = null;
+    const managerWithUnitType = { ...managerUser, permissions: { ...managerUser.permissions, 'unittype:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithUnitType, { onCreate: (body) => (createdBody = body) }));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Add a room type')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Name'), 'Deluxe Room');
+    await user.clear(screen.getByLabelText('Base rate (₱)'));
+    await user.type(screen.getByLabelText('Base rate (₱)'), '2500');
+    await user.click(screen.getByRole('button', { name: 'Add room type' }));
+
+    await waitFor(() => expect(createdBody).not.toBeNull());
+    expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500, photoFileId: null });
+  });
+});

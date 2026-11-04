@@ -9,6 +9,13 @@ export const createAmenityItemSchema = z.object({
   condition: z.string().trim().min(1).max(200),
   requiresDeposit: z.boolean().optional(),
   depositAmount: z.number().nonnegative().optional(),
+  // Setup Amenities (client-directed feature, 2026-11-04): a real rental
+  // charge, distinct from the deposit above — see schema.prisma's own
+  // comment on AmenityItem.rentalPrice for why this isn't wired into
+  // billing yet. null clears a previously-set price.
+  rentalPrice: z.number().nonnegative().nullable().optional(),
+  // Same upload-then-attach pattern as UnitType.photoFileId.
+  photoFileId: z.string().min(1).nullable().optional(),
 });
 
 export const updateAmenityItemSchema = createAmenityItemSchema.partial().extend({

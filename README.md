@@ -7209,3 +7209,81 @@ sandbox to run these queries against Prisma for real (confirmed via
 `npx prisma db pull --print` → `P1001`, consistent with every prior
 stage); schema is unchanged in this stage so no new `db push` is
 pending.
+
+**Setup Rooms/Amenities/Restaurant, plus photo support (client-directed
+feature, 2026-11-04).** Three decisions made before building, per the
+client's own request to decide and justify rather than ask:
+
+- **IA: a management section on the page that already uses the
+  catalog, not a new page or a fold into Resort Settings.**
+  `AmenitiesPage.tsx`/`FnbPage.tsx` already had this shape (inline
+  item-management forms gated by `amenity:manage`/`fnb:manage_menu`);
+  `UnitsPage.tsx` was the actual gap — `POST`/`PATCH /unit-types`
+  existed server-side but nothing in the web app ever called them, so
+  rooms were stuck on spec §10's seeded placeholder rates with no way
+  to change them outside the database. A new `SetupRoomsSection` on
+  `UnitsPage.tsx` (gated `unittype:manage`, built with the new
+  primitive set — `Section`/`Card`/`DataTable`/`Field`/`Button` —
+  consistent with every other wholly-new component this redesign has
+  added) closes that gap the same way the other two pages already
+  work. Resort Settings stays scoped to resort identity/branding, a
+  different concern.
+- **Photo cardinality: one photo per item, not a `WorkOrderPhoto`-style
+  gallery.** `UnitType.photoFileId`/`AmenityItem.photoFileId`/
+  `MenuItem.photoFileId` — nullable scalar FKs to `FileObject`, same
+  shape as `Receipt.logoFileId`. `WorkOrderPhoto` needs many photos
+  because a repair ticket documents before/after over time; a catalog
+  listing just needs one representative thumbnail. All three reuse the
+  existing `POST /files` + `GET /files/signed` round trip — no new
+  upload mechanism, same path the resort logo and every other photo
+  feature in this app already uses.
+- **`AmenityItem` had no rental-charge field — flagged, not silently
+  resolved.** `requiresDeposit`/`depositAmount` is a refundable
+  deposit, never billed (confirmed in the file's own "monitoring, not
+  transactions" comment). Added `AmenityItem.rentalPrice` (nullable —
+  some items may stay deposit-only/free) so Setup Amenities can show
+  and edit a real number. Whether it's a flat fee or a per-day rate,
+  and wiring it into `FolioCharge`/receipt lines, is deliberately left
+  undecided here — a separate decision for whenever amenities actually
+  get billed, not something this round asked for.
+
+Schema: `UnitType`/`AmenityItem`/`MenuItem` each gained `photoFileId`
+(+ the `photo` back-relation on `FileObject`); `AmenityItem` also
+gained `rentalPrice`. Each module's service layer gained an
+`assertPhotoFileExists` guard (422 on an unknown `photoFileId`, same
+pattern `updateResortIdentity` already uses for the logo) and a
+`photoToJson` signed-URL helper (same pattern as `settings/service.ts`'s
+`logoToJson`) — `units/service.ts`'s `unitTypeToJson`,
+`amenities/service.ts`'s `amenityItemToJson`, and `fnb/service.ts`'s
+`menuItemToJson` are now async for it.
+
+Backend: `POST`/`PATCH /unit-types` got their first-ever test coverage
+in this stage (they predate this feature but had none), plus new tests
+on all three modules for photo upload/validation. Frontend:
+`UnitsPage.tsx`'s new `SetupRoomsSection` (list + add + edit, with photo
+upload); `AmenitiesPage.tsx`'s existing add/edit forms extended with a
+rental-price field and a photo uploader, plus a Rental column and photo
+thumbnail in the table; `FnbPage.tsx`'s existing add form extended with
+a photo uploader, plus a new per-row "Edit photo" panel — `MenuItem` had
+no edit-in-place UI for any field before this, so rather than build a
+full edit surface out of scope, this adds just enough to attach or
+replace a photo on an already-created item.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `apps/api` 640/640 (10 new: 4 for `POST`/`PATCH
+/unit-types`'s photo handling, 2 for `amenity-items`, 2 for
+`menu-items`, plus the pre-existing suites otherwise unaffected).
+`apps/web` 194/194 (5 new: Setup Rooms visibility + add flow on
+`UnitsPage.test.tsx`, rental-price-and-photo on
+`AmenitiesPage.test.tsx`, add-with-photo and edit-photo-via-row-panel
+on `FnbPage.test.tsx`). `npm run build` clean across all three
+packages. No live database in this sandbox (confirmed via `npx prisma
+db pull --print` → `P1001`); `npx prisma db push` is pending against a
+live database before these new columns exist for real.
+
+Rate rules by date range and weekday (seasonal/weekend pricing) were
+planned in this same round but deliberately not built — see spec.md
+§13 decision 14 for the model, the per-night lookup, the four-rung
+specificity ladder (plus a fifth hardening rung, `id` as an ultimate
+ordering tiebreak), and the four-stage build-out, each ending in a
+review before the next starts.

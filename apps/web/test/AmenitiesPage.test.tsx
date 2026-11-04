@@ -57,6 +57,8 @@ const kayak = {
   condition: 'Good',
   requiresDeposit: true,
   depositAmount: 1000,
+  rentalPrice: null,
+  photo: null,
   isActive: true,
 };
 
@@ -103,6 +105,49 @@ describe('AmenitiesPage', () => {
     await user.click(screen.getByRole('button', { name: 'Add item' }));
 
     await waitFor(() => expect(screen.getByText('Frisbee')).toBeInTheDocument());
+  });
+
+  // Setup Amenities (client-directed feature, 2026-11-04): rentalPrice is
+  // the real charge, distinct from the deposit; photo follows the same
+  // upload-then-attach pattern as the resort logo.
+  it('adds an item with a rental price and a photo, uploading via the generic /files endpoint', async () => {
+    const user = userEvent.setup();
+    let createdBody: Record<string, unknown> | null = null;
+    URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-amenity-photo');
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/amenity-items') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { amenityItems: [kayak] });
+      }
+      if (url.endsWith('/files') && init?.method === 'POST') {
+        return jsonResponse(201, { file: { id: 'file_kayak_2', filename: 'kayak2.jpg', mimeType: 'image/jpeg' } });
+      }
+      if (url.endsWith('/amenity-items') && init?.method === 'POST') {
+        createdBody = JSON.parse(init.body as string);
+        return jsonResponse(201, { amenityItem: { id: 'amenity_3', ...createdBody, assetTag: null, photo: null, isActive: true } });
+      }
+      if (url.endsWith('/amenity-requests')) return jsonResponse(200, { amenityRequests: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Kayak')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Name'), 'Kayak 2');
+    await user.selectOptions(screen.getByLabelText('Category'), 'OUTDOOR');
+    await user.clear(screen.getByLabelText('Total quantity'));
+    await user.type(screen.getByLabelText('Total quantity'), '1');
+    await user.type(screen.getByLabelText('Rental price (₱, optional)'), '150');
+    const file = new File(['x'], 'kayak2.jpg', { type: 'image/jpeg' });
+    await user.upload(screen.getByLabelText('Item photo'), file);
+    await waitFor(() => expect(screen.getAllByAltText('').length).toBeGreaterThan(0));
+    await user.click(screen.getByRole('button', { name: 'Add item' }));
+
+    await waitFor(() => expect(createdBody).not.toBeNull());
+    expect(createdBody).toMatchObject({ name: 'Kayak 2', rentalPrice: 150, photoFileId: 'file_kayak_2' });
   });
 
   it('a read-only holder sees the catalogue but no "Add an item" form', async () => {

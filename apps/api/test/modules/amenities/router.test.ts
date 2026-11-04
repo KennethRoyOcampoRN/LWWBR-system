@@ -15,6 +15,7 @@ const mockPrisma = {
   },
   referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+  fileObject: { findFirst: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -22,6 +23,11 @@ vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 const mockRealtimeEmit = vi.fn();
 vi.mock('../../../src/adapters/realtime/index.js', () => ({
   getRealtimeAdapter: () => ({ emit: mockRealtimeEmit }),
+}));
+
+const mockGetSignedUrl = vi.fn();
+vi.mock('../../../src/adapters/storage/index.js', () => ({
+  getStorageAdapter: () => ({ getSignedUrl: mockGetSignedUrl }),
 }));
 
 const { createApp } = await import('../../../src/app.js');
@@ -56,6 +62,8 @@ function fakeAmenityItem(overrides: Partial<Record<string, unknown>> = {}) {
     condition: 'Good',
     requiresDeposit: true,
     depositAmount: 500,
+    rentalPrice: null,
+    photoFileId: null,
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -97,6 +105,7 @@ function fakeAmenityRequest(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetSignedUrl.mockImplementation((key: string) => Promise.resolve(`https://signed.example/${key}`));
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
@@ -162,6 +171,8 @@ describe('POST /api/v1/amenity-items', () => {
         condition: 'Good',
         requiresDeposit: false,
         depositAmount: 0,
+        rentalPrice: null,
+        photoFileId: null,
       },
     });
     expect(res.body.amenityItem.depositAmount).toBe(0);
@@ -174,6 +185,50 @@ describe('POST /api/v1/amenity-items', () => {
       .set('Cookie', authCookie())
       .send({ name: 'Mystery Item', category: 'NOT_A_CATEGORY', totalQty: 1, condition: 'Good' });
     expect(res.status).toBe(422);
+  });
+
+  // Setup Amenities (client-directed feature, 2026-11-04): rentalPrice is
+  // the real charge, distinct from the deposit above; photoFileId follows
+  // the same upload-then-attach, signed-URL pattern as the resort logo.
+  it('creates an amenity item with a rental price and a photo, returning a signed URL', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fileObject.findFirst.mockResolvedValue({
+      id: 'file_1',
+      filename: 'kayak.jpg',
+      mimeType: 'image/jpeg',
+      storageKey: 'amenity-items/kayak.jpg',
+      deletedAt: null,
+    });
+    mockPrisma.amenityItem.create.mockResolvedValue(
+      fakeAmenityItem({ name: 'Kayak', category: 'OUTDOOR', rentalPrice: { toString: () => '150.00' }, photoFileId: 'file_1' }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/amenity-items')
+      .set('Cookie', authCookie())
+      .send({ name: 'Kayak', category: 'OUTDOOR', totalQty: 2, condition: 'Good', rentalPrice: 150, photoFileId: 'file_1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.amenityItem.rentalPrice).toBe(150);
+    expect(res.body.amenityItem.photo).toEqual({
+      id: 'file_1',
+      filename: 'kayak.jpg',
+      mimeType: 'image/jpeg',
+      url: 'https://signed.example/amenity-items/kayak.jpg',
+    });
+  });
+
+  it('rejects an unknown photoFileId on create', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.fileObject.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .post('/api/v1/amenity-items')
+      .set('Cookie', authCookie())
+      .send({ name: 'Kayak', category: 'OUTDOOR', totalQty: 2, condition: 'Good', photoFileId: 'file_does_not_exist' });
+
+    expect(res.status).toBe(422);
+    expect(mockPrisma.amenityItem.create).not.toHaveBeenCalled();
   });
 });
 

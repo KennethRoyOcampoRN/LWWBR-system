@@ -107,6 +107,50 @@ describe('FnbPage', () => {
     await waitFor(() => expect(screen.getByText('Halo-halo')).toBeInTheDocument());
   });
 
+  // Setup Restaurant (client-directed feature, 2026-11-04): one photo per
+  // dish, same upload-then-attach pattern as the resort logo.
+  it('adds a menu item with a photo, then replaces an existing item\'s photo via the row-level editor', async () => {
+    const user = userEvent.setup();
+    let items = [sisig];
+    let patchedBody: Record<string, unknown> | null = null;
+    URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-dish-photo');
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: restaurantManagerUser });
+      if (url.endsWith('/menu-items') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { menuItems: items });
+      }
+      if (url.endsWith('/files') && init?.method === 'POST') {
+        return jsonResponse(201, { file: { id: 'file_dish_1', filename: 'adobo.jpg', mimeType: 'image/jpeg' } });
+      }
+      if (url.endsWith('/menu-items') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        const created = { id: 'menu_2', ...body, isAvailable: true, sortOrder: 0, prepMinutes: undefined };
+        items = [...items, created];
+        return jsonResponse(201, { menuItem: created });
+      }
+      if (url.endsWith('/menu-items/menu_1') && init?.method === 'PATCH') {
+        patchedBody = JSON.parse(init.body as string);
+        items = items.map((i) => (i.id === 'menu_1' ? { ...i, photo: { id: 'file_dish_1', filename: 'adobo.jpg', mimeType: 'image/jpeg', url: 'https://signed.example/adobo.jpg' } } : i));
+        return jsonResponse(200, { menuItem: items.find((i) => i.id === 'menu_1') });
+      }
+      if (url.includes('/fnb-orders')) return jsonResponse(200, { fnbOrders: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Sisig')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Edit photo' }));
+    const file = new File(['x'], 'adobo.jpg', { type: 'image/jpeg' });
+    await user.upload(screen.getByLabelText('Photo for Sisig'), file);
+
+    await waitFor(() => expect(patchedBody).not.toBeNull());
+    expect(patchedBody).toMatchObject({ photoFileId: 'file_dish_1' });
+  });
+
   it('toggles a menu item unavailable', async () => {
     const user = userEvent.setup();
     let items = [sisig];

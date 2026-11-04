@@ -9,6 +9,7 @@ const mockPrisma = {
   setting: { findUnique: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+  fileObject: { findFirst: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -16,6 +17,11 @@ vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 const mockRealtimeEmit = vi.fn();
 vi.mock('../../../src/adapters/realtime/index.js', () => ({
   getRealtimeAdapter: () => ({ emit: mockRealtimeEmit }),
+}));
+
+const mockGetSignedUrl = vi.fn();
+vi.mock('../../../src/adapters/storage/index.js', () => ({
+  getStorageAdapter: () => ({ getSignedUrl: mockGetSignedUrl }),
 }));
 
 const { createApp } = await import('../../../src/app.js');
@@ -49,6 +55,7 @@ function fakeMenuItem(overrides: Partial<Record<string, unknown>> = {}) {
     isAvailable: true,
     prepMinutes: 15,
     sortOrder: 0,
+    photoFileId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     deletedAt: null,
@@ -88,6 +95,7 @@ function fakeFnbOrder(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetSignedUrl.mockImplementation((key: string) => Promise.resolve(`https://signed.example/${key}`));
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
@@ -149,9 +157,50 @@ describe('POST /api/v1/menu-items', () => {
         isAvailable: true,
         prepMinutes: undefined,
         sortOrder: 0,
+        photoFileId: null,
       },
     });
     expect(res.body.menuItem.price).toBe(280);
+  });
+
+  // Setup Restaurant (client-directed feature, 2026-11-04): one photo per
+  // dish, same upload-then-attach, signed-URL pattern as the resort logo.
+  it('creates a menu item with a photo, returning a signed URL', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.fileObject.findFirst.mockResolvedValue({
+      id: 'file_1',
+      filename: 'sisig.jpg',
+      mimeType: 'image/jpeg',
+      storageKey: 'menu-items/sisig.jpg',
+      deletedAt: null,
+    });
+    mockPrisma.menuItem.create.mockResolvedValue(fakeMenuItem({ name: 'Sisig', photoFileId: 'file_1' }));
+
+    const res = await request(createApp())
+      .post('/api/v1/menu-items')
+      .set('Cookie', authCookie())
+      .send({ name: 'Sisig', category: 'Main', price: 250, photoFileId: 'file_1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.menuItem.photo).toEqual({
+      id: 'file_1',
+      filename: 'sisig.jpg',
+      mimeType: 'image/jpeg',
+      url: 'https://signed.example/menu-items/sisig.jpg',
+    });
+  });
+
+  it('rejects an unknown photoFileId on create', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.fileObject.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .post('/api/v1/menu-items')
+      .set('Cookie', authCookie())
+      .send({ name: 'Sisig', category: 'Main', price: 250, photoFileId: 'file_does_not_exist' });
+
+    expect(res.status).toBe(422);
+    expect(mockPrisma.menuItem.create).not.toHaveBeenCalled();
   });
 
   it('rejects a negative price', async () => {

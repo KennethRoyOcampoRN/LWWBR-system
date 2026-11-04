@@ -1,4 +1,5 @@
 import { getAmenityRequestTransition, type PermissionKey, type PermissionScope } from '@lwwbr/shared';
+import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { prisma } from '../../lib/prisma.js';
@@ -25,10 +26,35 @@ const AMENITY_REQUEST_INCLUDE = {
   returnedBy: { select: { id: true, fullName: true } },
 } as const;
 
+// Same signed-URL-not-raw-storageKey reasoning as settings/service.ts's
+// own logoToJson.
+async function photoToJson(photoFileId: string | null) {
+  if (!photoFileId) return null;
+  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
+  if (!file) return null;
+  return { id: file.id, filename: file.filename, mimeType: file.mimeType, url: await getStorageAdapter().getSignedUrl(file.storageKey) };
+}
+
 // Prisma's Decimal doesn't serialize to a plain JSON number on its own —
 // same reasoning and pattern as units/service.ts's unitTypeToJson.
-function amenityItemToJson<T extends { depositAmount: unknown }>(item: T) {
-  return { ...item, depositAmount: Number(item.depositAmount) };
+async function amenityItemToJson<T extends { depositAmount: unknown; rentalPrice: unknown; photoFileId: string | null }>(
+  item: T,
+) {
+  const { photoFileId, ...rest } = item;
+  return {
+    ...rest,
+    depositAmount: Number(item.depositAmount),
+    rentalPrice: item.rentalPrice === null ? null : Number(item.rentalPrice),
+    photo: await photoToJson(photoFileId),
+  };
+}
+
+async function assertPhotoFileExists(photoFileId: string | null | undefined) {
+  if (!photoFileId) return;
+  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
+  if (!file) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'The referenced photo file could not be found.');
+  }
 }
 
 // Spec §6: the amenity catalogue (PS4/PS5 console, videoke, board games,
@@ -40,10 +66,11 @@ export async function listAmenityItems() {
     where: { deletedAt: null },
     orderBy: { name: 'asc' },
   });
-  return items.map(amenityItemToJson);
+  return Promise.all(items.map(amenityItemToJson));
 }
 
 export async function createAmenityItem(input: CreateAmenityItemInput) {
+  await assertPhotoFileExists(input.photoFileId);
   const item = await prisma.amenityItem.create({
     data: {
       name: input.name,
@@ -53,6 +80,8 @@ export async function createAmenityItem(input: CreateAmenityItemInput) {
       condition: input.condition,
       requiresDeposit: input.requiresDeposit ?? false,
       depositAmount: input.depositAmount ?? 0,
+      rentalPrice: input.rentalPrice ?? null,
+      photoFileId: input.photoFileId ?? null,
     },
   });
   return amenityItemToJson(item);
@@ -63,6 +92,7 @@ export async function updateAmenityItem(id: string, input: UpdateAmenityItemInpu
   if (!existing) {
     throw new ApiError(404, 'NOT_FOUND', 'Amenity item not found');
   }
+  await assertPhotoFileExists(input.photoFileId);
   const item = await prisma.amenityItem.update({ where: { id }, data: input });
   return amenityItemToJson(item);
 }

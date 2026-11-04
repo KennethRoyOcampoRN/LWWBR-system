@@ -14,8 +14,13 @@ import {
 } from '@lwwbr/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { Button } from '../components/Button.js';
+import { Card, Section } from '../components/Card.js';
+import { DataTable, type DataTableColumn } from '../components/DataTable.js';
 import { EmptyState } from '../components/EmptyState.js';
+import { Field, INPUT_CLASSES } from '../components/Field.js';
 import { Skeleton, SkeletonCard, SkeletonList } from '../components/Skeleton.js';
+import { StatusBadge } from '../components/StatusBadge.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
@@ -54,9 +59,32 @@ interface UnitRow {
   latestNote: string | null;
 }
 
+function formatPesoAmount(amount: number): string {
+  return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+interface UnitTypePhoto {
+  id: string;
+  filename: string;
+  mimeType: string;
+  url: string;
+}
+
+// Setup Rooms (client-directed feature, 2026-11-04): expanded from the
+// id/name shape the Check-in/Add-unit pickers only ever needed, to the
+// full UnitType record the new management section below lists and edits.
 interface UnitTypeRow {
   id: string;
   name: string;
+  description: string | null;
+  defaultCapacity: number;
+  baseRate: number;
+  dayTourRate: number | null;
+  extraPersonRate: number | null;
+  colorHex: string | null;
+  photo: UnitTypePhoto | null;
+  isActive: boolean;
+  sortOrder: number;
 }
 
 // Real gap found live-testing, 2026-08-23: bookings existed in complete
@@ -1202,6 +1230,322 @@ function AddUnitForm({ unitTypes, onCreated }: { unitTypes: UnitTypeRow[]; onCre
   );
 }
 
+interface UnitTypeFormState {
+  name: string;
+  description: string;
+  defaultCapacity: string;
+  baseRate: string;
+  dayTourRate: string;
+  extraPersonRate: string;
+  colorHex: string;
+}
+
+const EMPTY_UNIT_TYPE_FORM: UnitTypeFormState = {
+  name: '',
+  description: '',
+  defaultCapacity: '2',
+  baseRate: '',
+  dayTourRate: '',
+  extraPersonRate: '',
+  colorHex: '',
+};
+
+function unitTypeFormToBody(form: UnitTypeFormState, photoFileId: string | null | undefined) {
+  return {
+    name: form.name.trim(),
+    description: form.description.trim() || undefined,
+    defaultCapacity: Number(form.defaultCapacity),
+    baseRate: Number(form.baseRate),
+    dayTourRate: form.dayTourRate.trim() === '' ? undefined : Number(form.dayTourRate),
+    extraPersonRate: form.extraPersonRate.trim() === '' ? undefined : Number(form.extraPersonRate),
+    colorHex: form.colorHex.trim() || undefined,
+    photoFileId,
+  };
+}
+
+// Setup Rooms (client-directed feature, 2026-11-04): POST/PATCH
+// /unit-types already existed server-side (build plan stage/decision
+// 13's predecessor work never needed them) but nothing in the web app
+// ever called them — rooms were stuck on spec §10's seeded placeholder
+// rates with no way to change them outside the database. Follows the
+// same "management section on the page that already uses the catalog"
+// convention as AmenitiesPage/FnbPage's own inline item-management
+// forms, rather than a separate page or folding it into Resort Settings
+// (which is scoped to resort identity/branding, a different concern).
+function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; onSaved: () => void }) {
+  const [addForm, setAddForm] = useState(EMPTY_UNIT_TYPE_FORM);
+  const [addPhoto, setAddPhoto] = useState<UnitTypePhoto | null>(null);
+  const [addPhotoUploading, setAddPhotoUploading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState(EMPTY_UNIT_TYPE_FORM);
+  const [editPhoto, setEditPhoto] = useState<UnitTypePhoto | null>(null);
+  const [editPhotoUploading, setEditPhotoUploading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
+  async function uploadPhoto(file: File, setUploading: (v: boolean) => void, setPhoto: (p: UnitTypePhoto | null) => void, setError: (e: string | null) => void) {
+    setUploading(true);
+    setError(null);
+    try {
+      const uploaded = await api.upload<{ file: { id: string; filename: string; mimeType: string } }>('/files', file);
+      // Same local-object-URL-until-next-save reasoning as
+      // ResortSettingsPage's own handleLogoChange — the upload response
+      // has no signed URL yet.
+      setPhoto({ id: uploaded.file.id, filename: uploaded.file.filename, mimeType: uploaded.file.mimeType, url: URL.createObjectURL(file) });
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not upload the photo.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleAdd(e: FormEvent) {
+    e.preventDefault();
+    setAddError(null);
+    setAdding(true);
+    try {
+      await api.post('/unit-types', unitTypeFormToBody(addForm, addPhoto?.id ?? null));
+      setAddForm(EMPTY_UNIT_TYPE_FORM);
+      setAddPhoto(null);
+      onSaved();
+    } catch (err) {
+      setAddError(err instanceof ApiRequestError ? err.message : 'Could not add the room type.');
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  function startEdit(type: UnitTypeRow) {
+    setEditingId(type.id);
+    setEditForm({
+      name: type.name,
+      description: type.description ?? '',
+      defaultCapacity: String(type.defaultCapacity),
+      baseRate: String(type.baseRate),
+      dayTourRate: type.dayTourRate === null ? '' : String(type.dayTourRate),
+      extraPersonRate: type.extraPersonRate === null ? '' : String(type.extraPersonRate),
+      colorHex: type.colorHex ?? '',
+    });
+    setEditPhoto(type.photo);
+    setEditError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditError(null);
+  }
+
+  async function submitEdit(e: FormEvent, id: string) {
+    e.preventDefault();
+    setEditError(null);
+    setEditSubmitting(true);
+    try {
+      await api.patch(`/unit-types/${id}`, unitTypeFormToBody(editForm, editPhoto?.id ?? null));
+      setEditingId(null);
+      onSaved();
+    } catch (err) {
+      setEditError(err instanceof ApiRequestError ? err.message : 'Could not save the room type.');
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
+  async function toggleActive(type: UnitTypeRow) {
+    await api.patch(`/unit-types/${type.id}`, { isActive: !type.isActive });
+    onSaved();
+  }
+
+  const columns: DataTableColumn<UnitTypeRow>[] = [
+    {
+      key: 'photo',
+      header: '',
+      render: (t) =>
+        t.photo ? (
+          <img src={t.photo.url} alt="" className="h-10 w-10 rounded object-cover" />
+        ) : (
+          <div className="h-10 w-10 rounded bg-gray-100" />
+        ),
+      hideOnMobile: true,
+    },
+    { key: 'name', header: 'Name', render: (t) => <span className="font-medium">{t.name}</span> },
+    { key: 'capacity', header: 'Capacity', render: (t) => t.defaultCapacity },
+    { key: 'baseRate', header: 'Base rate', render: (t) => formatPesoAmount(t.baseRate) },
+    { key: 'dayTourRate', header: 'Day tour', render: (t) => (t.dayTourRate === null ? '—' : formatPesoAmount(t.dayTourRate)) },
+    {
+      key: 'extraPersonRate',
+      header: 'Extra person',
+      render: (t) => (t.extraPersonRate === null ? '—' : formatPesoAmount(t.extraPersonRate)),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (t) => <StatusBadge variant={t.isActive ? 'success' : 'neutral'}>{t.isActive ? 'Active' : 'Inactive'}</StatusBadge>,
+    },
+    {
+      key: 'actions',
+      header: '',
+      render: (t) => (
+        <div className="flex gap-3">
+          <button type="button" onClick={() => (editingId === t.id ? cancelEdit() : startEdit(t))} className="text-xs font-medium text-brand-700 hover:underline">
+            {editingId === t.id ? 'Close' : 'Edit'}
+          </button>
+          <button type="button" onClick={() => void toggleActive(t)} className="text-xs font-medium text-brand-700 hover:underline">
+            {t.isActive ? 'Deactivate' : 'Reactivate'}
+          </button>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <Section title="Setup: Rooms" description="Room types, rates, and photos — printed and charged from here.">
+      <div className="flex flex-col gap-4">
+        <DataTable
+          columns={columns}
+          rows={unitTypes}
+          rowKey={(t) => t.id}
+          mobileTitle={(t) => t.name}
+          emptyMessage="No room types yet."
+        />
+
+        {editingId && (
+          <Card className="border border-gray-200">
+            <form onSubmit={(e) => void submitEdit(e, editingId)} className="flex flex-col gap-4">
+              {editError && <p role="alert" className="text-sm font-medium text-danger-600">{editError}</p>}
+              <UnitTypeFormFields
+                form={editForm}
+                setForm={setEditForm}
+                photo={editPhoto}
+                photoUploading={editPhotoUploading}
+                onPhotoChange={(file) => file && void uploadPhoto(file, setEditPhotoUploading, setEditPhoto, setEditError)}
+                onRemovePhoto={() => setEditPhoto(null)}
+              />
+              <div className="flex gap-2">
+                <Button type="submit" disabled={editSubmitting || editPhotoUploading}>
+                  {editSubmitting ? 'Saving…' : 'Save changes'}
+                </Button>
+                <Button type="button" variant="secondary" onClick={cancelEdit}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </Card>
+        )}
+
+        <Card className="border border-gray-200">
+          <form onSubmit={(e) => void handleAdd(e)} className="flex flex-col gap-4">
+            <h3 className="text-sm font-semibold text-ink">Add a room type</h3>
+            {addError && <p role="alert" className="text-sm font-medium text-danger-600">{addError}</p>}
+            <UnitTypeFormFields
+              form={addForm}
+              setForm={setAddForm}
+              photo={addPhoto}
+              photoUploading={addPhotoUploading}
+              onPhotoChange={(file) => file && void uploadPhoto(file, setAddPhotoUploading, setAddPhoto, setAddError)}
+              onRemovePhoto={() => setAddPhoto(null)}
+            />
+            <Button type="submit" disabled={adding || addPhotoUploading} className="w-fit">
+              {adding ? 'Adding…' : 'Add room type'}
+            </Button>
+          </form>
+        </Card>
+      </div>
+    </Section>
+  );
+}
+
+function UnitTypeFormFields({
+  form,
+  setForm,
+  photo,
+  photoUploading,
+  onPhotoChange,
+  onRemovePhoto,
+}: {
+  form: UnitTypeFormState;
+  setForm: (updater: (f: UnitTypeFormState) => UnitTypeFormState) => void;
+  photo: UnitTypePhoto | null;
+  photoUploading: boolean;
+  onPhotoChange: (file: File | null) => void;
+  onRemovePhoto: () => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium text-ink">Photo</span>
+        {photo && <img src={photo.url} alt="" className="h-20 w-20 rounded-lg border border-gray-200 object-cover" />}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/heic"
+          disabled={photoUploading}
+          aria-label="Room type photo"
+          onChange={(e) => onPhotoChange(e.target.files?.[0] ?? null)}
+        />
+        {photo && (
+          <Button type="button" variant="secondary" onClick={onRemovePhoto} disabled={photoUploading}>
+            Remove photo
+          </Button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Name">
+          <input required className={INPUT_CLASSES} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+        </Field>
+        <Field label="Default capacity">
+          <input
+            required
+            type="number"
+            min={1}
+            className={INPUT_CLASSES}
+            value={form.defaultCapacity}
+            onChange={(e) => setForm((f) => ({ ...f, defaultCapacity: e.target.value }))}
+          />
+        </Field>
+        <Field label="Base rate (₱)">
+          <input
+            required
+            type="number"
+            min={0}
+            step="0.01"
+            className={INPUT_CLASSES}
+            value={form.baseRate}
+            onChange={(e) => setForm((f) => ({ ...f, baseRate: e.target.value }))}
+          />
+        </Field>
+        <Field label="Day tour rate (₱, optional)">
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            className={INPUT_CLASSES}
+            value={form.dayTourRate}
+            onChange={(e) => setForm((f) => ({ ...f, dayTourRate: e.target.value }))}
+          />
+        </Field>
+        <Field label="Extra person rate (₱, optional)">
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            className={INPUT_CLASSES}
+            value={form.extraPersonRate}
+            onChange={(e) => setForm((f) => ({ ...f, extraPersonRate: e.target.value }))}
+          />
+        </Field>
+        <Field label="Color (optional)">
+          <input type="color" className={INPUT_CLASSES} value={form.colorHex || '#64748b'} onChange={(e) => setForm((f) => ({ ...f, colorHex: e.target.value }))} />
+        </Field>
+      </div>
+      <Field label="Description (optional)">
+        <textarea className={INPUT_CLASSES} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </Field>
+    </>
+  );
+}
+
 export function UnitsPage() {
   const { user } = useAuth();
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
@@ -1220,14 +1564,13 @@ export function UnitsPage() {
       .catch(() => setUnits((prev) => (Array.isArray(prev) ? prev : 'error')));
   }, []);
 
+  const fetchUnitTypes = useCallback(() => {
+    return api.get<{ unitTypes: UnitTypeRow[] }>('/unit-types').then((res) => setUnitTypes(res.unitTypes));
+  }, []);
+
   useEffect(() => {
-    Promise.all([
-      fetchUnits(),
-      api
-        .get<{ unitTypes: UnitTypeRow[] }>('/unit-types')
-        .then((res) => setUnitTypes(res.unitTypes)),
-    ]).catch(() => setUnits('error'));
-  }, [fetchUnits]);
+    Promise.all([fetchUnits(), fetchUnitTypes()]).catch(() => setUnits('error'));
+  }, [fetchUnits, fetchUnitTypes]);
 
   // Fallback recovery path (spec §3): a 60s poll and a window-focus
   // refetch, independent of whether the realtime channel below is
@@ -1285,6 +1628,7 @@ export function UnitsPage() {
     : undefined;
   const showReconnecting = realtimeStatus === 'reconnecting' && hasConnectedOnce.current;
   const canManageUnits = Boolean(user?.permissions['unit:manage']);
+  const canManageUnitTypes = Boolean(user?.permissions['unittype:manage']);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1358,6 +1702,8 @@ export function UnitsPage() {
         })}
 
       {canManageUnits && <AddUnitForm unitTypes={unitTypes} onCreated={() => void fetchUnits()} />}
+
+      {canManageUnitTypes && <SetupRoomsSection unitTypes={unitTypes} onSaved={() => void fetchUnitTypes()} />}
 
       {/* New feature, 2026-08-24: check-in as a quick-action below the
           grid, gated on booking:checkin — same pattern as the Verify

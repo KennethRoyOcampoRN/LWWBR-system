@@ -15,6 +15,10 @@ export const createUnitTypeSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional(),
   sortOrder: z.number().int().optional(),
+  // Setup Rooms (client-directed feature, 2026-11-04): a FileObject id
+  // from POST /files, same upload-then-attach pattern as the resort
+  // logo. null clears an existing photo; undefined leaves it alone.
+  photoFileId: z.string().min(1).nullable().optional(),
 });
 
 export const updateUnitTypeSchema = createUnitTypeSchema.partial().extend({

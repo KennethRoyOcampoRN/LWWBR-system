@@ -8,6 +8,8 @@ export const createMenuItemSchema = z.object({
   isAvailable: z.boolean().optional(),
   prepMinutes: z.number().int().positive().optional(),
   sortOrder: z.number().int().optional(),
+  // Same upload-then-attach pattern as UnitType.photoFileId.
+  photoFileId: z.string().min(1).nullable().optional(),
 });
 
 export const updateMenuItemSchema = createMenuItemSchema.partial();

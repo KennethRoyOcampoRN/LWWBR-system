@@ -6,6 +6,13 @@ import { useAuth } from '../context/AuthContext.js';
 import { AMENITY_REQUEST_STATUS_CLASSES, AMENITY_REQUEST_STATUS_LABELS } from '../lib/amenityRequestStyle.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
+interface AmenityItemPhoto {
+  id: string;
+  filename: string;
+  mimeType: string;
+  url: string;
+}
+
 interface AmenityItemRow {
   id: string;
   name: string;
@@ -15,6 +22,13 @@ interface AmenityItemRow {
   condition: string;
   requiresDeposit: boolean;
   depositAmount: number;
+  // Setup Amenities (client-directed feature, 2026-11-04): the real
+  // rental charge, distinct from the deposit above — see
+  // schema.prisma's own comment on AmenityItem.rentalPrice for why this
+  // isn't wired into billing yet. One photo per item, same shape as the
+  // resort logo.
+  rentalPrice: number | null;
+  photo: AmenityItemPhoto | null;
   isActive: boolean;
 }
 
@@ -83,6 +97,31 @@ export function AmenitiesPage() {
   const [condition, setCondition] = useState('Good');
   const [requiresDeposit, setRequiresDeposit] = useState(false);
   const [depositAmount, setDepositAmount] = useState('0');
+  const [rentalPrice, setRentalPrice] = useState('');
+  const [photo, setPhoto] = useState<AmenityItemPhoto | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+
+  // Same generic POST /files + GET /files/signed round trip as the
+  // resort logo (ResortSettingsPage) and Setup Rooms (UnitsPage) —
+  // reused here, not a new upload mechanism.
+  async function handlePhotoChange(
+    file: File | null,
+    setUploading: (v: boolean) => void,
+    setPhotoState: (p: AmenityItemPhoto | null) => void,
+    setErr: (e: string | null) => void,
+  ) {
+    if (!file) return;
+    setUploading(true);
+    setErr(null);
+    try {
+      const uploaded = await api.upload<{ file: { id: string; filename: string; mimeType: string } }>('/files', file);
+      setPhotoState({ id: uploaded.file.id, filename: uploaded.file.filename, mimeType: uploaded.file.mimeType, url: URL.createObjectURL(file) });
+    } catch (err) {
+      setErr(err instanceof ApiRequestError ? err.message : 'Could not upload the photo.');
+    } finally {
+      setUploading(false);
+    }
+  }
 
   const fetchItems = () => {
     setItems('loading');
@@ -109,6 +148,9 @@ export function AmenitiesPage() {
   const [editCondition, setEditCondition] = useState('Good');
   const [editRequiresDeposit, setEditRequiresDeposit] = useState(false);
   const [editDepositAmount, setEditDepositAmount] = useState('0');
+  const [editRentalPrice, setEditRentalPrice] = useState('');
+  const [editPhoto, setEditPhoto] = useState<AmenityItemPhoto | null>(null);
+  const [editPhotoUploading, setEditPhotoUploading] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
 
@@ -122,6 +164,8 @@ export function AmenitiesPage() {
     setEditCondition(item.condition);
     setEditRequiresDeposit(item.requiresDeposit);
     setEditDepositAmount(String(item.depositAmount));
+    setEditRentalPrice(item.rentalPrice == null ? '' : String(item.rentalPrice));
+    setEditPhoto(item.photo);
   };
 
   const cancelEdit = () => setEditingId(null);
@@ -139,6 +183,8 @@ export function AmenitiesPage() {
         condition: editCondition,
         requiresDeposit: editRequiresDeposit,
         depositAmount: editRequiresDeposit ? Number(editDepositAmount) : 0,
+        rentalPrice: editRentalPrice.trim() === '' ? null : Number(editRentalPrice),
+        photoFileId: editPhoto?.id ?? null,
       });
       setEditingId(null);
       await fetchItems();
@@ -219,6 +265,8 @@ export function AmenitiesPage() {
         condition,
         requiresDeposit,
         depositAmount: requiresDeposit ? Number(depositAmount) : 0,
+        rentalPrice: rentalPrice.trim() === '' ? null : Number(rentalPrice),
+        photoFileId: photo?.id ?? null,
       });
       setName('');
       setAssetTag('');
@@ -226,6 +274,8 @@ export function AmenitiesPage() {
       setCondition('Good');
       setRequiresDeposit(false);
       setDepositAmount('0');
+      setRentalPrice('');
+      setPhoto(null);
       await fetchItems();
     } catch (err) {
       setFormError(err instanceof ApiRequestError ? err.message : 'Could not add the item.');
@@ -351,6 +401,7 @@ export function AmenitiesPage() {
                 <th className="py-2 pr-4">Qty</th>
                 <th className="py-2 pr-4">Condition</th>
                 <th className="py-2 pr-4">Deposit</th>
+                <th className="py-2 pr-4">Rental</th>
                 <th className="py-2 pr-4">Status</th>
                 {canManage && <th className="py-2 pr-4" />}
               </tr>
@@ -359,12 +410,18 @@ export function AmenitiesPage() {
               {items.map((item) => (
                 <Fragment key={item.id}>
                   <tr className={item.isActive ? '' : 'text-gray-400'}>
-                    <td className="py-2 pr-4 font-medium">{item.name}</td>
+                    <td className="py-2 pr-4 font-medium">
+                      <div className="flex items-center gap-2">
+                        {item.photo && <img src={item.photo.url} alt="" className="h-8 w-8 rounded object-cover" />}
+                        {item.name}
+                      </div>
+                    </td>
                     <td className="py-2 pr-4">{CATEGORY_LABELS[item.category]}</td>
                     <td className="py-2 pr-4">{item.assetTag ?? '—'}</td>
                     <td className="py-2 pr-4">{item.totalQty}</td>
                     <td className="py-2 pr-4">{item.condition}</td>
                     <td className="py-2 pr-4">{item.requiresDeposit ? formatPeso(item.depositAmount) : '—'}</td>
+                    <td className="py-2 pr-4">{item.rentalPrice == null ? '—' : formatPeso(item.rentalPrice)}</td>
                     <td className="py-2 pr-4">{item.isActive ? 'Active' : 'Inactive'}</td>
                     {canManage && (
                       <td className="py-2 pr-4">
@@ -408,7 +465,7 @@ export function AmenitiesPage() {
                   </tr>
                   {editingId === item.id && (
                     <tr>
-                      <td colSpan={canManage ? 8 : 7} className="bg-gray-50 p-3">
+                      <td colSpan={canManage ? 9 : 8} className="bg-gray-50 p-3">
                         <form onSubmit={(e) => void submitEdit(e, item.id)} className="flex flex-col gap-3">
                           {editError && <p role="alert" className="text-sm text-red-700">{editError}</p>}
                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -484,11 +541,45 @@ export function AmenitiesPage() {
                                 />
                               </label>
                             )}
+                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              Rental price (₱, optional)
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={editRentalPrice}
+                                onChange={(e) => setEditRentalPrice(e.target.value)}
+                                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                              />
+                            </label>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <span className="text-xs font-medium text-gray-600">Photo</span>
+                            {editPhoto && <img src={editPhoto.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp,image/heic"
+                              disabled={editPhotoUploading}
+                              aria-label="Item photo"
+                              onChange={(e) =>
+                                void handlePhotoChange(e.target.files?.[0] ?? null, setEditPhotoUploading, setEditPhoto, setEditError)
+                              }
+                            />
+                            {editPhoto && (
+                              <button
+                                type="button"
+                                onClick={() => setEditPhoto(null)}
+                                disabled={editPhotoUploading}
+                                className="w-fit text-xs font-medium text-red-700 hover:underline"
+                              >
+                                Remove photo
+                              </button>
+                            )}
                           </div>
                           <div className="flex gap-2">
                             <button
                               type="submit"
-                              disabled={editSubmitting}
+                              disabled={editSubmitting || editPhotoUploading}
                               className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                             >
                               {editSubmitting ? 'Saving…' : 'Save changes'}
@@ -589,10 +680,42 @@ export function AmenitiesPage() {
                 />
               </label>
             )}
+            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              Rental price (₱, optional)
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={rentalPrice}
+                onChange={(e) => setRentalPrice(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="text-xs font-medium text-gray-600">Photo (optional)</span>
+            {photo && <img src={photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic"
+              disabled={photoUploading}
+              aria-label="Item photo"
+              onChange={(e) => void handlePhotoChange(e.target.files?.[0] ?? null, setPhotoUploading, setPhoto, setFormError)}
+            />
+            {photo && (
+              <button
+                type="button"
+                onClick={() => setPhoto(null)}
+                disabled={photoUploading}
+                className="w-fit text-xs font-medium text-red-700 hover:underline"
+              >
+                Remove photo
+              </button>
+            )}
           </div>
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || photoUploading}
             className="w-fit rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             {submitting ? 'Adding…' : 'Add item'}
