@@ -668,7 +668,12 @@ model Receipt {
   // the service's own booking-aware check can.
   billingNumberScope String
   billingSeq         Int
-  billingNumberFull  String
+  // @unique: this is the denormalized, display-ready string — what a
+  // lookup or a front-desk search actually types in — so it gets its
+  // own direct unique index rather than making every read reconstruct
+  // it from the three parts to hit @@unique([billingNumberScope,
+  // billingSeq]) below.
+  billingNumberFull  String @unique
 
   // Resort header snapshot — scalar columns, not a JSON blob, matching
   // this schema's own style (JSON here is reserved for Setting.value
@@ -714,6 +719,13 @@ model Receipt {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  // No deletedAt, unlike 36 other models in this schema — deliberate,
+  // not an oversight. A financial document doesn't get soft-deleted;
+  // a mistaken receipt is voided (status: VOIDED, voidedById/voidedAt/
+  // voidReason above) and superseded by the next -NN under the same
+  // billing number, same append-only reasoning as FolioCharge's own
+  // POSTED/VOIDED status. Confirmed with the client, 2026-11-04.
+
   booking    Booking            @relation(fields: [bookingId], references: [id])
   logoFile   FileObject?        @relation("ReceiptLogoSnapshot", fields: [logoFileId], references: [id])
   issuedBy   User               @relation("ReceiptIssuedBy", fields: [issuedById], references: [id])
@@ -721,12 +733,17 @@ model Receipt {
   lines      ReceiptLine[]
   deductions ReceiptDeduction[]
 
+  @@unique([billingNumberScope, billingSeq])
   // bookingId is indexed for the reports join (§5 of the build plan —
-  // "a receipts report" lists/filters by booking); billingNumberScope
-  // is indexed for the duplicate-billing-number lookup (see that
-  // field's own comment) — both read paths, not just FK hygiene.
+  // "a receipts report" lists/filters by booking). billingNumberScope
+  // no longer needs its own plain index — the composite unique below
+  // (Postgres indexes support a leftmost-column lookup) covers both the
+  // duplicate-billing-number check (scope alone) and the DB-level
+  // guarantee this stage adds: no two receipts can ever carry the same
+  // {scope, seq} pair, closing the gap a retry/partial-failure path
+  // left open even though the ReferenceSequence upsert itself is
+  // atomic under normal operation.
   @@index([bookingId])
-  @@index([billingNumberScope])
 }
 
 // One row per priced item on a Receipt — one room per line (see this

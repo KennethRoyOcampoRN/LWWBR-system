@@ -23,7 +23,8 @@ const NAV_ITEMS: {
     | 'remittance:read'
     | 'quotation:read'
     | 'stock:read'
-    | 'shift:read';
+    | 'shift:read'
+    | 'resort:configure';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -68,6 +69,12 @@ const NAV_ITEMS: {
   // not payment:*/booking:*), which stay fully intact server-side.
   { to: '/users', label: 'Users', permission: 'user:read' },
   { to: '/roles', label: 'Roles', permission: 'role:manage' },
+  // Build plan stage 2 (spec.md §13 decision 13, 2026-11-04): the
+  // resort-identity fields a Receipt's header snapshot is sourced
+  // from. resort:configure, not role:manage/user:read above — see
+  // permissions.ts's own comment for why this is its own key, seeded
+  // to System Admin and Resort Manager only.
+  { to: '/resort-settings', label: 'Resort Settings', permission: 'resort:configure' },
   // Self-service account settings, not a permission-scoped resource —
   // GET /auth/sessions is already scoped server-side to the caller's own
   // rows, so every authenticated user gets this regardless of role.

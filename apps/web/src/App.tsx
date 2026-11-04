@@ -11,6 +11,7 @@ import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
 import { RequirePermission } from './routes/RequirePermission.js';
 import { ReportsPage } from './routes/ReportsPage.js';
+import { ResortSettingsPage } from './routes/ResortSettingsPage.js';
 import { RolesPage } from './routes/RolesPage.js';
 import { SessionsPage } from './routes/SessionsPage.js';
 import { ShiftsPage } from './routes/ShiftsPage.js';
@@ -68,6 +69,17 @@ export function App() {
                     element={
                       <RequirePermission permission="role:manage">
                         <RolesPage />
+                      </RequirePermission>
+                    }
+                  />
+                  {/* Build plan stage 2 (spec.md §13 decision 13,
+                      2026-11-04): resort-identity settings — the
+                      Receipt header snapshot's source. */}
+                  <Route
+                    path="/resort-settings"
+                    element={
+                      <RequirePermission permission="resort:configure">
+                        <ResortSettingsPage />
                       </RequirePermission>
                     }
                   />

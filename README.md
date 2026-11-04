@@ -6857,3 +6857,65 @@ sandbox-network-only skips, unchanged), `apps/web` 181/181 (none of
 these touch frontend code, so this is confirming no regression, not
 new coverage — stage 4 is where this feature gets its own tests).
 `npm run build` clean across all three packages.
+
+## Billing receipts — two schema corrections, then stage 2: resort-identity settings (2026-11-04)
+
+Client review of stage 1 caught two real gaps before any data existed to
+migrate around:
+
+1. **No database-level guarantee a billing number is actually unique.**
+   `billingNumberFull` was a plain `String` — nothing stopped two
+   receipts carrying `80512-11042026-01`. The `ReferenceSequence` upsert
+   is atomic under normal operation, but a retry or partial-failure path
+   had nothing stopping it, and this is a financial document number.
+   Fixed: `billingNumberFull` is now `@unique` (the denormalized,
+   display-ready string a lookup or search actually hits), and
+   `@@unique([billingNumberScope, billingSeq])` closes the gap at the
+   {scope, seq} level too. The old standalone `@@index([billingNumberScope])`
+   was removed — redundant once the composite unique covers the same
+   leftmost-column lookup.
+2. **`Receipt` had no `deletedAt`, unlike 36 other models in this
+   schema.** Deliberate, not an oversight — a financial document gets
+   voided (`ReceiptStatus.VOIDED`), never soft-deleted, same as
+   `FolioCharge`'s own `POSTED`/`VOIDED` shape — but the omission read
+   as a mistake against a convention that strong, so it's now stated
+   explicitly in a comment on the model rather than left silent.
+
+**Stage 2**: the resort-identity settings endpoint and admin page — the
+source the Receipt header snapshot reads from. New `settings` module
+(`apps/api/src/modules/settings/`, the first dedicated Settings admin
+endpoint this codebase has — every other `Setting` key, e.g.
+`workOrder.photoRequirements`, is read-only-in-code today, edited only
+at the DB/seed level): `GET`/`PATCH /settings/resort-identity`, gated by
+`resort:configure` on both verbs, same "config read needs the same
+permission as the write it protects" shape as DTR's own geofence
+endpoints. Falls back to an empty-but-valid default when no `Setting`
+row exists yet (new install, nothing saved), same established pattern
+as `workOrder.photoRequirements`'s own fallback, rather than 500.
+
+New page: `ResortSettingsPage.tsx` (`/resort-settings`, nav-gated by
+`resort:configure`) — name, address, Cell No./Contact No. as two
+separate fields (per the sample receipt's own two separately labelled
+numbers), website, Facebook, and a logo upload. The logo reuses the
+existing generic `POST /files` + signed-URL round trip exactly as
+instructed — no new upload mechanism; this page only adds the "set
+`logoFileId` on the resort-identity `Setting`" step on top of that
+existing flow. Built with the new primitive set (`PageHeader`/`Section`/
+`Field`/`Button`) rather than the pre-redesign hand-rolled style, since
+this is new code, not a page being converted — no reason to write
+something that would just need converting later.
+
+Verification: `npx prisma validate`/`generate` clean (still no live DB
+in this sandbox). `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94 (unchanged), `apps/api` 601/604 (13
+new `settings` module tests; 3 pre-existing sandbox-network-only skips,
+unchanged), `apps/web` 184/184 (3 new `ResortSettingsPage` tests).
+`npm run build` clean across all three packages. Manually verified in a
+real browser (Playwright against a running `vite dev` with mocked API
+responses): `/resort-settings` at 1280px renders the form pre-filled
+from a mocked identity response, matching the sample receipt's own
+field values.
+
+**Run `npx prisma db push` from `apps/api` before the next live test**
+— still pending from stage 1, now also covering the two schema
+corrections above.

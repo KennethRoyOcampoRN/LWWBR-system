@@ -22,6 +22,7 @@ import { remittancesRouter } from './modules/remittances/router.js';
 import { reportsRouter } from './modules/reports/router.js';
 import { restDayRouter } from './modules/restday/router.js';
 import { rolesRouter } from './modules/roles/router.js';
+import { settingsRouter } from './modules/settings/router.js';
 import { shiftsRouter } from './modules/shifts/router.js';
 import { stockRouter } from './modules/stock/router.js';
 import { unitsRouter } from './modules/units/router.js';
@@ -107,6 +108,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', restDayRouter);
   app.use('/api/v1', dtrRouter);
   app.use('/api/v1', jobsRouter);
+  app.use('/api/v1', settingsRouter);
 
   for (const router of options.extraRouters ?? []) {
     app.use(router);
