@@ -7018,3 +7018,49 @@ stage). `npm run typecheck`/`lint` clean across all three packages.
 `billing` module tests; 3 pre-existing sandbox-network-only skips,
 unchanged), `apps/web` 184/184 (unchanged — no frontend code touched).
 `npm run build` clean across all three packages.
+
+## Billing receipts — two stage-3 corrections (2026-11-04)
+
+Client review caught two real gaps in the money-correctness logic
+before any UI was built on top of it:
+
+1. **The reconciliation guard in `computeReceiptTotals` was
+   tautological.** `totalAmountDue` was assigned
+   `roundMoney(grandTotal - totalDeductions)`, then the guard tested
+   `roundMoney(grandTotal - totalDeductions) !== totalAmountDue` — the
+   same expression compared to itself, which can only ever disagree for
+   `NaN`. Removed, with a comment explaining plainly that the value is
+   derived by construction (there's no independent "does this
+   reconcile" fact to assert there). Replaced with a check that can
+   actually fail: a new `assertReceiptReconciles` runs in `issueReceipt`
+   after the created row comes back from Postgres (post-Decimal-column
+   round trip, after `receiptToJson`'s own `Number()` conversion), and
+   recomputes from those *persisted* rows — the same recomputation the
+   test suite's own reconciliation test already performed independently
+   against what was passed to `prisma.receipt.create`. A new test
+   (`500s with TOTALS_DO_NOT_RECONCILE if the persisted rows ever
+   disagree with the computed totals`) proves this guard can actually
+   fire, by mocking a `create()` response that returns a line amount one
+   cent off from what was computed — simulating exactly the kind of
+   serialization/rounding fault between computation and persistence the
+   old check could never have caught.
+2. **Nothing capped deductions against the grand total.** A mistyped
+   downpayment could yield a receipt with a negative Total Amount Due,
+   silently persisted. Client decision: reject outright, in both
+   `previewReceipt` and `issueReceipt` (they share `computeReceiptTotals`,
+   so one fix covers both) — `422 DEDUCTIONS_EXCEED_GRAND_TOTAL`, naming
+   the grand total, the deduction total, and the overage in pesos. A
+   genuine refund-due case (deductions genuinely exceeding what was
+   charged) is a materially different document from an acknowledgement
+   receipt — it would need its own printed label, not a negative number
+   silently appearing in this receipt type's Total Amount Due field — so
+   it's out of scope here, not silently allowed through. Checked at
+   preview time too, not just at the real issue call, so the cashier
+   sees the problem before attempting to issue.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94 (unchanged), `apps/api` 622/625 (3
+new tests: the negative-deductions rejection at preview and at issue,
+and the real reconciliation guard actually firing on a mismatch; 3
+pre-existing sandbox-network-only skips, unchanged), `apps/web` 184/184
+(unchanged). `npm run build` clean across all three packages.

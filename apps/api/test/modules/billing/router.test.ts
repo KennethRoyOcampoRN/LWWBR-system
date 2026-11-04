@@ -213,6 +213,32 @@ describe('Receipt preview', () => {
 
     expect(res.status).toBe(200);
   });
+
+  // Client decision, 2026-11-04: nothing capped totalDeductions against
+  // grandTotal — a mistyped downpayment could otherwise yield a receipt
+  // with a negative Total Amount Due. Rejected outright rather than
+  // silently persisted; a genuine refund-due case is a different
+  // document, out of scope here. Checked in preview (not just at the
+  // real issue call) so the cashier sees this before attempting to
+  // issue, not after.
+  it('422s when deductions exceed the grand total, naming the overage', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({
+        preparedByName: 'yssa',
+        lines: [{ description: 'Room', qty: 1, unitPrice: 1100 }],
+        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('DEDUCTIONS_EXCEED_GRAND_TOTAL');
+    expect(res.body.error.message).toContain('400.00');
+  });
 });
 
 describe('Receipt issuance — numbering, reconciliation, duplicate warning', () => {
@@ -410,6 +436,65 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .set('Cookie', authCookie())
       .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
     expect(res.status).toBe(403);
+  });
+
+  // Same rejection as the preview test, exercised here at the real
+  // issue call — and proving no billing number is ever allocated for a
+  // receipt that gets rejected: a mistyped deduction must not burn a
+  // sequence number before the validation error is raised.
+  it('422s and allocates no billing number when deductions exceed the grand total', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({
+        billingNumberTyped: '83887',
+        preparedByName: 'yssa',
+        lines: [{ description: 'Room', qty: 1, unitPrice: 1100 }],
+        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('DEDUCTIONS_EXCEED_GRAND_TOTAL');
+    expect(mockPrisma.referenceSequence.upsert).not.toHaveBeenCalled();
+  });
+
+  // The real reconciliation guard (post-Decimal-round-trip, not the
+  // removed tautological one): proves it actually fires on a genuine
+  // mismatch, by having the mocked create() return rows that disagree
+  // with what was computed — simulating a serialization/rounding fault
+  // introduced between computation and persistence, which the old
+  // "compare an expression to itself" check could never have caught.
+  it('500s with TOTALS_DO_NOT_RECONCILE if the persisted rows ever disagree with the computed totals', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    stubIssuance();
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.receipt.create = vi.fn(
+      ({ data }: { data: Record<string, unknown> & { lines: { create: { amount: number }[] } } }) =>
+        Promise.resolve({
+          id: 'receipt_1',
+          status: 'ISSUED',
+          ...data,
+          // Corrupted on the way "out" — the persisted line amount no
+          // longer matches the grandTotal that was actually computed
+          // and stored, simulating exactly the kind of fault this
+          // guard exists to catch.
+          lines: [{ ...data.lines.create[0]!, amount: data.lines.create[0]!.amount + 1 }],
+          deductions: (data.deductions as { create: unknown[] }).create,
+        }),
+    );
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('TOTALS_DO_NOT_RECONCILE');
   });
 });
 

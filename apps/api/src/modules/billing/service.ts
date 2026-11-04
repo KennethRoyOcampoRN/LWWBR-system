@@ -197,14 +197,33 @@ function computeReceiptTotals(input: ReceiptDraftInput): ComputedReceiptTotals {
   const totalDeductions = sumMoney(deductions.map((deduction) => deduction.amount));
   const totalAmountDue = roundMoney(grandTotal - totalDeductions);
 
-  // Belt-and-suspenders: totalAmountDue is defined as grandTotal minus
-  // totalDeductions directly above, so this can never actually
-  // disagree — asserted explicitly anyway so a future edit to this
-  // function can't silently break that invariant without a loud
-  // failure, rather than relying only on the arithmetic being correct
-  // by inspection.
-  if (roundMoney(grandTotal - totalDeductions) !== totalAmountDue) {
-    throw new ApiError(500, 'TOTALS_DO_NOT_RECONCILE', 'Internal error: receipt totals do not reconcile.');
+  // totalAmountDue is derived by construction — grandTotal minus
+  // totalDeductions, computed right above, with no other code path able
+  // to set either value — so there's no independent "does this
+  // reconcile" fact to assert here; a check written against the same
+  // expression that produced the value can only ever repeat it. The
+  // real reconciliation guard that can actually fail lives in
+  // issueReceipt, after the created rows come back from Postgres: it
+  // recomputes from what was actually persisted (post-Decimal-column
+  // round trip), not from these pre-insert numbers.
+  //
+  // What this function does guard, explicitly: deductions must not
+  // exceed the grand total. Nothing capped totalDeductions against
+  // grandTotal above, so a mistyped downpayment could otherwise yield a
+  // receipt with a negative Total Amount Due — client decision,
+  // 2026-11-04: reject outright rather than silently persist a negative
+  // amount due. A genuine refund-due case (deductions exceeding what
+  // was charged) is a materially different document from an
+  // acknowledgement receipt — it would need its own printed label and
+  // rendering, not a negative number in the same Total Amount Due field
+  // this receipt type prints — so it's out of scope here, not silently
+  // allowed through.
+  if (totalAmountDue < 0) {
+    throw new ApiError(
+      422,
+      'DEDUCTIONS_EXCEED_GRAND_TOTAL',
+      `Deductions total ₱${totalDeductions.toFixed(2)}, which exceeds the grand total of ₱${grandTotal.toFixed(2)} by ₱${Math.abs(totalAmountDue).toFixed(2)}. Adjust the deduction amount(s) before issuing.`,
+    );
   }
 
   return { lines, deductions, grandTotal, totalDeductions, totalAmountDue };
@@ -270,6 +289,33 @@ async function receiptToJson(receipt: RawReceiptWithChildren) {
     lines: lines.map((line) => ({ ...line, unitPrice: Number(line.unitPrice), amount: Number(line.amount) })),
     deductions: deductions.map((deduction) => ({ ...deduction, amount: Number(deduction.amount) })),
   };
+}
+
+// The real reconciliation guard — unlike the removed check that used
+// to live in computeReceiptTotals (which compared an expression against
+// itself and could never fail), this recomputes from the rows exactly
+// as they come back out of `receiptToJson`: after the round trip
+// through Postgres's NUMERIC(12,2) columns and Prisma's Decimal
+// conversion, not from the pre-insert numbers that went in. A
+// serialization or rounding fault introduced anywhere in that path —
+// not just a logic bug in computeReceiptTotals — would show up here.
+// Same recomputation the test suite's own reconciliation test performs
+// independently against the rows passed to `prisma.receipt.create`.
+function assertReceiptReconciles(json: {
+  grandTotal: number;
+  totalAmountDue: number;
+  lines: { amount: number }[];
+  deductions: { amount: number }[];
+}): void {
+  const lineSum = sumMoney(json.lines.map((line) => line.amount));
+  const deductionSum = sumMoney(json.deductions.map((deduction) => deduction.amount));
+  if (lineSum !== json.grandTotal || roundMoney(lineSum - deductionSum) !== json.totalAmountDue) {
+    throw new ApiError(
+      500,
+      'TOTALS_DO_NOT_RECONCILE',
+      'Internal error: the persisted receipt totals do not reconcile with its own lines and deductions.',
+    );
+  }
 }
 
 const RECEIPT_INCLUDE = { lines: true, deductions: true } as const;
@@ -363,7 +409,9 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
           include: RECEIPT_INCLUDE,
         });
       });
-      return await receiptToJson(receipt);
+      const json = await receiptToJson(receipt);
+      assertReceiptReconciles(json);
+      return json;
     } catch (err) {
       if (isUniqueConstraintViolation(err) && attempt < MAX_BILLING_NUMBER_ATTEMPTS) {
         continue;
