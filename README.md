@@ -6919,3 +6919,102 @@ field values.
 **Run `npx prisma db push` from `apps/api` before the next live test**
 — still pending from stage 1, now also covering the two schema
 corrections above.
+
+## Billing receipts — stage 3: billing module backend (2026-11-04)
+
+API only — folio line-item CRUD, payment submission/verification,
+receipt numbering and issuance, and the duplicate-billing-number
+warning. No UI yet (stage 4).
+
+**Resolved a gap flagged after stage 2**: `GET /settings/resort-identity`
+is `resort:configure`-only, which `CASHIER`/`ADMIN_STAFF`/`ADMIN_HEAD`
+don't hold — a cashier's billing screen previewing the receipt header
+before issuing would 403 for the people who actually use it. Solved
+with a `POST /bookings/:bookingId/receipts/preview` endpoint gated by
+`receipt:issue` instead (the permission everyone who bills a guest
+already holds) — it reads the resort-identity `Setting` server-side via
+`getResortIdentityForSnapshot()` (stage 2's own function, written for
+exactly this reuse) and returns the header alongside computed totals.
+The cashier UI (stage 4) will never call `/settings/resort-identity`
+directly. `resort:configure` itself was not widened — doing so would
+have handed cashiers edit rights on resort identity, which the client
+explicitly ruled out.
+
+New `billing` module (`apps/api/src/modules/billing/`):
+`GET`/`POST /bookings/:bookingId/folio-charges`, `POST
+/folio-charges/:id/void` (`folio:read`/`folio:charge`/`folio:void`);
+`GET`/`POST /bookings/:bookingId/payments`, `POST /payments/:id/status`
+(bidirectional PENDING/VERIFIED/REJECTED, same shape as remittances' own
+status route) (`payment:read`/`payment:submit`/`payment:verify`);
+`POST /bookings/:bookingId/receipts/preview`, `POST
+/bookings/:bookingId/receipts`, `GET /bookings/:bookingId/receipts`,
+`GET /receipts/:id`, `POST /receipts/:id/void` (`receipt:issue`/
+`receipt:read`, void reuses `folio:void` rather than a new key, per the
+same reuse-over-widen call already made for resort:configure). New
+`packages/shared/src/billing.ts` — key arrays/labels for the FolioCharge/
+Payment/Receipt enums, same `REMITTANCE_STATUS_KEYS` pattern as
+`remittance.ts`.
+
+**Money correctness, the actual point of this stage:**
+- `apps/api/src/lib/money.ts` — `roundMoney`/`sumMoney`, float-safe
+  rounding to the cent. Every line's `amount` is always server-computed
+  as `qty * unitPrice`, never trusted from the client (same principle
+  already applied to `folioCharge.amount` here, not just receipts).
+- `grandTotal`, each deduction, and `totalAmountDue` are never
+  independent inputs — `totalAmountDue` is defined as `grandTotal`
+  minus the summed deduction amounts in one function
+  (`computeReceiptTotals`), so a receipt cannot be persisted with
+  totals that don't reconcile with its own lines; there is no code path
+  that accepts a client-submitted total at all. A redundant runtime
+  assertion of that same invariant is also in place — cheap insurance
+  against a future edit to that one function silently breaking it.
+  Covered directly by a test that recomputes the sum from the exact
+  rows passed to `prisma.receipt.create` and asserts it against the
+  persisted `grandTotal`/`totalAmountDue`.
+- `previewReceipt` and `issueReceipt` share `computeReceiptTotals` and
+  the same `receiptDraftSchema` input shape — a preview is never a
+  different calculation than what actually gets persisted on confirm.
+
+**Numbering** (`apps/api/src/lib/receiptNo.ts`): the `MMDDYYYY` segment
+uses `TZDate` + Asia/Manila, same established pattern as
+`reports/service.ts`'s `resolveDate`, `units/service.ts`'s
+`todayStartInManila`, and `bookings/service.ts`'s `resolveArrivalDate`
+— deliberately a sibling to `referenceNo.ts`'s `generateReferenceNo()`,
+not a caller of it, since that function's `YYMMDD`-scoped, UTC-based
+format doesn't match this feature's own
+`{typedByCashier}-{MMDDYYYY}-{NN}` shape. Covered by a test that sets
+system time to `2026-11-04T23:30:00Z` (already `2026-11-05` in Manila,
+UTC+8) and asserts the billing number's date segment is `11052026`, not
+`11042026` — proving the Asia/Manila requirement, not just exercising
+the code path.
+
+**Allocation is transactional, with an explicit retry — not a hope that
+the upsert never races.** `issueReceipt` allocates the
+`ReferenceSequence` and creates the `Receipt` (with its lines and
+deductions) inside one `prisma.$transaction`, so a failed insert rolls
+the sequence increment back too — a retry re-reads the pre-attempt
+`ReferenceSequence` row rather than burning a number the failed attempt
+never actually used. A `P2002` on the new
+`@@unique([billingNumberScope, billingSeq])` (stage 1's own addition)
+is caught explicitly and retried with a fresh allocation, up to 5
+attempts, before giving a clean `409 BILLING_NUMBER_ALLOCATION_FAILED`
+— never a raw Prisma error surfaced to a cashier. Covered by a test
+that rejects the first `receipt.create` call with a real
+`Prisma.PrismaClientKnownRequestError` (`code: 'P2002'`) and asserts
+the second attempt succeeds with a fresh `billingSeq`.
+
+**Duplicate billing number** (build plan gap 4, confirmed by the
+client): before issuing, `issueReceipt` checks whether a `Receipt`
+already exists under the same `{typed}-{MMDDYYYY}` scope for a
+*different* booking. If so: `409 DUPLICATE_BILLING_NUMBER`, and no
+`ReferenceSequence` allocation happens at all — the cashier UI (stage 4)
+shows this as a confirm dialog and resubmits with
+`confirmDuplicateBillingNumber: true` to proceed anyway. A same-booking
+match (an ordinary reissue, the next `-NN`) never triggers the warning.
+
+Verification: `npx prisma validate` clean (schema unchanged this
+stage). `npm run typecheck`/`lint` clean across all three packages.
+`packages/shared` 94/94 (unchanged), `apps/api` 619/622 (18 new
+`billing` module tests; 3 pre-existing sandbox-network-only skips,
+unchanged), `apps/web` 184/184 (unchanged — no frontend code touched).
+`npm run build` clean across all three packages.

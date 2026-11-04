@@ -10,6 +10,7 @@ import { forceHttps } from './lib/forceHttps.js';
 import { attachRequestContext } from './lib/requestContextMiddleware.js';
 import { amenitiesRouter } from './modules/amenities/router.js';
 import { authRouter } from './modules/auth/router.js';
+import { billingRouter } from './modules/billing/router.js';
 import { bookingsRouter } from './modules/bookings/router.js';
 import { dtrRouter } from './modules/dtr/router.js';
 import { filesRouter } from './modules/files/router.js';
@@ -97,6 +98,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', workOrdersRouter);
   app.use('/api/v1', notificationsRouter);
   app.use('/api/v1', bookingsRouter);
+  app.use('/api/v1', billingRouter);
   app.use('/api/v1', amenitiesRouter);
   app.use('/api/v1', fnbRouter);
   app.use('/api/v1', reportsRouter);

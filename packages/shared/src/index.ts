@@ -20,3 +20,4 @@ export * from './stock.js';
 export * from './geo.js';
 export * from './restDay.js';
 export * from './timeLog.js';
+export * from './billing.js';
