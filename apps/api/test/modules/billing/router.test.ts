@@ -214,6 +214,27 @@ describe('Receipt preview', () => {
     expect(res.status).toBe(200);
   });
 
+  // Build plan stage 4: the billing page's first preview call fires
+  // the moment a booking is opened, before the cashier has added any
+  // lines — its only purpose at that point is fetching the resort
+  // header/guest block (there's no standalone booking-read endpoint).
+  it('previews with no lines yet (zero totals), just the resort header and guest block', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toEqual([]);
+    expect(res.body.grandTotal).toBe(0);
+    expect(res.body.totalAmountDue).toBe(0);
+    expect(res.body.guest.name).toBe('Roel Villagomez');
+  });
+
   // Client decision, 2026-11-04: nothing capped totalDeductions against
   // grandTotal — a mistyped downpayment could otherwise yield a receipt
   // with a negative Total Amount Due. Rejected outright rather than

@@ -243,3 +243,55 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
     expect(screen.getByText('Unit details')).toBeInTheDocument();
   });
 });
+
+// Build plan stage 4 (spec.md §13 decision 13, 2026-11-04): the one
+// entry point into billing — there's no standalone "pick a booking"
+// screen, so this link on a booking row (next to Check out) is the
+// only place a cashier reaches a specific booking's billing page.
+describe('UnitsPage — billing entry point', () => {
+  const occupiedWithBooking = {
+    id: 'unit_1', code: 'R01', name: 'Room 1', unitTypeId: 't1', type: 'ROOM', capacity: 4, floor: null,
+    status: 'OCCUPIED', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null,
+  };
+  const upcomingBooking = {
+    id: 'booking_1', referenceNo: 'EXT-100', guestName: 'Roel Villagomez', type: 'OVERNIGHT', status: 'CHECKED_IN',
+    startAt: '2026-11-04T00:00:00.000Z', endAt: null,
+  };
+
+  function stubFetch(userFixture: typeof managerUser) {
+    return vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: userFixture });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedWithBooking] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
+      if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [upcomingBooking] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+  }
+
+  it('shows a "Bill guest" link to /billing/:bookingId for a receipt:issue holder', async () => {
+    const user = userEvent.setup();
+    const cashierLikeUser = { ...managerUser, permissions: { ...managerUser.permissions, 'receipt:issue': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(cashierLikeUser));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+
+    const link = await screen.findByRole('link', { name: 'Bill guest' });
+    expect(link).toHaveAttribute('href', '/billing/booking_1');
+  });
+
+  it('hides "Bill guest" from a holder without receipt:issue', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', stubFetch(managerUser));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+
+    await waitFor(() => expect(screen.getByText(/Booked: Roel Villagomez/)).toBeInTheDocument());
+    expect(screen.queryByRole('link', { name: 'Bill guest' })).not.toBeInTheDocument();
+  });
+});

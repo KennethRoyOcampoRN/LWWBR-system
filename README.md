@@ -7064,3 +7064,60 @@ new tests: the negative-deductions rejection at preview and at issue,
 and the real reconciliation guard actually firing on a mismatch; 3
 pre-existing sandbox-network-only skips, unchanged), `apps/web` 184/184
 (unchanged). `npm run build` clean across all three packages.
+
+## Billing receipts — stage 4: the cashier billing UI (2026-11-04)
+
+The remaining schema change this stage needed: `receiptDraftSchema`
+(shared by preview and issuance) now allows empty `lines` and a blank
+`preparedByName` — `issueReceiptSchema` still requires both, same as
+before. The billing page's very first call, made the moment a booking
+is opened, previews with zero lines purely to fetch the resort header/
+guest block server-side; there's no standalone booking-read endpoint
+this page could call instead (confirmed in stage 3's own research: the
+2026-08-24 redesign removed `GET /bookings/:id` entirely).
+
+**Entry point**: a "Bill guest" link on `UnitsPage.tsx`'s own upcoming-
+bookings row, next to the existing Check out button, gated on
+`receipt:issue` (not `booking:checkout` — a cashier who bills a guest
+doesn't necessarily check them out). There's no standalone "pick a
+booking" screen — this is the one place a cashier reaches a specific
+booking by id, same pattern Check out already used.
+
+**New `BillingPage.tsx`** (`/billing/:bookingId`, gated by
+`receipt:issue`): room/extra-person quick-picks sourced from
+`GET /unit-types` (`baseRate`/`extraPersonRate`, prefilling the line
+form for the cashier to confirm or edit — never auto-added), a free-
+form "other item" line, deduction rows (type/label/amount), a "Update
+preview" button that recomputes totals against the real server-side
+`computeReceiptTotals` (never a client-side shadow calculation), and a
+Billing No./Prepared-by pair feeding the real issue call. On
+`409 DUPLICATE_BILLING_NUMBER`, a `window.confirm` dialog (same pattern
+as the DTR geofence pre-check) lets the cashier proceed anyway, which
+resubmits with `confirmDuplicateBillingNumber: true`. On success, the
+page swaps to a printable receipt view matching the sample's own
+layout (header + logo, centred title, Billing No. badge, guest block,
+`Items | Price | Quantity/Days | Total` table, Grand Total/Deductions/
+Total Amount Due block, "Prepared by") with a Print button
+(`window.print()`) and a "Bill another receipt" reset. Built entirely
+with the new primitive set (`PageHeader`/`Section`/`Card`/`DataTable`/
+`Field`/`Button`), continuing the visual-redesign rollout rather than
+writing new pre-redesign-style markup.
+
+**Printing**: browser print only, per the approved build plan (no PDF
+dependency added). `AppShell.tsx` gained `print:hidden` on the nav
+sidebar and `print:bg-none`/`print:p-0` on its chrome — the first page
+in this app anyone actually prints, so the chrome-hiding rule was added
+globally (every page benefits), not scoped to the billing page alone.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 94/94 (unchanged), `apps/api` 623/626 (1
+new test: previewing with zero lines), `apps/web` 189/189 (5 new:
+`BillingPage.test.tsx` covering load → add line → update preview →
+issue, the duplicate-billing-number confirm-and-reissue flow, and the
+permission gate; `UnitsPage.test.tsx` covering the "Bill guest" link's
+presence/absence and its `href`). `npm run build` clean across all
+three packages. Manually verified in a real browser (Playwright against
+a running `vite dev` with mocked API responses): the builder view, the
+issued receipt, and the print view (`page.emulateMedia({ media: 'print' })`)
+all render correctly — the print view confirms the sidebar and page
+padding are actually gone, not just that the CSS classes are present.

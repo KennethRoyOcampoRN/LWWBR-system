@@ -3,6 +3,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { AuthProvider } from './context/AuthContext.js';
 import { AmenitiesPage } from './routes/AmenitiesPage.js';
 import { AppShell } from './routes/AppShell.js';
+import { BillingPage } from './routes/BillingPage.js';
 import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
 import { FnbPage } from './routes/FnbPage.js';
@@ -96,6 +97,19 @@ export function App() {
                     element={
                       <RequirePermission permission="fnb:read">
                         <FnbPage />
+                      </RequirePermission>
+                    }
+                  />
+                  {/* Build plan stage 4 (spec.md §13 decision 13,
+                      2026-11-04): the cashier billing page — reached
+                      from UnitsPage's own "Bill guest" link on a
+                      booking row, not a standalone picker (none exists
+                      — see BillingPage.tsx's own header comment). */}
+                  <Route
+                    path="/billing/:bookingId"
+                    element={
+                      <RequirePermission permission="receipt:issue">
+                        <BillingPage />
                       </RequirePermission>
                     }
                   />

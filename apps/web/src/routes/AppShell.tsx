@@ -110,7 +110,7 @@ export function AppShell() {
     // content got redesigned in this first pass — that's intentional
     // scope, not a half-finished rollout (flagged and approved ahead of
     // time, see README).
-    <div className="flex min-h-screen flex-col bg-app-gradient md:flex-row">
+    <div className="flex min-h-screen flex-col bg-app-gradient print:bg-none md:flex-row">
       {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
           M6): on an actual phone viewport this used to render every nav
           item as one horizontal row of text links with no wrap control —
@@ -121,7 +121,12 @@ export function AppShell() {
           vertical list when open, one item per line, same as desktop's
           always-visible sidebar. At md and up this is all just the
           plain always-visible left sidebar it always was. */}
-      <nav className="flex shrink-0 flex-col bg-white shadow-card md:w-56">
+      {/* print:hidden, build plan stage 4 (2026-11-04): the first page
+          in this app anyone actually prints (an issued receipt) — this
+          chrome has no reason to appear on a printed page, here or
+          anywhere else, so it's hidden globally rather than only on
+          the billing page. */}
+      <nav className="flex shrink-0 flex-col bg-white shadow-card md:w-56 print:hidden">
         <div className="flex items-center justify-between gap-2 p-2 md:p-4 md:pb-2">
           <p className="px-2 text-sm font-semibold text-ink-secondary">Lucky Waku-Waku</p>
           <div className="flex items-center gap-2">
@@ -179,7 +184,7 @@ export function AppShell() {
           </div>
         </div>
       </nav>
-      <main className="flex-1 p-4 md:p-8">
+      <main className="flex-1 p-4 md:p-8 print:p-0">
         {/* Spec §11 M6: the boundary that actually protects the 9
             authenticated pages day to day — a crash in any single page
             shows a real error screen here instead of white-screening

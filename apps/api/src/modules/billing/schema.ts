@@ -56,19 +56,29 @@ const receiptDeductionInputSchema = z.object({
 // the exact same totals the real issue call would, from the exact same
 // shape, so what the cashier sees before confirming is never a
 // different calculation than what gets persisted.
+//
+// Deliberately permissive here (empty lines, blank preparedByName
+// allowed) — build plan stage 4 (2026-11-04): the billing page's first
+// preview call, made the moment a booking is opened for billing, has no
+// lines yet and exists only to fetch the resort header/guest block
+// (there's no standalone "GET /bookings/:id" — see this module's own
+// README entry). `issueReceiptSchema` below tightens both back to
+// required for the real, money-moving call.
 export const receiptDraftSchema = z.object({
   guestContactNo: z.string().trim().max(50).nullable().optional(),
   guestEmail: z.string().trim().max(200).nullable().optional(),
   checkInDate: z.string().datetime().nullable().optional(),
   checkOutDate: z.string().datetime().nullable().optional(),
   nightsOfStay: z.number().int().positive().nullable().optional(),
-  preparedByName: z.string().trim().min(1).max(200),
-  lines: z.array(receiptLineInputSchema).min(1, 'At least one line item is required.'),
+  preparedByName: z.string().trim().max(200).default(''),
+  lines: z.array(receiptLineInputSchema).default([]),
   deductions: z.array(receiptDeductionInputSchema).default([]),
 });
 export type ReceiptDraftInput = z.infer<typeof receiptDraftSchema>;
 
 export const issueReceiptSchema = receiptDraftSchema.extend({
+  preparedByName: z.string().trim().min(1).max(200),
+  lines: z.array(receiptLineInputSchema).min(1, 'At least one line item is required.'),
   // Cashier-typed — the {typed} in {typed}-{MMDDYYYY}-{NN}. Digits only
   // on the sample (e.g. "83887"), but not enforced as numeric here: a
   // pre-printed receipt booklet number is whatever's physically

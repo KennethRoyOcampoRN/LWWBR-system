@@ -13,6 +13,7 @@ import {
   type UnitStatusKey,
 } from '@lwwbr/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { EmptyState } from '../components/EmptyState.js';
 import { Skeleton, SkeletonCard, SkeletonList } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
@@ -588,14 +589,32 @@ function UnitDetailDrawer({
                     </span>
                   </div>
 
-                  {canCheckOut && !showChecklist && (
-                    <button
-                      onClick={() => void openCheckOutChecklist(booking)}
-                      className="w-fit rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                    >
-                      Check out
-                    </button>
-                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {canCheckOut && !showChecklist && (
+                      <button
+                        onClick={() => void openCheckOutChecklist(booking)}
+                        className="w-fit rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                      >
+                        Check out
+                      </button>
+                    )}
+                    {/* Build plan stage 4 (spec.md §13 decision 13,
+                        2026-11-04): the entry point into billing — no
+                        standalone "pick a booking" screen exists (and
+                        wasn't asked for), so this is the one place a
+                        cashier reaches a specific booking by id,
+                        same as Check out above. Gated on receipt:issue,
+                        not booking:checkout — a cashier who bills
+                        doesn't necessarily check guests out. */}
+                    {Boolean(user?.permissions['receipt:issue']) && (
+                      <Link
+                        to={`/billing/${booking.id}`}
+                        className="w-fit rounded bg-brand-600 px-2 py-1 text-xs font-medium text-white hover:bg-brand-600/90"
+                      >
+                        Bill guest
+                      </Link>
+                    )}
+                  </div>
 
                   {/* Checklist checkout, client decision 2026-08-24: "show
                       a checklist of all rooms tied to that same Booking
