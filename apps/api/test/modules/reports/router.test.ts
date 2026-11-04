@@ -9,6 +9,7 @@ const mockPrisma = {
   fnbOrder: { findMany: vi.fn() },
   amenityRequest: { findMany: vi.fn() },
   auditLog: { findMany: vi.fn() },
+  receipt: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -868,5 +869,263 @@ describe('GET /api/v1/reports/:key/export', () => {
       .get('/api/v1/reports/audit-extract/export?from=2026-08-24&to=2026-08-25&format=csv')
       .set('Cookie', authCookie());
     expect(res.status).toBe(403);
+  });
+});
+
+// Build plan stage 5 (spec.md §13 decision 13): three receipts reports —
+// detail (accounting record), summary (owner revenue view), by-cashier
+// (shift reconciliation). Same billing has no department axis reasoning
+// as occupancy: all three refuse a DEPARTMENT-scoped report:view holder
+// outright rather than scoping them to a department that doesn't exist
+// on Receipt.
+describe('GET /api/v1/reports/receipts-detail, receipts-summary, receipts-by-cashier', () => {
+  it('refuses all three receipts reports for a DEPARTMENT-scoped report:view holder', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING', { department: 'HOUSEKEEPING' }));
+    for (const key of ['receipts-detail', 'receipts-summary', 'receipts-by-cashier']) {
+      const res = await request(createApp())
+        .get(`/api/v1/reports/${key}?from=2026-08-24&to=2026-08-25`)
+        .set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    }
+  });
+
+  describe('receipts-detail', () => {
+    it('includes a voided receipt as its own row, keeps senior/PWD discounts as separate columns, and excludes the voided row from summary totals', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          billingNumberFull: '83887-08242026-01',
+          issuedAt: new Date('2026-08-24T09:00:00+08:00'),
+          guestName: 'Roel Villagomez',
+          booking: { referenceNo: 'BK-0001' },
+          grandTotal: '2200.00',
+          totalAmountDue: '1100.00',
+          issuedBy: { fullName: 'Yssa (Cashier)' },
+          status: 'ISSUED',
+          deductions: [
+            { type: 'DOWNPAYMENT', amount: '1100.00' },
+            { type: 'DISCOUNT_SENIOR', amount: '0.00' },
+          ],
+        },
+        {
+          billingNumberFull: '83887-08242026-02',
+          issuedAt: new Date('2026-08-24T10:00:00+08:00'),
+          guestName: 'Maria Cruz',
+          booking: { referenceNo: 'BK-0002' },
+          grandTotal: '1000.00',
+          totalAmountDue: '1000.00',
+          issuedBy: { fullName: 'Yssa (Cashier)' },
+          status: 'VOIDED',
+          deductions: [],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-detail?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const { summary, rows } = res.body.report;
+      expect(rows).toHaveLength(2);
+      const voidedRow = rows.find((r: { status: string }) => r.status === 'VOIDED');
+      expect(voidedRow).toBeTruthy(); // still appears for the audit record
+      const issuedRow = rows.find((r: { status: string }) => r.status === 'ISSUED');
+      expect(issuedRow.discountSenior).toBe(0);
+      expect(issuedRow.downpayment).toBe(1100);
+      expect(summary.totalReceipts).toBe(2);
+      expect(summary.issuedCount).toBe(1);
+      expect(summary.voidedCount).toBe(1);
+      // Only the ISSUED receipt's totals count — the voided receipt's
+      // 1000/1000 never shows up here.
+      expect(summary.grandTotal).toBe(2200);
+      expect(summary.totalAmountDue).toBe(1100);
+    });
+
+    it('exports receipts-detail as CSV with per-deduction-type columns', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          billingNumberFull: '83887-08242026-01',
+          issuedAt: new Date('2026-08-24T09:00:00+08:00'),
+          guestName: 'Roel Villagomez',
+          booking: { referenceNo: 'BK-0001' },
+          grandTotal: '2200.00',
+          totalAmountDue: '1100.00',
+          issuedBy: { fullName: 'Yssa (Cashier)' },
+          status: 'ISSUED',
+          deductions: [{ type: 'DOWNPAYMENT', amount: '1100.00' }],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-detail/export?from=2026-08-24&to=2026-08-25&format=csv')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text).toContain('Billing No.');
+      expect(res.text).toContain('83887-08242026-01');
+    });
+  });
+
+  describe('receipts-summary', () => {
+    // A receipt issued at 7am Manila (2026-08-23T23:00:00Z) must land in
+    // the 2026-08-24 Manila bucket, not 2026-08-23 — the exact failure
+    // mode a UTC-day grouping would produce.
+    it('buckets a receipt issued at 7am Manila into the correct Manila day, not the UTC day', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          issuedAt: new Date('2026-08-23T23:00:00.000Z'), // 2026-08-24T07:00:00+08:00
+          grandTotal: '1000.00',
+          totalAmountDue: '1000.00',
+          status: 'ISSUED',
+          deductions: [],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-summary?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const { rows } = res.body.report;
+      const day24 = rows.find((r: { period: string }) => r.period === '2026-08-24');
+      const day25 = rows.find((r: { period: string }) => r.period === '2026-08-25');
+      expect(day24.receiptCount).toBe(1);
+      expect(day24.grossTotal).toBe(1000);
+      expect(day25.receiptCount).toBe(0);
+    });
+
+    it('uses day granularity for a 31-day-or-less range and month granularity beyond it', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([]);
+
+      const dayRes = await request(createApp())
+        .get('/api/v1/reports/receipts-summary?from=2026-08-01&to=2026-08-31') // 31 days
+        .set('Cookie', authCookie());
+      expect(dayRes.status).toBe(200);
+      expect(dayRes.body.report.summary.granularity).toBe('day');
+      expect(dayRes.body.report.rows[0].period).toBe('2026-08-01');
+
+      const monthRes = await request(createApp())
+        .get('/api/v1/reports/receipts-summary?from=2026-08-01&to=2026-09-01') // 32 days
+        .set('Cookie', authCookie());
+      expect(monthRes.status).toBe(200);
+      expect(monthRes.body.report.summary.granularity).toBe('month');
+      expect(monthRes.body.report.rows[0].period).toBe('2026-08');
+    });
+
+    it('excludes a voided receipt from gross/deductions/net but counts it in voidedCount', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          issuedAt: new Date('2026-08-24T09:00:00+08:00'),
+          grandTotal: '2200.00',
+          totalAmountDue: '1100.00',
+          status: 'ISSUED',
+          deductions: [{ type: 'DOWNPAYMENT', amount: '1100.00' }],
+        },
+        {
+          issuedAt: new Date('2026-08-24T10:00:00+08:00'),
+          grandTotal: '500.00',
+          totalAmountDue: '500.00',
+          status: 'VOIDED',
+          deductions: [],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-summary?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const day24 = res.body.report.rows.find((r: { period: string }) => r.period === '2026-08-24');
+      expect(day24.receiptCount).toBe(1);
+      expect(day24.voidedCount).toBe(1);
+      expect(day24.grossTotal).toBe(2200);
+      expect(day24.totalDeductions).toBe(1100);
+      expect(day24.netTotal).toBe(1100);
+      expect(res.body.report.summary.grandTotal.voidedCount).toBe(1);
+    });
+
+    it('exports receipts-summary as CSV', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-summary/export?from=2026-08-24&to=2026-08-25&format=csv')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text).toContain('Date,Gross,Deductions,Net,Receipts issued,Voided');
+    });
+  });
+
+  describe('receipts-by-cashier', () => {
+    it('groups receipts by issuing user, excludes a voided receipt from revenue sums, and counts it in voidedCount', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          issuedById: 'user_cashier_1',
+          issuedBy: { id: 'user_cashier_1', fullName: 'Yssa' },
+          issuedAt: new Date('2026-08-24T09:00:00+08:00'),
+          grandTotal: '2200.00',
+          totalAmountDue: '1100.00',
+          status: 'ISSUED',
+          deductions: [{ type: 'DOWNPAYMENT', amount: '1100.00' }],
+        },
+        {
+          issuedById: 'user_cashier_1',
+          issuedBy: { id: 'user_cashier_1', fullName: 'Yssa' },
+          issuedAt: new Date('2026-08-24T11:00:00+08:00'),
+          grandTotal: '800.00',
+          totalAmountDue: '800.00',
+          status: 'VOIDED',
+          deductions: [],
+        },
+        {
+          issuedById: 'user_cashier_2',
+          issuedBy: { id: 'user_cashier_2', fullName: 'Ana' },
+          issuedAt: new Date('2026-08-24T12:00:00+08:00'),
+          grandTotal: '500.00',
+          totalAmountDue: '500.00',
+          status: 'ISSUED',
+          deductions: [],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-by-cashier?from=2026-08-24&to=2026-08-25')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const { summary, rows } = res.body.report;
+      expect(rows).toHaveLength(2);
+      const yssa = rows.find((r: { cashierName: string }) => r.cashierName === 'Yssa');
+      expect(yssa.issuedCount).toBe(1);
+      expect(yssa.voidedCount).toBe(1);
+      expect(yssa.grossTotal).toBe(2200); // the voided 800 never counted
+      expect(yssa.netTotal).toBe(1100);
+      const ana = rows.find((r: { cashierName: string }) => r.cashierName === 'Ana');
+      expect(ana.issuedCount).toBe(1);
+      expect(ana.voidedCount).toBe(0);
+      expect(summary.grandTotal.grossTotal).toBe(2700);
+      expect(summary.grandTotal.voidedCount).toBe(1);
+    });
+
+    it('exports receipts-by-cashier as CSV', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-by-cashier/export?from=2026-08-24&to=2026-08-25&format=csv')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text).toContain('Cashier,Receipts issued,Gross,Deductions,Net,Voided');
+    });
   });
 });

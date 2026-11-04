@@ -1,5 +1,6 @@
 import { DEPARTMENT_KEYS, REPORT_KEYS, REPORT_LABELS, type DepartmentKey, type ReportKey } from '@lwwbr/shared';
 import { useState, type FormEvent } from 'react';
+import { DataTable, type DataTableColumn } from '../components/DataTable.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonTableRows } from '../components/Skeleton.js';
 import { useAuth } from '../context/AuthContext.js';
@@ -149,6 +150,39 @@ interface AuditExtractSummary {
   topActors: { actorId: string | null; actorName: string; count: number }[];
 }
 
+// Build plan stage 5 (spec.md §13 decision 13, 2026-11-04): the three
+// new receipts report keys don't get their own bespoke summary view in
+// this pass — that's a reasonable follow-up slice, not something this
+// stage's own focus (backend correctness: Asia/Manila bucketing, money
+// reconciliation, voided-receipt handling) justified scope-creeping
+// into. `GenericReportView` below (any key not in the switch above)
+// means picking one from the dropdown still renders real data — a real
+// table from `rows`/`csvColumns`, CSV export works exactly as it does
+// for every other report — rather than a key that's selectable but
+// silently renders nothing, which REPORT_KEYS being a single source of
+// truth for both the API and this picker would otherwise produce.
+type SpecificReportKey =
+  | 'occupancy'
+  | 'work-orders'
+  | 'housekeeping'
+  | 'maintenance-log'
+  | 'fnb-orders'
+  | 'amenity-utilisation'
+  | 'audit-extract';
+
+interface GenericReportResponse {
+  // Excludes the literal keys above so this stays a true discriminated
+  // union with them — a plain `string` here would let `report.key ===
+  // 'occupancy'` match this member too, and TS would then refuse to
+  // narrow `report` down to the occupancy-specific shape at all.
+  key: Exclude<ReportKey, SpecificReportKey>;
+  from: string;
+  to: string;
+  summary: unknown;
+  rows: Record<string, unknown>[];
+  csvColumns: { key: string; label: string }[];
+}
+
 type ReportResponse =
   | { key: 'occupancy'; from: string; to: string; summary: OccupancySummary; rows: OccupancyRow[] }
   | { key: 'work-orders'; from: string; to: string; summary: WorkOrderSummary; rows: WorkOrderRow[] }
@@ -162,7 +196,18 @@ type ReportResponse =
       summary: AmenityUtilisationSummary;
       rows: AmenityUtilisationRow[];
     }
-  | { key: 'audit-extract'; from: string; to: string; summary: AuditExtractSummary; rows: AuditExtractRow[] };
+  | { key: 'audit-extract'; from: string; to: string; summary: AuditExtractSummary; rows: AuditExtractRow[] }
+  | GenericReportResponse;
+
+const SPECIFIC_REPORT_KEYS = [
+  'occupancy',
+  'work-orders',
+  'housekeeping',
+  'maintenance-log',
+  'fnb-orders',
+  'amenity-utilisation',
+  'audit-extract',
+] as const;
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -355,6 +400,38 @@ export function ReportsPage() {
       {report?.key === 'fnb-orders' && <FnbOrderReportView report={report} />}
       {report?.key === 'amenity-utilisation' && <AmenityUtilisationReportView report={report} />}
       {report?.key === 'audit-extract' && <AuditExtractReportView report={report} />}
+      {report && isGenericReport(report) && <GenericReportView report={report} />}
+    </div>
+  );
+}
+
+// See this file's own comment on GenericReportResponse above for why
+// this exists — any report key not given a bespoke view above still
+// renders real data (a real table from rows/csvColumns) rather than
+// nothing.
+function isGenericReport(report: ReportResponse): report is GenericReportResponse {
+  return !(SPECIFIC_REPORT_KEYS as readonly string[]).includes(report.key);
+}
+
+function GenericReportView({ report }: { report: GenericReportResponse }) {
+  const columns: DataTableColumn<Record<string, unknown>>[] = report.csvColumns.map((col) => ({
+    key: col.key,
+    header: col.label,
+    render: (row) => {
+      const value = row[col.key];
+      return value === null || value === undefined ? '—' : String(value);
+    },
+  }));
+  const rowsWithKey = report.rows.map((row, index) => ({ ...row, __rowKey: `${index}` }));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <DataTable
+        columns={columns}
+        rows={rowsWithKey}
+        rowKey={(row) => row.__rowKey as string}
+        emptyMessage="No data in range."
+      />
     </div>
   );
 }

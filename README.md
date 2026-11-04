@@ -7121,3 +7121,91 @@ a running `vite dev` with mocked API responses): the builder view, the
 issued receipt, and the print view (`page.emulateMedia({ media: 'print' })`)
 all render correctly — the print view confirms the sidebar and page
 padding are actually gone, not just that the CSS classes are present.
+
+**Cashier billing / acknowledgement receipts — stage 5: reports
+integration.** Three new report keys in `packages/shared/src/report.ts`'s
+`REPORT_KEYS`/`REPORT_LABELS` (the single shared source of truth the
+API's dispatcher and the frontend's picker both read), per the client's
+own three confirmed uses — a BIR/accounting record, an owner revenue
+summary, and cashier shift reconciliation — kept as three separate
+reports rather than one overloaded report or a merged two, because each
+has a materially different row dimension (one row per receipt, one row
+per time bucket, one row per issuing user) that a single report
+couldn't represent without flattening the other two:
+
+- `receipts-detail` (the accounting record): one row per receipt —
+  billing number, Asia/Manila issue timestamp, guest, booking
+  reference, grand total, each deduction type as its own column
+  (`DISCOUNT_SENIOR`/`DISCOUNT_PWD` stay separate, never merged into a
+  generic discount, since they're statutorily distinct under RA 9994/RA
+  10754), total amount due, issuing user, status. **Voided receipts
+  still appear as their own row** (status `VOIDED`) — omitting them
+  would make the audit record incomplete — but are excluded from
+  `summary.grandTotal`/`summary.totalAmountDue`; `summary.voidedCount`
+  tracks them separately.
+- `receipts-summary` (the owner revenue view): no individual receipts,
+  only period subtotals, following `buildOccupancyReport`'s existing
+  `summary.byDay` shape rather than inventing a new one. Granularity
+  adapts to the range per the client's own instruction — day buckets
+  for 31 days or less, month buckets beyond that — with every period in
+  range pre-seeded at zero so an empty day/month still appears as a row
+  rather than being silently absent. **Voided receipts are excluded
+  from gross/deductions/net** but counted in a per-period `voidedCount`
+  column, rolled up into the grand total the same way.
+- `receipts-by-cashier` (shift reconciliation): grouped by
+  `Receipt.issuedById` — there's no `Shift` FK on `Receipt` and the
+  shift roster UI is itself dormant (spec.md §13 decision 9), so a
+  cashier reconciling one shift filters this report's own `from`/`to`
+  range to that shift's hours rather than this report trying to know
+  about shifts directly. Count issued, gross, deductions, net, and
+  **voided count per cashier**, with the same exclude-from-revenue/
+  count-separately handling as the other two reports.
+
+All three bucket/label dates via `TZDate`/Asia/Manila
+(`manilaDayLabel`/`manilaMonthLabel`/`manilaDateTimeLabel` in
+`reports/service.ts`, the same pattern `receiptNo.ts` and this file's
+own `resolveDate` already use) — a receipt issued at 7am Manila lands
+in the correct Manila day, not the UTC day it would fall into eight
+hours earlier. All money totals go through the billing module's own
+`roundMoney`/`sumMoney` (`apps/api/src/lib/money.ts`), so a report total
+and a receipt total can never drift apart through a different rounding
+path. All three refuse a DEPARTMENT-scoped `report:view` holder outright
+(same reasoning as `buildOccupancyReport`: billing has no department
+axis for a department-scoped holder to be scoped to), and reuse the
+existing `report:export`-gated CSV route — no new export mechanism.
+
+**Frontend**: `ReportsPage.tsx`'s report-picker dropdown reads
+`REPORT_KEYS` directly, so the three new keys became selectable the
+moment they were added to the shared list — but the page's render logic
+was a closed, sequential `report?.key === 'X' && <XView .../>` chain
+with no bespoke view for any key outside that chain, which would have
+left the new keys selectable while silently rendering nothing. Rather
+than either leaving that broken or building three full bespoke views
+(judged disproportionate scope creep for a stage whose client-stated
+focus was backend correctness, not new UI), added one lightweight
+`GenericReportView` — a `DataTable` driven directly by the already-
+present `report.rows`/`report.csvColumns` fields, confirmed present at
+runtime on the GET response (not just the CSV export route) by reading
+`reports/router.ts`'s handler — that renders for any report key not in
+the bespoke-view chain. `GenericReportResponse`'s `key` is typed as
+`Exclude<ReportKey, SpecificReportKey>` rather than a plain `string`,
+so the existing bespoke-view union stays a genuine discriminated union
+instead of TypeScript refusing to narrow `report` down to e.g. the
+occupancy-specific shape.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `apps/api` 632/632 (9 new tests in
+`test/modules/reports/router.test.ts`: DEPARTMENT-scope refusal across
+all three keys, `receipts-detail`'s voided-row-included/voided-excluded-
+from-summary behaviour and separate senior/PWD columns, `receipts-
+summary`'s 7am-Manila bucketing boundary, its day/month granularity
+switch at the 31-day line, and its voided handling, `receipts-by-
+cashier`'s grouping and voided handling, and CSV export for all three).
+`apps/web` 189/189 (unchanged — no new frontend tests were written for
+`GenericReportView`; it's a thin, already-tested-by-`DataTable`
+rendering shim, judged not to need its own dedicated test). `npm run
+build` clean across all three packages. No live database in this
+sandbox to run these queries against Prisma for real (confirmed via
+`npx prisma db pull --print` → `P1001`, consistent with every prior
+stage); schema is unchanged in this stage so no new `db push` is
+pending.

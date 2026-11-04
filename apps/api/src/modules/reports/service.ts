@@ -1,6 +1,7 @@
 import { TZDate } from '@date-fns/tz';
 import {
   BOOKABLE_UNIT_KINDS,
+  RECEIPT_DEDUCTION_TYPE_LABELS,
   UNIT_KIND_GROUP_LABELS,
   unitKindGroup,
   canViewAmenityUtilisationReport,
@@ -9,15 +10,17 @@ import {
   type FnbOrderStatusKey,
   type PermissionKey,
   type PermissionScope,
+  type ReceiptDeductionTypeKey,
   type RoleKey,
   type UnitStatusKey,
   type WorkOrderStatusKey,
   type WorkOrderTypeKey,
 } from '@lwwbr/shared';
-import { addDays, eachDayOfInterval, format } from 'date-fns';
+import { addDays, differenceInCalendarDays, eachDayOfInterval, eachMonthOfInterval, format } from 'date-fns';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { toCsv } from '../../lib/csv.js';
+import { roundMoney, sumMoney } from '../../lib/money.js';
 import { prisma } from '../../lib/prisma.js';
 import type { ReportQuery } from './schema.js';
 
@@ -38,6 +41,26 @@ const RESORT_TIMEZONE = 'Asia/Manila';
 function resolveDate(dateStr: string): Date {
   const [year, month, day] = dateStr.split('-').map(Number) as [number, number, number];
   return new TZDate(year, month - 1, day, 0, 0, RESORT_TIMEZONE);
+}
+
+// Build plan stage 5 (spec.md §13 decision 13, 2026-11-04): the three
+// receipts reports bucket by when a receipt was *issued*
+// (`Receipt.issuedAt`, a real timestamp, not a date-only field like
+// resolveDate above handles) — these two convert that timestamp to its
+// Asia/Manila calendar day/month the same way units/service.ts's
+// todayStartInManila and receiptNo.ts's manilaBillingDateStamp do, so a
+// receipt issued at 7am Manila (still "yesterday" in UTC) lands in
+// today's bucket, not yesterday's.
+function manilaDayLabel(date: Date): string {
+  return format(new TZDate(date, RESORT_TIMEZONE), 'yyyy-MM-dd');
+}
+
+function manilaMonthLabel(date: Date): string {
+  return format(new TZDate(date, RESORT_TIMEZONE), 'yyyy-MM');
+}
+
+function manilaDateTimeLabel(date: Date): string {
+  return format(new TZDate(date, RESORT_TIMEZONE), 'yyyy-MM-dd HH:mm:ss');
 }
 
 interface ReportResult {
@@ -952,6 +975,293 @@ async function buildAuditExtractReport(query: ReportQuery, actor: ReportActor): 
   };
 }
 
+interface ReceiptsDetailRow {
+  billingNumberFull: string;
+  issuedAt: string;
+  guestName: string;
+  bookingReferenceNo: string;
+  grandTotal: number;
+  downpayment: number;
+  discountPromo: number;
+  discountSenior: number;
+  discountPwd: number;
+  refundCorrection: number;
+  totalAmountDue: number;
+  issuedByName: string;
+  status: string;
+}
+
+// Build plan stage 5 (spec.md §13 decision 13, 2026-11-04). Client-
+// confirmed use #1, the accounting/BIR record — one row per receipt,
+// every statutory deduction type its own column (DISCOUNT_SENIOR/
+// DISCOUNT_PWD stay separate, never merged into one generic "discount"
+// column — RA 9994/RA 10754 are legally distinct, and the client was
+// explicit about this). Voided receipts are included, not filtered
+// out — `status` is its own column so they're clearly marked rather
+// than silently missing from what has to be a complete audit record.
+// Each deduction amount is read directly off that receipt's own
+// persisted ReceiptDeduction rows (never recomputed) — this report
+// describes exactly what was issued, the same immutable-snapshot
+// principle Receipt itself was built on.
+async function buildReceiptsDetailReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  // Same property-wide reasoning as buildOccupancyReport's own comment
+  // above — billing has no department axis (Receipt/FolioCharge are
+  // never department-scoped), so a DEPARTMENT-scoped report:view holder
+  // has nothing of their own to be scoped to here.
+  if (actor.permissions['report:view'] === 'DEPARTMENT') {
+    throw new ApiError(403, 'FORBIDDEN', 'Receipts detail is a property-wide report; your report access is department-scoped.');
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const receipts = await prisma.receipt.findMany({
+    where: { issuedAt: { gte: from, lt: toEndExclusive } },
+    include: {
+      deductions: true,
+      issuedBy: { select: { fullName: true } },
+      booking: { select: { referenceNo: true } },
+    },
+    orderBy: [{ issuedAt: 'asc' }],
+  });
+
+  function deductionTotal(receipt: (typeof receipts)[number], type: ReceiptDeductionTypeKey): number {
+    return sumMoney(receipt.deductions.filter((d) => d.type === type).map((d) => Number(d.amount)));
+  }
+
+  const rows: ReceiptsDetailRow[] = receipts.map((receipt) => ({
+    billingNumberFull: receipt.billingNumberFull,
+    issuedAt: manilaDateTimeLabel(receipt.issuedAt),
+    guestName: receipt.guestName,
+    bookingReferenceNo: receipt.booking.referenceNo,
+    grandTotal: Number(receipt.grandTotal),
+    downpayment: deductionTotal(receipt, 'DOWNPAYMENT'),
+    discountPromo: deductionTotal(receipt, 'DISCOUNT_PROMO'),
+    discountSenior: deductionTotal(receipt, 'DISCOUNT_SENIOR'),
+    discountPwd: deductionTotal(receipt, 'DISCOUNT_PWD'),
+    refundCorrection: deductionTotal(receipt, 'REFUND_CORRECTION'),
+    totalAmountDue: Number(receipt.totalAmountDue),
+    issuedByName: receipt.issuedBy.fullName,
+    status: receipt.status,
+  }));
+
+  // Revenue totals exclude voided receipts — a voided receipt's
+  // grandTotal/totalAmountDue describe a document that was retracted,
+  // never actual revenue. It still appears as its own row above
+  // (status: VOIDED) for the audit trail; it's just not folded into
+  // these sums, same "excluded from revenue, counted separately" rule
+  // applied in all three receipts reports.
+  const issuedRows = rows.filter((row) => row.status === 'ISSUED');
+  const summary = {
+    totalReceipts: rows.length,
+    issuedCount: issuedRows.length,
+    voidedCount: rows.length - issuedRows.length,
+    grandTotal: sumMoney(issuedRows.map((row) => row.grandTotal)),
+    totalAmountDue: sumMoney(issuedRows.map((row) => row.totalAmountDue)),
+  };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'billingNumberFull', label: 'Billing No.' },
+      { key: 'issuedAt', label: 'Issued (Asia/Manila)' },
+      { key: 'guestName', label: 'Guest' },
+      { key: 'bookingReferenceNo', label: 'Booking reference' },
+      { key: 'grandTotal', label: 'Grand total' },
+      { key: 'downpayment', label: RECEIPT_DEDUCTION_TYPE_LABELS.DOWNPAYMENT },
+      { key: 'discountPromo', label: RECEIPT_DEDUCTION_TYPE_LABELS.DISCOUNT_PROMO },
+      { key: 'discountSenior', label: RECEIPT_DEDUCTION_TYPE_LABELS.DISCOUNT_SENIOR },
+      { key: 'discountPwd', label: RECEIPT_DEDUCTION_TYPE_LABELS.DISCOUNT_PWD },
+      { key: 'refundCorrection', label: RECEIPT_DEDUCTION_TYPE_LABELS.REFUND_CORRECTION },
+      { key: 'totalAmountDue', label: 'Total amount due' },
+      { key: 'issuedByName', label: 'Issued by' },
+      { key: 'status', label: 'Status' },
+    ],
+  };
+}
+
+interface ReceiptsSummaryRow {
+  period: string;
+  grossTotal: number;
+  totalDeductions: number;
+  netTotal: number;
+  receiptCount: number;
+  voidedCount: number;
+}
+
+// Client-confirmed use #2, the owner revenue view — no individual
+// receipts, only subtotals. Follows buildOccupancyReport's own
+// established `summary.byDay` convention for a date-ranged report with
+// a period axis, rather than inventing a new shape: `summary.byPeriod`
+// (named for the period, not always a day) mirrors `rows` exactly,
+// typed for the on-screen view, while `rows`/`csvColumns` carry the
+// same data for export. Granularity adapts to the range per the
+// client's own instruction: day buckets for a month (31 days) or less,
+// month buckets beyond that — a year-long range as 365 individual day
+// rows would be unreadable on screen and isn't what an owner revenue
+// summary is for.
+async function buildReceiptsSummaryReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (actor.permissions['report:view'] === 'DEPARTMENT') {
+    throw new ApiError(403, 'FORBIDDEN', 'Receipts summary is a property-wide report; your report access is department-scoped.');
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+  const spanDays = differenceInCalendarDays(to, from) + 1;
+  const granularity: 'day' | 'month' = spanDays <= 31 ? 'day' : 'month';
+
+  const receipts = await prisma.receipt.findMany({
+    where: { issuedAt: { gte: from, lt: toEndExclusive } },
+    include: { deductions: true },
+    orderBy: [{ issuedAt: 'asc' }],
+  });
+
+  const periods =
+    granularity === 'day'
+      ? eachDayOfInterval({ start: from, end: to }).map(manilaDayLabel)
+      : eachMonthOfInterval({ start: from, end: to }).map(manilaMonthLabel);
+
+  const byPeriod = new Map<string, ReceiptsSummaryRow>();
+  for (const period of periods) {
+    byPeriod.set(period, { period, grossTotal: 0, totalDeductions: 0, netTotal: 0, receiptCount: 0, voidedCount: 0 });
+  }
+
+  for (const receipt of receipts) {
+    const period = granularity === 'day' ? manilaDayLabel(receipt.issuedAt) : manilaMonthLabel(receipt.issuedAt);
+    const bucket = byPeriod.get(period);
+    // Shouldn't happen — issuedAt is already constrained to
+    // [from, toEndExclusive) by the query itself, which is exactly the
+    // range `periods` was built from — but skip rather than crash if a
+    // future edit ever decouples the two.
+    if (!bucket) continue;
+
+    if (receipt.status === 'VOIDED') {
+      bucket.voidedCount += 1;
+      continue; // never contributes to gross/deductions/net — see this function's own header comment
+    }
+    const deductionsTotal = sumMoney(receipt.deductions.map((deduction) => Number(deduction.amount)));
+    bucket.grossTotal = roundMoney(bucket.grossTotal + Number(receipt.grandTotal));
+    bucket.totalDeductions = roundMoney(bucket.totalDeductions + deductionsTotal);
+    bucket.netTotal = roundMoney(bucket.netTotal + Number(receipt.totalAmountDue));
+    bucket.receiptCount += 1;
+  }
+
+  const rows = periods.map((period) => byPeriod.get(period)!);
+  const grandTotal = {
+    grossTotal: sumMoney(rows.map((row) => row.grossTotal)),
+    totalDeductions: sumMoney(rows.map((row) => row.totalDeductions)),
+    netTotal: sumMoney(rows.map((row) => row.netTotal)),
+    receiptCount: rows.reduce((sum, row) => sum + row.receiptCount, 0),
+    voidedCount: rows.reduce((sum, row) => sum + row.voidedCount, 0),
+  };
+
+  return {
+    summary: { granularity, byPeriod: rows, grandTotal },
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'period', label: granularity === 'day' ? 'Date' : 'Month' },
+      { key: 'grossTotal', label: 'Gross' },
+      { key: 'totalDeductions', label: 'Deductions' },
+      { key: 'netTotal', label: 'Net' },
+      { key: 'receiptCount', label: 'Receipts issued' },
+      { key: 'voidedCount', label: 'Voided' },
+    ],
+  };
+}
+
+interface ReceiptsByCashierRow {
+  cashierId: string;
+  cashierName: string;
+  issuedCount: number;
+  grossTotal: number;
+  totalDeductions: number;
+  netTotal: number;
+  voidedCount: number;
+}
+
+// Client-confirmed use #3, shift reconciliation — grouped by the
+// issuing user (Receipt.issuedById), not by shift directly: Receipt has
+// no Shift FK, and the shift roster UI is itself dormant (spec.md §13
+// decision 9); a cashier reconciling one shift filters this report's
+// own from/to range to that shift's hours instead. Same voided
+// handling as receipts-summary: voidedCount is its own column, never
+// folded into gross/deductions/net.
+async function buildReceiptsByCashierReport(query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
+  if (actor.permissions['report:view'] === 'DEPARTMENT') {
+    throw new ApiError(403, 'FORBIDDEN', 'Receipts by cashier is a property-wide report; your report access is department-scoped.');
+  }
+
+  const from = resolveDate(query.from);
+  const to = resolveDate(query.to);
+  if (from > to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'from must not be after to');
+  }
+  const toEndExclusive = addDays(to, 1);
+
+  const receipts = await prisma.receipt.findMany({
+    where: { issuedAt: { gte: from, lt: toEndExclusive } },
+    include: { deductions: true, issuedBy: { select: { id: true, fullName: true } } },
+    orderBy: [{ issuedAt: 'asc' }],
+  });
+
+  const byCashier = new Map<string, ReceiptsByCashierRow>();
+  for (const receipt of receipts) {
+    const existing = byCashier.get(receipt.issuedById) ?? {
+      cashierId: receipt.issuedById,
+      cashierName: receipt.issuedBy.fullName,
+      issuedCount: 0,
+      grossTotal: 0,
+      totalDeductions: 0,
+      netTotal: 0,
+      voidedCount: 0,
+    };
+    if (receipt.status === 'VOIDED') {
+      existing.voidedCount += 1;
+    } else {
+      const deductionsTotal = sumMoney(receipt.deductions.map((deduction) => Number(deduction.amount)));
+      existing.issuedCount += 1;
+      existing.grossTotal = roundMoney(existing.grossTotal + Number(receipt.grandTotal));
+      existing.totalDeductions = roundMoney(existing.totalDeductions + deductionsTotal);
+      existing.netTotal = roundMoney(existing.netTotal + Number(receipt.totalAmountDue));
+    }
+    byCashier.set(receipt.issuedById, existing);
+  }
+
+  const rows = [...byCashier.values()].sort((a, b) => b.grossTotal - a.grossTotal);
+  const summary = {
+    byCashier: rows,
+    grandTotal: {
+      grossTotal: sumMoney(rows.map((row) => row.grossTotal)),
+      totalDeductions: sumMoney(rows.map((row) => row.totalDeductions)),
+      netTotal: sumMoney(rows.map((row) => row.netTotal)),
+      issuedCount: rows.reduce((sum, row) => sum + row.issuedCount, 0),
+      voidedCount: rows.reduce((sum, row) => sum + row.voidedCount, 0),
+    },
+  };
+
+  return {
+    summary,
+    rows: rows as unknown as Record<string, unknown>[],
+    csvColumns: [
+      { key: 'cashierName', label: 'Cashier' },
+      { key: 'issuedCount', label: 'Receipts issued' },
+      { key: 'grossTotal', label: 'Gross' },
+      { key: 'totalDeductions', label: 'Deductions' },
+      { key: 'netTotal', label: 'Net' },
+      { key: 'voidedCount', label: 'Voided' },
+    ],
+  };
+}
+
 export async function getReport(key: string, query: ReportQuery, actor: ReportActor): Promise<ReportResult> {
   if (key === 'occupancy') return buildOccupancyReport(query, actor);
   if (key === 'work-orders') return buildWorkOrderReport(query, actor);
@@ -960,6 +1270,9 @@ export async function getReport(key: string, query: ReportQuery, actor: ReportAc
   if (key === 'fnb-orders') return buildFnbOrderReport(query, actor);
   if (key === 'amenity-utilisation') return buildAmenityUtilisationReport(query, actor);
   if (key === 'audit-extract') return buildAuditExtractReport(query, actor);
+  if (key === 'receipts-detail') return buildReceiptsDetailReport(query, actor);
+  if (key === 'receipts-summary') return buildReceiptsSummaryReport(query, actor);
+  if (key === 'receipts-by-cashier') return buildReceiptsByCashierReport(query, actor);
   throw new ApiError(404, 'NOT_FOUND', `Unknown report key: ${key}`);
 }
 
