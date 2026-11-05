@@ -400,6 +400,11 @@ describe('GET /api/v1/bookings/group — the checkout checklist, redesign 2026-0
     // real signal (asserted separately below).
     expect(whereArg.booking.status.notIn).toEqual(expect.arrayContaining(['CANCELLED', 'CHECKED_OUT']));
     expect(whereArg.unit.status).toBe('OCCUPIED');
+    // Added in review, 2026-11-05 (spec.md §13 decision 16), alongside
+    // the same gap found elsewhere: without this, a unit moved away
+    // from and later re-added to the same referenceNo group would list
+    // twice, once per BookingUnit row.
+    expect(whereArg.releasedAt).toBeNull();
   });
 
   it('requires authentication', async () => {
@@ -451,6 +456,27 @@ describe('POST /api/v1/bookings/checkout — checklist-based, redesign 2026-08-2
         data: expect.objectContaining({ type: 'HOUSEKEEPING', department: 'HOUSEKEEPING', unitId: 'unit_1', priority: 'NORMAL' }),
       }),
     );
+  });
+
+  // Bug caught in review, 2026-11-05 (spec.md §13 decision 16): without
+  // releasedAt: null, a unitId moved away from one booking into another
+  // (moveBookingUnit) still matches its old, released row here too,
+  // which could pull a booking that no longer holds this unit into the
+  // checkout call's own validation and grouping. Same filter needed on
+  // the nested booking.units include, which the per-booking "is every
+  // unit clear" check reads — a released row there could easily still
+  // read Unit.status OCCUPIED, just under someone else's booking now.
+  it('queries both the requested units and each booking\'s own unit list by releasedAt: null', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const booking = fakeBookingWithUnits();
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+
+    await request(createApp()).post('/api/v1/bookings/checkout').set('Cookie', authCookie()).send({ unitIds: ['unit_1'] });
+
+    const call = mockPrisma.bookingUnit.findMany.mock.calls[0]?.[0];
+    expect(call.where).toEqual(expect.objectContaining({ releasedAt: null }));
+    expect(call.include.booking.include.units.where).toEqual({ releasedAt: null });
   });
 
   it('checking out just one unit of a multi-unit booking leaves it CHECKED_IN — no CheckOutRecord yet', async () => {
@@ -688,6 +714,12 @@ describe('GET /api/v1/units/:id/bookings — upcoming-booking visibility on the 
         expect.objectContaining({ booking: expect.objectContaining({ endAt: expect.objectContaining({ gte: expect.any(Date) }) }) }),
       ]),
     );
+    // Added in review, 2026-11-05 (spec.md §13 decision 16): without
+    // this, a BookingUnit row this unit was moved away from could still
+    // match — its booking isn't excluded and the unit's own current
+    // status is OCCUPIED, just under whoever has it now — showing the
+    // drawer a stale booking instead of the real current occupant.
+    expect(whereArg.releasedAt).toBeNull();
   });
 
   // Real gap found live-testing, 2026-08-24: a booking created and

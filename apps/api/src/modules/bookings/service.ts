@@ -128,11 +128,18 @@ export async function getBooking(id: string) {
 // matters for "can this be checked out." Only
 // CANCELLED/CHECKED_OUT/NO_SHOW are excluded — a booking in any of
 // those states has no business being treated as the current occupant
-// of anything.
+// of anything. releasedAt: null, added in review 2026-11-05 alongside
+// the sweep that found the same gap in checkOutUnits/listUpcomingBookingsForUnit/
+// listUnits/createFnbOrder: without it, a unit moved away from and later
+// re-added to the *same* referenceNo group (moveBookingUnit away, then
+// addUnitToBooking back) would list twice — once for each row — not a
+// wrong-guest attribution like those other call sites, but still a
+// stale row this checklist has no business showing.
 export async function findOccupiedUnitsForReferenceNo(referenceNo: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
       deletedAt: null,
+      releasedAt: null,
       booking: { deletedAt: null, referenceNo, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
       unit: { deletedAt: null, status: 'OCCUPIED' },
     },
@@ -468,9 +475,23 @@ export async function resolveConfirmedBooking(
 // of its own units has actually cleared, exactly as before; a partial
 // checkout leaves that particular Booking row at CHECKED_IN.
 export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInput, actor: BookingActor) {
+  // releasedAt: null, added in review 2026-11-05 (spec.md §13 decision
+  // 16) alongside the same gap found in listUnits/createFnbOrder/
+  // listUpcomingBookingsForUnit: without it, a unitId that was moved
+  // away from one booking into another (moveBookingUnit) still matches
+  // its old, released row here too — pulling a booking that no longer
+  // actually holds this unit into the checkout call's own validation and
+  // grouping, which could try to finalize the wrong Booking row. Same
+  // filter on the nested `units` include: the per-booking "is every
+  // unit of this booking clear" check below must only look at units the
+  // booking *currently* holds, not one it moved away from (which could
+  // easily still read OCCUPIED, just under someone else's booking now).
   const requested = await prisma.bookingUnit.findMany({
-    where: { unitId: { in: unitIds }, deletedAt: null, booking: { deletedAt: null } },
-    include: { unit: true, booking: { include: { units: { include: { unit: true } } } } },
+    where: { unitId: { in: unitIds }, deletedAt: null, releasedAt: null, booking: { deletedAt: null } },
+    include: {
+      unit: true,
+      booking: { include: { units: { where: { releasedAt: null }, include: { unit: true } } } },
+    },
   });
 
   const foundUnitIds = new Set(requested.map((bu) => bu.unitId));
@@ -594,10 +615,18 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
 // Occupied (e.g. already manually corrected back to a clean state) — a
 // long-past planned arrival that never happened shouldn't linger there.
 export async function listUpcomingBookingsForUnit(unitId: string) {
+  // releasedAt: null, added in review 2026-11-05 (spec.md §13 decision
+  // 16) alongside the same gap found in listUnits/createFnbOrder/
+  // checkOutUnits: without it, a BookingUnit row this unit was moved
+  // away from (moveBookingUnit) can still match — its booking isn't
+  // excluded, and the unit's own current status is OCCUPIED (just under
+  // whoever has it now) — showing the drawer a stale booking instead of
+  // (or alongside) the real current occupant.
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
       unitId,
       deletedAt: null,
+      releasedAt: null,
       booking: {
         deletedAt: null,
         status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] },

@@ -127,8 +127,14 @@ describe('GET /api/v1/units and /unit-types', () => {
       referenceNo: '83887',
       guestName: 'Roel Villagomez',
     });
+    // Bug caught in review, 2026-11-05 (spec.md §13 decision 16): after
+    // a room move, a unit has a released BookingUnit row and a live
+    // one, both potentially matching a non-excluded booking — without
+    // releasedAt: null, the Map this builds keys by unitId and the last
+    // matching row wins arbitrarily, so the unit card could show the
+    // wrong guest's name and booking ID.
     expect(mockPrisma.bookingUnit.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ unitId: { in: ['unit_1'] } }) }),
+      expect.objectContaining({ where: expect.objectContaining({ unitId: { in: ['unit_1'] }, releasedAt: null }) }),
     );
   });
 

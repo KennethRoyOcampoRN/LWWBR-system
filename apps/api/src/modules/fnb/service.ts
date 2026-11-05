@@ -189,10 +189,27 @@ export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrder
   // client: the unit's current, active BookingUnit (its booking not
   // CANCELLED/CHECKED_OUT) is the real answer, the same "Unit.status
   // === 'OCCUPIED' plus the booking isn't closed out" signal
-  // bookings/service.ts already uses everywhere else. A unit can never
-  // have two simultaneously-active assignments (checkInBooking refuses
-  // check-in into an already-OCCUPIED unit), so this is always
-  // well-defined once the unit-occupied check below passes.
+  // bookings/service.ts already uses everywhere else.
+  //
+  // Correction, caught in review 2026-11-05 (spec.md §13 decision 16):
+  // the comment this replaced claimed a unit can never have two
+  // simultaneously-active assignments, reasoning from checkInBooking's
+  // own 409 UNIT_UNAVAILABLE guard. True at the time it was written, but
+  // moveBookingUnit changed that — after a room move, a unit has one
+  // *released* BookingUnit row (the booking that moved out) and one
+  // *live* row (whoever has it now), and both can point at non-excluded
+  // bookings. Without a releasedAt filter, findFirst with no ordering
+  // could return either row — a restaurant charge landing on the
+  // previous occupant's folio instead of the current one's. releasedAt:
+  // null (BookingUnit's own schema comment) is the real "is this still
+  // the live assignment" signal now; orderBy + take the most recent is
+  // defense in depth, not the primary fix — the one-booking-per-unit
+  // invariant (checkInBooking/requireAvailableUnitForNewAssignment's own
+  // READY-unit guards) should mean at most one row ever matches
+  // releasedAt: null for a given unit, so more than one surfacing here
+  // would itself indicate a different, more serious bug worth noticing
+  // rather than erroring out on — hence "take the latest" rather than
+  // throwing on more than one match.
   let chargeToRoomBookingId: string | null = null;
   if (input.settlement === 'CHARGE_TO_ROOM') {
     if (!input.unitId) {
@@ -206,8 +223,10 @@ export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrder
       where: {
         unitId: input.unitId,
         deletedAt: null,
+        releasedAt: null,
         booking: { deletedAt: null, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
       },
+      orderBy: { createdAt: 'desc' },
     });
     chargeToRoomBookingId = activeBookingUnit?.bookingId ?? null;
   }

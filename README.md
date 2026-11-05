@@ -7693,3 +7693,78 @@ existing tests were strengthened in place for the new `releasedAt`
 shape, not added to). `apps/web` 194/194 (unchanged). No live database
 in this sandbox to run the (trivial, no-backfill-needed) schema push
 against — consistent with every prior stage's own note.
+
+**Cashier tab re-plan, Stage B fix #3: a sweep for every other query
+that read `BookingUnit` to answer "who's in this room right now,"
+2026-11-05.** `releasedAt` changed what "the current assignment" means;
+flagged in review that the two fixes above only touched the two
+functions that happened to trigger the bug report, not every query with
+the same shape. Swept every `prisma.bookingUnit.find*` call in
+`apps/api/src` (7 total, excluding the two already fixed) and checked
+each against "does this need to know the *current* assignment, or
+something else." Four did and never had the filter:
+
+- `createFnbOrder`'s charge-to-room resolution (`fnb/service.ts`) —
+  matched on `unitId` + booking status only. After a room move, a unit
+  has a released row and a live one, both potentially under
+  non-excluded bookings; an unfiltered, unordered `findFirst` could
+  resolve either — a restaurant charge landing on the *previous*
+  occupant's folio instead of the current one's.
+- `GET /units`'s `currentBooking` (`units/service.ts`, `listUnits`) —
+  same gap. Builds a `Map` keyed by `unitId` from the query results, so
+  with two matching rows the last one wins arbitrarily — the unit card
+  could show the wrong guest's name and booking ID, precisely the field
+  this whole plan added the card for.
+- `checkOutUnits`'s own `requested` query and the nested
+  `booking.units` include it reads for the "is every unit of this
+  booking actually clear" check (`bookings/service.ts`) — a moved-away
+  unit could pull the *wrong* `Booking` row into a checkout call's
+  validation and grouping, or make the "still occupied" check see a
+  room that isn't really this booking's problem anymore.
+- `listUpcomingBookingsForUnit` (`bookings/service.ts`) — the unit
+  drawer's own booking list could show a stale, moved-away booking
+  instead of (or alongside) the real current occupant.
+
+One more, lower severity: `findOccupiedUnitsForReferenceNo`'s own
+checkout-checklist query had the same unfiltered shape, but its
+`unit.status === 'OCCUPIED'` + specific-`referenceNo` combination means
+the failure mode is a duplicate checklist row (a unit moved away from
+and later re-added to the *same* referenceNo group), not a wrong-guest
+attribution — fixed anyway, since it was cheap and strictly correct.
+
+All five now filter on `releasedAt: null`. `createFnbOrder`'s lookup
+also gained `orderBy: { createdAt: 'desc' }` — defense in depth, not
+the primary fix: the one-booking-per-unit invariant
+(`checkInBooking`/`requireAvailableUnitForNewAssignment`'s own guards)
+should mean at most one row ever matches `releasedAt: null` for a given
+unit, so a genuine duplicate there would itself be a different, worse
+bug worth surfacing, not something to error out on — a deterministic
+"take the latest" beats turning a defensive duplicate into a 500 for an
+ordinary F&B order.
+
+Checked and deliberately left alone, three queries that look similar
+but answer a different question: `priceRoomCharge`'s own `BookingUnit`
+lookup (`billing/service.ts`) resolves an *exact id* the caller already
+has (a specific room-charge's own `sourceId`), not "the current one for
+this unit" — a released row is a legitimate match there, for billing
+nights actually stayed before a move. `getBooking`/`findBookingWithUnits`
+deliberately returns a booking's *entire* unit history, released rows
+included — that's the point, not a gap. `deleteUnit`'s history count is
+an existence check ("has anything ever happened to this unit"), not a
+"who's current" one.
+
+New where-clause-pinning tests for all five changed queries (the same
+discipline the previous two fixes established): `createFnbOrder`'s own
+test asserts both the `releasedAt: null` filter and the `orderBy`;
+`listUnits`'s existing test was strengthened in place to also assert
+the filter; `checkOutUnits`, `listUpcomingBookingsForUnit`, and
+`findOccupiedUnitsForReferenceNo` each got a new or strengthened
+assertion on the actual `where`/`include` shape passed to Prisma, not
+just the downstream behavior — the same mock-shaped blind spot named in
+the previous two fixes applies here too.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 686/686 (2 net new — the `createFnbOrder`
+where-clause test and the `checkOutUnits` one; the other three
+where-clause assertions were added to existing tests, not new ones).
+`apps/web` 194/194 (unchanged).

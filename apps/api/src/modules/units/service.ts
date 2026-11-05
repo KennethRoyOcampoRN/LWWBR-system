@@ -261,10 +261,21 @@ export async function listUnits(): Promise<UnitSummaryWithNote[]> {
   // bookkeeping status can lag or get stuck" reasoning as
   // findOccupiedUnitsForReferenceNo/listUpcomingBookingsForUnit in
   // bookings/service.ts, reused here rather than re-derived — only
-  // CANCELLED/CHECKED_OUT are excluded. A unit can never have two
-  // simultaneously-active BookingUnit rows under non-excluded bookings
-  // (checkInBooking refuses check-in into an already-OCCUPIED unit), so
-  // "the" current booking per unit is always well-defined.
+  // CANCELLED/CHECKED_OUT/NO_SHOW are excluded.
+  //
+  // Correction, caught in review 2026-11-05 (spec.md §13 decision 16):
+  // this used to also claim a unit can never have two simultaneously-
+  // active BookingUnit rows, so "the" current booking per unit was
+  // always well-defined — true before moveBookingUnit existed. After a
+  // room move, a unit has one *released* row (whoever moved out) and
+  // one *live* row (whoever's there now), both potentially matching a
+  // non-excluded booking. Without a releasedAt filter, the Map built
+  // below keys by unitId and the last matching row wins arbitrarily —
+  // the unit card could show the wrong guest's name and booking ID,
+  // exactly the field the client asked to put on every card.
+  // releasedAt: null (BookingUnit's own schema comment) is the one
+  // date-independent way to tell "the live assignment" apart from one
+  // that's been moved away from.
   const occupiedUnitIds = units.filter((u) => u.status === 'OCCUPIED').map((u) => u.id);
   const activeBookingUnits =
     occupiedUnitIds.length === 0
@@ -273,6 +284,7 @@ export async function listUnits(): Promise<UnitSummaryWithNote[]> {
           where: {
             unitId: { in: occupiedUnitIds },
             deletedAt: null,
+            releasedAt: null,
             booking: { deletedAt: null, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
           },
           select: { unitId: true, booking: { select: { id: true, referenceNo: true, guestName: true } } },

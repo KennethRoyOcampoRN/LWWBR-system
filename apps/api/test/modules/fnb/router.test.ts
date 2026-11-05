@@ -359,6 +359,31 @@ describe('POST /api/v1/fnb-orders', () => {
     expect(res.body.fnbOrder.lines[0].unitPrice).toBe(250);
     expect(mockRealtimeEmit).toHaveBeenCalledWith('property', 'fnb.order.created', expect.objectContaining({ entityId: 'order_1' }));
   });
+
+  // Bug caught in review, 2026-11-05 (spec.md §13 decision 16): after a
+  // room move, a unit has one released BookingUnit row and one live one,
+  // and a query with no releasedAt filter could resolve either — a
+  // restaurant charge landing on the previous occupant's folio instead
+  // of the current one's. Pins both the filter and the ordering
+  // (defense in depth against a duplicate live row, which shouldn't
+  // exist under the one-booking-per-unit invariant but would be a worse
+  // bug to leave unordered if it ever did).
+  it('resolves the active BookingUnit by releasedAt: null with a deterministic ordering, not just unitId', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue({ id: 'unit_1', status: 'OCCUPIED' });
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue({ bookingId: 'booking_1' });
+    mockPrisma.menuItem.findMany.mockResolvedValue([fakeMenuItem({ id: 'menu_1', price: 250 })]);
+    mockPrisma.fnbOrder.create.mockResolvedValue(fakeFnbOrder());
+
+    await request(createApp())
+      .post('/api/v1/fnb-orders')
+      .set('Cookie', authCookie())
+      .send({ type: 'ROOM_SERVICE', settlement: 'CHARGE_TO_ROOM', unitId: 'unit_1', lines: [{ menuItemId: 'menu_1', qty: 1 }] });
+
+    const call = mockPrisma.bookingUnit.findFirst.mock.calls[0]?.[0];
+    expect(call.where).toEqual(expect.objectContaining({ unitId: 'unit_1', releasedAt: null }));
+    expect(call.orderBy).toEqual({ createdAt: 'desc' });
+  });
 });
 
 describe('GET /api/v1/fnb-orders', () => {
