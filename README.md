@@ -7582,3 +7582,66 @@ screen built against the now-automatic `ROOM` pricing and
 `FolioCharge`-sourced receipt lines, and the pre-arrival/resolve/add-unit
 actions), updating `BillingPage`'s existing request shape to drop its own
 client-built `lines` array in the same pass.
+
+**Cashier tab re-plan, Stage B fix: the unit-release query never
+matched a pre-arrival row, 2026-11-05.** Caught in review, not by any
+test: `resolveConfirmedBooking`'s release query (`bookings/service.ts`)
+filtered the booking's units on a plain `occupiedTo: null` to find
+"currently held" assignments — a check carried over from the walk-up
+shape, where `checkInBooking` never sets `occupiedTo` at all.
+`createPreArrivalBooking` does set it, to the *planned* checkout date
+(required input, per Stage B's own `BookingUnit.occupiedFrom`/
+`occupiedTo` writer). Since `resolveConfirmedBooking` only ever operates
+on `CONFIRMED` bookings — and only the pre-arrival endpoint produces
+those — the filter matched zero rows on every single call. The release
+loop ran over an empty array; `Unit.status` never moved off `OCCUPIED`
+on `CANCELLED`/`NO_SHOW`. Exactly the "main failure mode this design
+introduces" the stage's own code comments already named, just not
+actually prevented. `moveBookingUnit`'s active-assignment lookup
+(finding the `BookingUnit` row to close before opening the destination
+one) had the identical bug for the identical reason — a room move
+attempted on a still-pre-arrival `CONFIRMED` booking would 422 "no
+current, open assignment" even though the assignment was very much
+still live.
+
+Both of Stage B's own new tests for this (`CANCELLED`/`NO_SHOW` release,
+`moveBookingUnit`'s happy path) passed anyway — the Prisma mock they ran
+against returns whatever `mockResolvedValue` says regardless of the
+`where` clause it's given, so a filter that excludes every real row is
+invisible to a test built only around its outcome, not its query shape.
+Classic mock-shaped blind spot, worth naming as a pattern: an assertion
+about *which rows a query returns* needs the `where` clause itself
+pinned, not just the downstream effect re-asserted against a fixture
+that happened to already match it.
+
+Fix: `occupiedTo` isn't a clean "closed" signal by itself — it holds the
+*planned* end date when `createPreArrivalBooking` writes it, and the
+*actual* closure timestamp (always `<= now` the instant it's written)
+when `moveBookingUnit` writes it, same field, two different meanings
+depending on the writer. New shared `activeBookingUnitWhere(now)`
+(`bookings/service.ts`) treats "still held" as `occupiedTo` null OR
+still in the future — the same null-or-future idiom
+`listUpcomingBookingsForUnit` already uses for `Booking.endAt`, which
+correctly recognizes all three real shapes (walk-up: null; pre-arrival,
+not yet resolved: a future planned date; post-move, the old row: a past
+timestamp, correctly excluded) without a schema change or a new column.
+Used in both `resolveConfirmedBooking`'s unit query and
+`moveBookingUnit`'s active-assignment lookup. `resolveConfirmedBooking`
+also now closes the released `BookingUnit` row itself
+(`occupiedTo = now`) on `CANCELLED`/`NO_SHOW`, not only the `Unit` row —
+flagged in the same review: otherwise the row would keep claiming the
+unit for whatever nights the cancelled stay would have covered, which
+matters once rate rules (§13.3 Stage D) start resolving per-night prices
+against these ranges and could find two bookings' rows both claiming the
+same unit on the same date once the room is rebooked.
+
+Verification: new tests pin the actual `where` clause for both queries
+(not just the release outcome), plus a scenario test moving a room on a
+`CONFIRMED` booking whose `BookingUnit.occupiedTo` is a real future
+date — the exact shape the original bug missed. `npm run
+typecheck`/`lint`/`build` clean across all three packages. `apps/api`
+686/686 (3 net new — 2 where-clause-pinning tests, 1 pre-arrival-move
+scenario test, replacing none; the existing release/move tests were
+strengthened in place, not added to, since they already existed and
+were simply passing for the wrong reason). `apps/web` 194/194
+(unchanged).

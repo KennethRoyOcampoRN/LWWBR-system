@@ -294,6 +294,29 @@ async function requireAvailableUnitForNewAssignment(unitId: string) {
   return unit;
 }
 
+// Bug found in review, 2026-11-05 (spec.md §13 decision 16): `occupiedTo`
+// does not mean "closed" by itself — it means two different things
+// depending on who wrote it. `createPreArrivalBooking` below writes the
+// *planned* checkout date into it at creation time (the assignment is
+// still very much live; occupiedTo just happens to be non-null and
+// usually in the future). `moveBookingUnit` writes the *actual* closure
+// timestamp when a room changes (always <= now the instant it's
+// written). A plain `occupiedTo: null` filter only recognizes the
+// walk-up shape (`checkInBooking` creates `{ unitId }` with no dates at
+// all) and silently excludes every pre-arrival row — which is exactly
+// how `resolveConfirmedBooking`'s release loop ran over zero rows for
+// every `CONFIRMED` booking, leaving a cancelled/no-show unit `OCCUPIED`
+// forever with no path back (the one unit test here, and the
+// `moveBookingUnit` test below, never catches this: the Prisma mock
+// returns whatever `mockResolvedValue` says regardless of the `where`
+// clause, so a filter that excludes every real row is invisible to it).
+// "Still held" = `occupiedTo` is null OR still in the future — the same
+// null-or-future idiom `listUpcomingBookingsForUnit` already uses for
+// `Booking.endAt`, extended here to `BookingUnit.occupiedTo`.
+function activeBookingUnitWhere(now: Date) {
+  return { OR: [{ occupiedTo: null }, { occupiedTo: { gte: now } }] };
+}
+
 // Re-plan, spec.md §13 decision 16, 2026-11-05: billing before check-in.
 // The cashier picks a READY unit, sets check-in/check-out dates, and
 // the booking exists — and can be billed against — before the guest
@@ -376,15 +399,22 @@ export async function createPreArrivalBooking(input: CreatePreArrivalBookingInpu
 // cancelled or no-show booking would leave its unit permanently
 // OCCUPIED and unbookable — the main failure mode this design
 // introduces, and the reason this function exists rather than treating
-// the status flip as the whole job.
+// the status flip as the whole job. The released BookingUnit row is
+// also closed (occupiedTo = now, the real release moment) — not just
+// the Unit row — so it stops claiming this unit for whatever nights
+// the cancelled stay would have covered; otherwise a future per-night
+// rate lookup (spec.md §13.3 Stage D) could see this row and a brand
+// new booking's row both claiming the same unit on the same date once
+// the room is READY and rebooked.
 export async function resolveConfirmedBooking(
   bookingId: string,
   input: ResolveConfirmedBookingInput,
   actor: BookingActor,
 ) {
+  const now = new Date();
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, deletedAt: null },
-    include: { units: { where: { deletedAt: null, occupiedTo: null }, include: { unit: true } } },
+    include: { units: { where: { deletedAt: null, ...activeBookingUnitWhere(now) }, include: { unit: true } } },
   });
   if (!booking) {
     throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
@@ -397,6 +427,7 @@ export async function resolveConfirmedBooking(
 
   if (input.toStatus === 'CANCELLED' || input.toStatus === 'NO_SHOW') {
     for (const bu of booking.units) {
+      await prisma.bookingUnit.update({ where: { id: bu.id }, data: { occupiedTo: now } });
       await applyAutomaticUnitStatusChange(bu.unit.id, 'READY', actor);
     }
   }
@@ -665,8 +696,9 @@ export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitI
     throw new ApiError(422, 'INVALID_TRANSITION', 'This booking is already closed out and cannot be moved.');
   }
 
+  const now = new Date();
   const activeAssignment = await prisma.bookingUnit.findFirst({
-    where: { bookingId, unitId: input.fromUnitId, deletedAt: null, occupiedTo: null },
+    where: { bookingId, unitId: input.fromUnitId, deletedAt: null, ...activeBookingUnitWhere(now) },
     include: { unit: true },
   });
   if (!activeAssignment) {
@@ -688,7 +720,6 @@ export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitI
     });
   }
 
-  const now = new Date();
   await prisma.bookingUnit.update({ where: { id: activeAssignment.id }, data: { occupiedTo: now } });
   await prisma.bookingUnit.create({
     data: { bookingId, unitId: input.toUnitId, occupiedFrom: now },
