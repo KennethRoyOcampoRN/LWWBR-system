@@ -421,6 +421,7 @@ model Booking {
   fnbOrders        FnbOrder[]
   incidents        Incident[]
   receipts         Receipt[]
+  receiptCoverage  ReceiptBooking[]
 
   @@index([status])
   @@index([startAt, endAt])
@@ -428,16 +429,43 @@ model Booking {
 }
 
 model BookingUnit {
-  id        String    @id @default(cuid())
-  bookingId String
-  unitId    String
+  id           String    @id @default(cuid())
+  bookingId    String
+  unitId       String
   // Nullable, 2026-08-24: pricing is out of scope now that every
   // reservation lives on the external booking website — Check-in never
-  // collects a rate.
-  rate      Decimal?  @db.Decimal(12, 2)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
+  // collects a rate. Stays nullable and dormant per spec.md §13 decision
+  // 13 — occupiedFrom/occupiedTo below do NOT resurrect this; room
+  // pricing still flows through FolioCharge(source: ROOM) built at bill
+  // time, now per-night via the Cashier-tab plan (spec.md, 2026-11-05).
+  rate         Decimal?  @db.Decimal(12, 2)
+  // Cashier-tab plan (spec.md, 2026-11-05): per-unit date boundaries, so
+  // a mid-stay room change under one booking can be billed correctly —
+  // without these, a booking only ever held a flat, undated set of
+  // units, and a per-night rate lookup couldn't know which unit (and
+  // therefore which UnitType) applied on a given night. occupiedTo null
+  // means "still the current assignment," same open-ended-nullable
+  // pattern as TimeLog's clock-out. Backfill for existing rows:
+  // occupiedFrom = booking.arrivalDate, occupiedTo = booking.departureDate
+  // (or null if the booking never checked out) — reproduces today's
+  // "one unit for the whole stay" behavior exactly, no observable change
+  // for a booking nobody ever moved rooms on. A room change is two
+  // writes, not an update: close the old row (set occupiedTo = now),
+  // create a new row for the new unit (occupiedFrom = now), same
+  // bookingId — there is no UI for this yet (planned, not built). Two
+  // concurrent rows with overlapping ranges for one booking is simply a
+  // multi-room booking, not a special case this field needs to
+  // distinguish from a room change. occupiedFrom is nullable at the DB
+  // level only because this is an additive migration against existing
+  // rows with no value yet — the backfill above fills every row before
+  // the column is relied on; application code should treat it as
+  // always-present once backfilled, same caveat as occupiedTo being
+  // genuinely nullable (open-ended) for a different reason.
+  occupiedFrom DateTime?
+  occupiedTo   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 
   booking Booking @relation(fields: [bookingId], references: [id])
   unit    Unit    @relation(fields: [unitId], references: [id])
@@ -650,7 +678,29 @@ enum ReceiptDeductionType {
 // where a value came from; neither is ever read to render the receipt.
 model Receipt {
   id        String @id @default(cuid())
+  // Entry-point booking only — "which room's drawer the cashier opened
+  // this bill from." Unchanged in shape by the Cashier-tab plan
+  // (spec.md, 2026-11-05) so every route/test built against it in
+  // stages 1-4 keeps working. It is NOT the billing identity — see
+  // externalBookingRef below and ReceiptBooking for why, and
+  // listReceiptsForBooking for the query that moved off this field.
   bookingId String
+
+  // Cashier-tab plan (spec.md, 2026-11-05): the real billing identity.
+  // A snapshot of booking.referenceNo at issue time — frozen the same
+  // way every other field here is, never re-derived from a live read —
+  // because referenceNo is NOT unique (bookings/service.ts's own
+  // comment: a group can check in across more than one submission
+  // under the same external ID, each its own Booking row) and a
+  // receipt must cover every non-cancelled, non-checked-out Booking
+  // row sharing it, not just the one in bookingId above. See
+  // ReceiptBooking for which rows a given receipt actually covered.
+  // Nullable at the DB level only because this is an additive migration
+  // against already-issued receipts with no value yet (backfilled from
+  // their own booking.referenceNo) and because this stage is schema
+  // only — issueReceipt starts writing it in the Cashier-tab plan's
+  // Stage B. Treat as always-present once that lands.
+  externalBookingRef String?
 
   // Billing number: {typedByCashier}-{MMDDYYYY in Asia/Manila}-{NN}.
   // billingNumberScope is the first two parts (what ReferenceSequence's
@@ -659,13 +709,16 @@ model Receipt {
   // display-ready string. The scope is intentionally NOT globally
   // unique — the same cashier-typed number can legitimately recur
   // across different days (a new MMDDYYYY segment) or, within the same
-  // day, can collide across two different bookings if the cashier
-  // mistypes it; that collision is caught in the service layer (a
-  // same-booking match proceeds silently as an ordinary reissue, a
-  // different-booking match is a soft warn-and-confirm, never a hard
-  // unique-constraint failure) rather than enforced here, since a hard
-  // DB constraint can't distinguish "reissue" from "mistake" the way
-  // the service's own booking-aware check can.
+  // day, can collide across two different EXTERNAL bookings if the
+  // cashier mistypes it; that collision is caught in the service layer
+  // against externalBookingRef, not bookingId (corrected 2026-11-05 —
+  // comparing bookingId made every second room of a legitimate group
+  // under one external ID look like a mistake and warn on it). A
+  // same-external-booking match proceeds silently as an ordinary
+  // reissue/additional-room bill, a different-external-booking match is
+  // a soft warn-and-confirm, never a hard unique-constraint failure —
+  // a hard DB constraint can't distinguish "reissue" from "mistake" the
+  // way the service's own check can.
   billingNumberScope String
   billingSeq         Int
   // @unique: this is the denormalized, display-ready string — what a
@@ -726,12 +779,13 @@ model Receipt {
   // billing number, same append-only reasoning as FolioCharge's own
   // POSTED/VOIDED status. Confirmed with the client, 2026-11-04.
 
-  booking    Booking            @relation(fields: [bookingId], references: [id])
-  logoFile   FileObject?        @relation("ReceiptLogoSnapshot", fields: [logoFileId], references: [id])
-  issuedBy   User               @relation("ReceiptIssuedBy", fields: [issuedById], references: [id])
-  voidedBy   User?              @relation("ReceiptVoidedBy", fields: [voidedById], references: [id])
-  lines      ReceiptLine[]
-  deductions ReceiptDeduction[]
+  booking         Booking            @relation(fields: [bookingId], references: [id])
+  logoFile        FileObject?        @relation("ReceiptLogoSnapshot", fields: [logoFileId], references: [id])
+  issuedBy        User               @relation("ReceiptIssuedBy", fields: [issuedById], references: [id])
+  voidedBy        User?              @relation("ReceiptVoidedBy", fields: [voidedById], references: [id])
+  lines           ReceiptLine[]
+  deductions      ReceiptDeduction[]
+  coveredBookings ReceiptBooking[]
 
   @@unique([billingNumberScope, billingSeq])
   // bookingId is indexed for the reports join (§5 of the build plan —
@@ -743,6 +797,28 @@ model Receipt {
   // {scope, seq} pair, closing the gap a retry/partial-failure path
   // left open even though the ReferenceSequence upsert itself is
   // atomic under normal operation.
+  @@index([bookingId])
+}
+
+// Cashier-tab plan (spec.md, 2026-11-05): which Booking rows a receipt
+// actually covered — always at least the entry-point Receipt.bookingId,
+// more when a group checked in across several submissions under one
+// external ID. listReceiptsForBooking queries this, not Receipt.bookingId
+// directly, so a receipt that covered room B via room A's entry point
+// still shows up in room B's own history. One row per (receipt, booking)
+// pair, written once at issue time from whichever Booking rows the
+// gathering query (same referenceNo, status excluded via
+// BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY) found — never edited
+// afterward, same append-only shape as the receipt it belongs to.
+model ReceiptBooking {
+  id        String @id @default(cuid())
+  receiptId String
+  bookingId String
+
+  receipt Receipt @relation(fields: [receiptId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@unique([receiptId, bookingId])
   @@index([bookingId])
 }
 

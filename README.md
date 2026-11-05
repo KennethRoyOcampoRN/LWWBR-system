@@ -7309,3 +7309,42 @@ create/update tests plus 1 permission test — net 1 fewer than the
 2026-11-04 Setup Rooms tests never asserted on a photo field in a way
 that needed removing beyond the fixture's own `photo: null`). `npm run
 build` clean.
+
+**Cashier tab — Stage A (schema only), 2026-11-05.** First slice of a
+larger plan (spec.md §13.4) for a standalone Cashier nav tab (in
+addition to, not replacing, `UnitsPage`'s existing "Bill guest" link),
+a booking picker, booking info on unit cards, pulling F&B
+charge-to-room orders into the bill, and per-unit date boundaries for
+mid-stay room changes. Full design in spec.md §13.4; this entry covers
+only what actually shipped this stage.
+
+A design correction surfaced while planning this, caught by the
+client rather than by me: `Booking.referenceNo` is not unique — a
+group can check in across more than one submission under the same
+external booking ID, each its own `Booking` row (`bookings/service.ts`'s
+own comment; `findOccupiedUnitsForReferenceNo` already groups the
+checkout checklist by it for this reason) — so keying a receipt to a
+single `bookingId`, as originally planned, would bill only some of a
+group's rooms, and the duplicate-billing-number check I'd specified
+(`bookingId: { not: bookingId }`) would have warned on every second
+room of a legitimate group, training cashiers to dismiss a warning
+that meant nothing. Re-planned: `Receipt.bookingId` stays as the
+entry-point FK only; a new `Receipt.externalBookingRef` (snapshot of
+`booking.referenceNo` at issue time) becomes the real billing identity;
+a new `ReceiptBooking` join table records every `Booking` row a
+receipt actually covered. Full reasoning in spec.md §13.4.
+
+Shipped this stage, schema only: `BookingUnit.occupiedFrom`/`occupiedTo`
+(nullable — see the schema's own comment on why, and the backfill plan
+that reproduces current behavior exactly for every untouched booking);
+`Receipt.externalBookingRef String?` and the new `ReceiptBooking` join
+table (nullable/no-rows-yet for the same additive-migration reason,
+backfill plan documented in spec.md). `BookingUnit.rate` is untouched —
+still exactly as dormant as decision 13 left it. No service, endpoint,
+or UI code touched. Verification: `npm run typecheck`/`lint` clean
+across all three packages, `apps/api` 639/639 (unchanged — a pure
+additive schema change, no behavior to test yet), `apps/web` 194/194
+(unchanged), `npm run build` clean. No live database in this sandbox
+to run the backfills against (confirmed via `npx prisma db pull
+--print` → `P1001`); both are pending alongside the next `db push`,
+documented in spec.md §13.4.
