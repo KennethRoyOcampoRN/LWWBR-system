@@ -6,6 +6,7 @@ const mockPrisma = {
   fileObject: { findFirst: vi.fn() },
   setting: { findUnique: vi.fn() },
   booking: { findFirst: vi.fn(), findMany: vi.fn() },
+  bookingUnit: { findFirst: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
@@ -72,10 +73,20 @@ beforeEach(() => {
   mockGetSignedUrl.mockResolvedValue('https://storage.example/signed/logo.png');
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => fn(mockPrisma));
   mockPrisma.receiptBooking.create.mockResolvedValue({ id: 'receipt_booking_1' });
+  // gatherBookingIdsForBilling's own sibling-booking query — no siblings
+  // by default (the entry booking alone is always included regardless).
+  mockPrisma.booking.findMany.mockResolvedValue([]);
+  // gatherReceiptLines's own source of truth — one posted charge by
+  // default so a test exercising something downstream of it (billing-
+  // number checks, the reconciliation guard) doesn't 422 on NO_CHARGES
+  // first. Tests asserting specific totals override this explicitly.
+  mockPrisma.folioCharge.findMany.mockResolvedValue([
+    { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 100, status: 'POSTED' },
+  ]);
 });
 
 describe('Folio charges', () => {
-  it('posts a folio charge with amount computed server-side (qty * unitPrice), not trusted from the client', async () => {
+  it('posts a MISC folio charge with amount computed server-side (qty * unitPrice), not trusted from the client', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
@@ -85,7 +96,7 @@ describe('Folio charges', () => {
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/folio-charges')
       .set('Cookie', authCookie())
-      .send({ source: 'ROOM', description: '2 COUPLE B - BALI', qty: 2, unitPrice: 1100 });
+      .send({ source: 'MISC', description: 'Lost key fob', qty: 2, unitPrice: 1100 });
 
     expect(res.status).toBe(201);
     expect(res.body.folioCharge.amount).toBe(2200);
@@ -99,8 +110,120 @@ describe('Folio charges', () => {
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/folio-charges')
       .set('Cookie', authCookie())
-      .send({ source: 'ROOM', description: 'Room', qty: 1, unitPrice: 100 });
+      .send({ source: 'MISC', description: 'Room', qty: 1, unitPrice: 100 });
     expect(res.status).toBe(403);
+  });
+
+  it('requires unitPrice for a non-ROOM charge', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/folio-charges')
+      .set('Cookie', authCookie())
+      .send({ source: 'MISC', description: 'Lost key fob' });
+    expect(res.status).toBe(422);
+  });
+
+  // Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): "the cost of
+  // the room/unit must be automatic based on what the system admin has
+  // setup" — a ROOM charge is priced from UnitType.baseRate and the
+  // billed BookingUnit's own date range, never from client input.
+  describe('ROOM charges are priced automatically, never from client input', () => {
+    const bookingUnit = {
+      id: 'bu_1',
+      bookingId: 'booking_1',
+      deletedAt: null,
+      occupiedFrom: new Date('2026-11-10T00:00:00.000Z'),
+      occupiedTo: new Date('2026-11-12T00:00:00.000Z'),
+      unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+      booking: { ...booking, departureDate: null },
+    };
+
+    it('computes unitPrice from UnitType.baseRate and qty from the night count, ignoring any client-submitted value', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (2 nights)' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.folioCharge.qty).toBe(2);
+      expect(res.body.folioCharge.unitPrice).toBe(1500);
+      expect(res.body.folioCharge.amount).toBe(3000);
+    });
+
+    it('422s with an explicit error — not a silent overwrite — when the client submits a unitPrice for ROOM', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01', unitPrice: 999 });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('422s when the client submits a qty for ROOM', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01', qty: 2 });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('422s when sourceId (the BookingUnit assignment) is missing for ROOM', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', description: 'R01' });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('422s when sourceId does not resolve to an existing assignment on this booking', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(null);
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_bogus', description: 'R01' });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the booking\'s own departureDate for an open-ended assignment (occupiedTo still null)', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue({
+        ...bookingUnit,
+        occupiedTo: null,
+        booking: { ...booking, departureDate: new Date('2026-11-13T00:00:00.000Z') },
+      });
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (added mid-stay)' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.folioCharge.qty).toBe(3); // Nov 10 -> Nov 13
+    });
   });
 
   it('voids a folio charge, rejecting a void with no reason', async () => {
@@ -178,23 +301,34 @@ describe('Payments', () => {
 });
 
 describe('Receipt preview', () => {
-  it('computes totals from draft lines/deductions and returns the resort header, gated by receipt:issue not resort:configure', async () => {
+  // Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): lines are no
+  // longer client input — previewReceipt builds them itself from the
+  // booking's own posted FolioCharge rows (gatherReceiptLines), so what's
+  // previewed can never price differently than what issueReceipt would
+  // actually persist.
+  it('computes totals from posted FolioCharge rows (not client input) plus client-typed deductions, gated by receipt:issue not resort:configure', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: '2 COUPLE B - BALI', qty: 2, unitPrice: 1100, status: 'POSTED' },
+    ]);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts/preview')
       .set('Cookie', authCookie())
       .send({
         preparedByName: 'yssa',
-        lines: [{ description: '2 COUPLE B - BALI', qty: 2, unitPrice: 1100 }],
         deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 }],
+        // A client-submitted lines array is inert — there is no path
+        // left that reads it, so it has zero effect on the totals below.
+        lines: [{ description: 'Should be ignored', qty: 99, unitPrice: 99999 }],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.resort.name).toBe('Lucky Waku Waku Beach Resort');
     expect(res.body.guest.name).toBe('Roel Villagomez');
+    expect(res.body.lines).toHaveLength(1);
     expect(res.body.grandTotal).toBe(2200);
     expect(res.body.totalDeductions).toBe(1100);
     expect(res.body.totalAmountDue).toBe(1100);
@@ -213,19 +347,20 @@ describe('Receipt preview', () => {
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts/preview')
       .set('Cookie', authCookie())
-      .send({ preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ preparedByName: 'yssa' });
 
     expect(res.status).toBe(200);
   });
 
   // Build plan stage 4: the billing page's first preview call fires
-  // the moment a booking is opened, before the cashier has added any
-  // lines — its only purpose at that point is fetching the resort
-  // header/guest block (there's no standalone booking-read endpoint).
-  it('previews with no lines yet (zero totals), just the resort header and guest block', async () => {
+  // the moment a booking is opened, before any charge has been posted —
+  // its only purpose at that point is fetching the resort header/guest
+  // block (there's no standalone booking-read endpoint).
+  it('previews with no charges posted yet (zero totals), just the resort header and guest block', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([]);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts/preview')
@@ -250,13 +385,15 @@ describe('Receipt preview', () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 1100, status: 'POSTED' },
+    ]);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts/preview')
       .set('Cookie', authCookie())
       .send({
         preparedByName: 'yssa',
-        lines: [{ description: 'Room', qty: 1, unitPrice: 1100 }],
         deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
       });
 
@@ -297,13 +434,16 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     // 8 hours later.
     vi.setSystemTime(new Date('2026-11-04T23:30:00.000Z'));
 
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: '2 COUPLE B - BALI', qty: 2, unitPrice: 1100, status: 'POSTED' },
+    ]);
+
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        lines: [{ description: '2 COUPLE B - BALI', qty: 2, unitPrice: 1100 }],
         deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 }],
       });
 
@@ -324,6 +464,10 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     stubIssuance();
     mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'COUPLE B - BALI (room 1)', qty: 1, unitPrice: 1100, status: 'POSTED' },
+      { id: 'charge_2', description: 'COUPLE B - BALI (room 2)', qty: 1, unitPrice: 1100, status: 'POSTED' },
+    ]);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
@@ -331,10 +475,6 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        lines: [
-          { description: 'COUPLE B - BALI (room 1)', qty: 1, unitPrice: 1100 },
-          { description: 'COUPLE B - BALI (room 2)', qty: 1, unitPrice: 1100 },
-        ],
         deductions: [
           { type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 },
           { type: 'DISCOUNT_SENIOR', label: 'Senior discount', amount: 100 },
@@ -366,7 +506,6 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        lines: [{ description: 'Room', qty: 1, unitPrice: 100 }],
       });
 
     expect(res.status).toBe(409);
@@ -385,7 +524,6 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        lines: [{ description: 'Room', qty: 1, unitPrice: 100 }],
         confirmDuplicateBillingNumber: true,
       });
 
@@ -408,7 +546,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
-      .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
 
     expect(res.status).toBe(201);
     expect(mockPrisma.receipt.findFirst).toHaveBeenCalledWith(
@@ -432,7 +570,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
-      .send({ billingNumberTyped: '99999', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ billingNumberTyped: '99999', preparedByName: 'yssa' });
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('BILLING_NUMBER_MISMATCH');
@@ -475,7 +613,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
-      .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
 
     expect(res.status).toBe(201);
     expect(res.body.receipt.billingSeq).toBe(2);
@@ -488,7 +626,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
-      .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
     expect(res.status).toBe(403);
   });
 
@@ -501,6 +639,9 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
     mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 1100, status: 'POSTED' },
+    ]);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
@@ -508,7 +649,6 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        lines: [{ description: 'Room', qty: 1, unitPrice: 1100 }],
         deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
       });
 
@@ -545,7 +685,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
-      .send({ billingNumberTyped: '83887', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('TOTALS_DO_NOT_RECONCILE');

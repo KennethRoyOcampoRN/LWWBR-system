@@ -95,9 +95,16 @@ async function broadcastUnitStatusChanged(params: {
 // manual transition to begin with — this function trusts its caller
 // rather than re-deriving authorization for a transition the manual
 // table doesn't (and shouldn't) grant to anyone.
+//
+// 'READY' added, spec.md §13 decision 16, 2026-11-05: releasing a unit
+// when a pre-arrival (CONFIRMED) booking is cancelled or marked
+// NO_SHOW — a room that was never slept in isn't dirty, so it goes
+// straight back to READY, not VACANT_DIRTY. The `toStatus ===
+// 'VACANT_DIRTY'` guard below already excludes READY from the
+// post-checkout HOUSEKEEPING ticket for free — no change needed there.
 export async function applyAutomaticUnitStatusChange(
   unitId: string,
-  toStatus: 'OCCUPIED' | 'VACANT_DIRTY',
+  toStatus: 'OCCUPIED' | 'VACANT_DIRTY' | 'READY',
   actor: { id: string; department: string; roles: readonly RoleKey[]; permissions: Partial<Record<PermissionKey, PermissionScope>> },
 ): Promise<{ id: string; code: string; fromStatus: UnitStatusKey; toStatus: UnitStatusKey; version: number }> {
   const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });

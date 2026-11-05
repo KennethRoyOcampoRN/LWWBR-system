@@ -7487,3 +7487,98 @@ Next: Stage B — the pre-arrival creation endpoint, the server-priced
 `ROOM` folio-charge path, `issueReceipt` sourcing lines from
 `FolioCharge`, the `checkOutUnits` guard tightening (require
 `CHECKED_IN` specifically), and the add-room-to-booking action.
+
+**Cashier tab re-plan, Stage B (backend), 2026-11-05.** Everything
+flagged as pending at the end of Stage A, built and tested.
+
+`createPreArrivalBooking` (`POST /bookings/pre-arrival`, `bookings/
+service.ts`) is the new creation endpoint: one `unitId` (not an array —
+a second room is `addUnitToBooking`, not a loop here), required
+`checkInDate`/`checkOutDate`, creates the `Booking` at `CONFIRMED` and
+moves the unit to `OCCUPIED` immediately via the shared
+`requireAvailableUnitForNewAssignment` guard (also used by
+`addUnitToBooking`) and `applyAutomaticUnitStatusChange` (its `toStatus`
+union widened to include `'READY'` this stage). `resolveConfirmedBooking`
+(`POST /bookings/:id/resolve`) resolves a `CONFIRMED` booking one of
+three ways, all manual (no auto-no-show timer): `CHECKED_IN` is a pure
+status flip (the unit's already `OCCUPIED`); `CANCELLED`/`NO_SHOW` both
+release the unit back to `READY` specifically, never `VACANT_DIRTY` — a
+room booked but never slept in isn't dirty, and `applyAutomaticUnitStatus
+Change`'s existing `VACANT_DIRTY`-gated housekeeping-ticket guard already
+excludes `READY` for free, so no second guard was needed. Without this
+release, a cancelled/no-show booking would leave its room permanently
+`OCCUPIED` and unbookable — the main failure mode this design introduces,
+closed this stage. `addUnitToBooking` (`POST /bookings/:id/add-unit`) is
+purely additive — never closes an existing assignment, unlike
+`moveBookingUnit`. All three gated `booking:checkin`, which `CASHIER` now
+holds (`rolePermissions.ts`) — a real gap: `BOOKING_TRANSITIONS` already
+required it for every `CONFIRMED` edge since Stage A, but `CASHIER`, the
+role the client's own flow centers on, didn't have it. Deliberately not
+granted `booking:checkout` — nothing in the client's description puts
+checkout itself in the cashier's hands.
+
+`checkOutUnits` is re-tightened back to requiring `booking.status ===
+'CHECKED_IN'` specifically, reverting the 2026-08-24 loosening (to "not
+excluded") that existed only because a legacy `PENDING`/`CONFIRMED`
+booking had no forward path at all back then. That's no longer true for
+`CONFIRMED` — it now has real edges via `resolveConfirmedBooking` — so a
+`CONFIRMED` booking must be routed through its own proper exit, not
+accidentally checked out through this endpoint. `PENDING` stays
+legacy/unreachable either way, so this does reintroduce one corner case:
+a genuinely stuck pre-redesign `PENDING` row (predating even the
+2026-08-24 fix) loses its one escape hatch again and now needs a
+`SYSTEM_ADMIN` force status correction instead — judged acceptable given
+how narrow that window already is.
+
+The `ROOM` folio-charge path is server-priced, not client-trusted
+(`billing/schema.ts`/`service.ts`): `postFolioChargeSchema` now makes
+`unitPrice`/`qty` optional and adds four `.refine()`s — a `ROOM` charge
+must omit both (explicit 422 if either is sent, never a silent
+overwrite) and must supply `sourceId` (the `BookingUnit` being billed);
+any other source still requires `unitPrice`. `priceRoomCharge` reads
+`UnitType.baseRate` off that `BookingUnit`'s own `Unit` and computes
+nights from its `occupiedFrom`/`occupiedTo` (falling back to the
+booking's own `departureDate` for a still-open-ended assignment, e.g. a
+room added via `addUnitToBooking` that hasn't since been moved off).
+Rate rules (seasonal/day-of-week pricing) stay future work, matching the
+plan's own parenthetical.
+
+`issueReceipt`/`previewReceipt` no longer accept a `lines` array at
+all — removed from `receiptDraftSchema`/`issueReceiptSchema` along with
+the now-unused `receiptLineInputSchema`. Both now call the new
+`gatherReceiptLines` (`billing/service.ts`), which queries every
+non-voided `FolioCharge` across every `Booking` row sharing the entry
+booking's `referenceNo` (`gatherBookingIdsForBilling`, Stage B's own
+F&B-pull-in grouping, reused rather than re-invented) — the complete
+current folio, every time, not just what's new since the last receipt.
+Nothing closes the folio at issuance, so a later charge simply shows up
+on the next receipt's own full total, matching the client's "running
+folio keyed to the booking number" framing — each issued `Receipt` is a
+true snapshot of the folio's state at that moment, not an incremental
+invoice. `issueReceipt` 422s `NO_CHARGES` if the folio has nothing posted
+yet (`previewReceipt` doesn't — a bare preview on booking-open still
+needs to return zero totals). `computeReceiptTotals` takes the gathered
+lines as a parameter now instead of reading `input.lines`; deductions
+stay exactly as client-typed as before.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `packages/shared` 96/96 (unchanged — no shared-package change
+this stage). `apps/api` 683/683 (29 new: 7 for `ROOM` charge pricing/
+rejection in `test/modules/billing/router.test.ts`, 2 reworking the
+preview/issuance tests off a client `lines` array onto
+`folioCharge.findMany` stubs — including one asserting a sent `lines`
+array is now provably inert — 20 for `pre-arrival`/`resolve`/`add-unit`
+in `test/modules/bookings/router.test.ts`, replacing the one test that
+exercised the now-reverted `checkOutUnits` loosening with one asserting
+the opposite for both `PENDING` and `CONFIRMED`). `apps/web` 194/194
+(unchanged — no UI this stage; `BillingPage`'s existing test still passes
+against its own mocked API and still sends a client `lines` array, which
+is now inert server-side — the frontend itself isn't updated for this
+round's schema change yet, which Stage C will need to account for).
+
+Next: Stage C — the Cashier tab UI itself (booking picker, unit-card
+booking summary with the `CONFIRMED`-vs-`CHECKED_IN` label, billing
+screen built against the now-automatic `ROOM` pricing and
+`FolioCharge`-sourced receipt lines, and the pre-arrival/resolve/add-unit
+actions), updating `BillingPage`'s existing request shape to drop its own
+client-built `lines` array in the same pass.

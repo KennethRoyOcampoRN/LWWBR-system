@@ -2,18 +2,24 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import { requirePermission } from '../auth/requirePermission.js';
 import {
+  addUnitToBookingSchema,
   bookingGroupQuerySchema,
   checkInBookingSchema,
   checkOutBookingSchema,
+  createPreArrivalBookingSchema,
   moveBookingUnitSchema,
+  resolveConfirmedBookingSchema,
   searchBookingsQuerySchema,
 } from './schema.js';
 import {
+  addUnitToBooking,
   checkInBooking,
   checkOutUnits,
+  createPreArrivalBooking,
   findOccupiedUnitsForReferenceNo,
   listUpcomingBookingsForUnit,
   moveBookingUnit,
+  resolveConfirmedBooking,
   searchBookings,
 } from './service.js';
 
@@ -112,5 +118,43 @@ bookingsRouter.post(
     const body = moveBookingUnitSchema.parse(req.body);
     const result = await moveBookingUnit(req.params.bookingId as string, body, req.authUser!);
     res.status(200).json(result);
+  }),
+);
+
+// Re-plan, spec.md §13 decision 16, 2026-11-05: billing before check-in —
+// the cashier bills a READY room ahead of arrival. booking:checkin, same
+// as the new CONFIRMED transitions it immediately exposes.
+bookingsRouter.post(
+  '/bookings/pre-arrival',
+  requirePermission('booking:checkin'),
+  asyncHandler(async (req, res) => {
+    const body = createPreArrivalBookingSchema.parse(req.body);
+    const booking = await createPreArrivalBooking(body, req.authUser!);
+    res.status(201).json({ booking });
+  }),
+);
+
+// Resolves a CONFIRMED (pre-arrival) booking — guest actually checks in,
+// cancels, or never shows. See resolveConfirmedBooking in service.ts for
+// how CANCELLED/NO_SHOW release the unit back to READY.
+bookingsRouter.post(
+  '/bookings/:bookingId/resolve',
+  requirePermission('booking:checkin'),
+  asyncHandler(async (req, res) => {
+    const body = resolveConfirmedBookingSchema.parse(req.body);
+    const booking = await resolveConfirmedBooking(req.params.bookingId as string, body, req.authUser!);
+    res.status(200).json({ booking });
+  }),
+);
+
+// Add-room-to-booking (spec.md §13 decision 16) — purely additive, never
+// closes an existing assignment. Distinct from move-unit above.
+bookingsRouter.post(
+  '/bookings/:bookingId/add-unit',
+  requirePermission('booking:checkin'),
+  asyncHandler(async (req, res) => {
+    const body = addUnitToBookingSchema.parse(req.body);
+    const booking = await addUnitToBooking(req.params.bookingId as string, body, req.authUser!);
+    res.status(200).json({ booking });
   }),
 );

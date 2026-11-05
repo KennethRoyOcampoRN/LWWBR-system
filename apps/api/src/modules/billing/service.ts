@@ -80,21 +80,78 @@ export async function listFolioCharges(bookingId: string) {
   return charges.map(folioChargeToJson);
 }
 
-// unitPrice is cashier input (e.g. read off UnitType.baseRate/dayTourRate/
-// extraPersonRate client-side); amount is always qty*unitPrice computed
-// here, server-side, never trusted from the client — same reconciliation
-// principle the receipt totals below are built on.
+const MS_PER_NIGHT = 24 * 60 * 60 * 1000;
+
+// Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): "the cost of
+// the room/unit must be automatic based on what the system admin has
+// setup" (client's own words). sourceId for a ROOM charge is the
+// BookingUnit assignment being billed — its own occupiedFrom/occupiedTo
+// (falling back to the booking's own departureDate when the assignment
+// is still open-ended, e.g. a room added via addUnitToBooking that
+// hasn't been moved off since) gives the night count, and its Unit's
+// UnitType.baseRate gives the per-night price. Rate RULES (seasonal/
+// day-of-week pricing) are future work per the plan's own parenthetical
+// — baseRate is the whole story for now.
+async function priceRoomCharge(bookingId: string, bookingUnitId: string): Promise<{ unitPrice: number; qty: number }> {
+  const bookingUnit = await prisma.bookingUnit.findFirst({
+    where: { id: bookingUnitId, bookingId, deletedAt: null },
+    include: { unit: { include: { unitType: true } }, booking: true },
+  });
+  if (!bookingUnit) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'sourceId must be an existing room assignment on this booking.');
+  }
+  if (!bookingUnit.occupiedFrom) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'This room assignment has no check-in date to price from.');
+  }
+  const to = bookingUnit.occupiedTo ?? bookingUnit.booking.departureDate;
+  if (!to) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'This room assignment has no check-out date to price from.');
+  }
+  const nights = Math.round((to.getTime() - bookingUnit.occupiedFrom.getTime()) / MS_PER_NIGHT);
+  if (nights <= 0) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'Check-out must be after check-in to price a room charge.');
+  }
+  return { unitPrice: Number(bookingUnit.unit.unitType.baseRate), qty: nights };
+}
+
+// unitPrice/qty are cashier input for every source except ROOM — see
+// postFolioChargeSchema's own refinements for why ROOM rejects both
+// outright instead of silently overwriting them. amount is always
+// qty*unitPrice computed here, server-side, never trusted from the
+// client — same reconciliation principle the receipt totals below are
+// built on.
 export async function postFolioCharge(bookingId: string, input: PostFolioChargeInput, actor: BillingActor) {
   await requireBooking(bookingId);
+
+  let qty: number;
+  let unitPrice: number;
+  if (input.source === 'ROOM') {
+    // input.sourceId's presence is already guaranteed by the schema's
+    // own refinement; this check exists only because that refinement
+    // doesn't narrow PostFolioChargeInput's type for TypeScript.
+    if (!input.sourceId) {
+      throw new ApiError(422, 'VALIDATION_ERROR', 'sourceId is required for ROOM charges.');
+    }
+    const priced = await priceRoomCharge(bookingId, input.sourceId);
+    qty = priced.qty;
+    unitPrice = priced.unitPrice;
+  } else {
+    if (input.unitPrice === undefined) {
+      throw new ApiError(422, 'VALIDATION_ERROR', 'unitPrice is required.');
+    }
+    qty = input.qty ?? 1;
+    unitPrice = input.unitPrice;
+  }
+
   const charge = await prisma.folioCharge.create({
     data: {
       bookingId,
       source: input.source,
       sourceId: input.sourceId,
       description: input.description,
-      qty: input.qty,
-      unitPrice: input.unitPrice,
-      amount: roundMoney(input.qty * input.unitPrice),
+      qty,
+      unitPrice,
+      amount: roundMoney(qty * unitPrice),
       postedById: actor.id,
       postedAt: new Date(),
     },
@@ -207,21 +264,48 @@ interface ComputedReceiptTotals {
   totalAmountDue: number;
 }
 
+// Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): the real
+// running folio — "if the cashier or resto would like to bill a room...
+// a bill [is] based on the BOOKING number" (client's own words). Both
+// previewReceipt and issueReceipt call this, so a preview can never
+// price differently than issuance: every non-voided FolioCharge across
+// every Booking row sharing the entry booking's referenceNo
+// (gatherBookingIdsForBilling — the same grouping the F&B pull-in
+// already uses), full stop. Nothing closes the folio at issuance, so
+// this always returns the complete current set, not just what's new
+// since the last receipt — a later charge just appears on the next
+// receipt's own full total, which is what makes each issued Receipt a
+// true snapshot of the folio's state at that moment rather than an
+// incremental invoice. `amount` is recomputed from qty*unitPrice here
+// rather than trusted from the already-persisted FolioCharge.amount, same
+// never-trust-a-stored-total posture as everything else in this file.
+async function gatherReceiptLines(entryBooking: { id: string; referenceNo: string }): Promise<ComputedReceiptLine[]> {
+  const bookingIds = await gatherBookingIdsForBilling(entryBooking);
+  const charges = await prisma.folioCharge.findMany({
+    where: { bookingId: { in: bookingIds }, status: 'POSTED', deletedAt: null },
+    orderBy: { postedAt: 'asc' },
+  });
+  return charges.map((charge) => {
+    const qty = charge.qty;
+    const unitPrice = Number(charge.unitPrice);
+    return {
+      description: charge.description,
+      qty,
+      unitPrice,
+      amount: roundMoney(qty * unitPrice),
+      sourceChargeId: charge.id,
+    };
+  });
+}
+
 // The one place a receipt's totals are computed — grandTotal and
 // totalAmountDue are never independent inputs, so a receipt can't be
 // persisted with totals that don't reconcile with its own lines: there
-// is no code path that accepts a client-submitted total at all.
-// `amount` per line/deduction is likewise always qty*unitPrice (lines)
-// or the submitted amount rounded to the cent (deductions), never a
-// client-submitted amount trusted as-is for lines.
-function computeReceiptTotals(input: ReceiptDraftInput): ComputedReceiptTotals {
-  const lines: ComputedReceiptLine[] = input.lines.map((line) => ({
-    description: line.description,
-    qty: line.qty,
-    unitPrice: line.unitPrice,
-    amount: roundMoney(line.qty * line.unitPrice),
-    sourceChargeId: line.sourceChargeId ?? null,
-  }));
+// is no code path that accepts a client-submitted total, or a
+// client-submitted line, at all — `lines` comes from gatherReceiptLines
+// above, never from `input`. `amount` per deduction is the submitted
+// amount rounded to the cent, never trusted as-is beyond that rounding.
+function computeReceiptTotals(lines: ComputedReceiptLine[], input: ReceiptDraftInput): ComputedReceiptTotals {
   const deductions: ComputedReceiptDeduction[] = input.deductions.map((deduction) => ({
     type: deduction.type,
     label: deduction.label,
@@ -280,7 +364,8 @@ async function logoSnapshotToJson(logoFileId: string | null) {
 export async function previewReceipt(bookingId: string, input: ReceiptDraftInput) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();
-  const totals = computeReceiptTotals(input);
+  const lines = await gatherReceiptLines(booking);
+  const totals = computeReceiptTotals(lines, input);
 
   return {
     resort: {
@@ -420,7 +505,11 @@ async function isDuplicateBillingNumber(scope: string, externalBookingRef: strin
 export async function issueReceipt(bookingId: string, input: IssueReceiptInput, actor: BillingActor) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();
-  const totals = computeReceiptTotals(input);
+  const lines = await gatherReceiptLines(booking);
+  if (lines.length === 0) {
+    throw new ApiError(422, 'NO_CHARGES', 'This folio has no posted charges yet — nothing to issue a receipt for.');
+  }
+  const totals = computeReceiptTotals(lines, input);
   const scope = billingNumberScope(input.billingNumberTyped);
 
   // Prefer validation over warning (spec.md §13.4, client decision,

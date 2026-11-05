@@ -376,6 +376,15 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'amenity:read': 'ALL',
     'amenity:request': 'ALL',
     'amenity:return': 'ALL',
+    // spec.md §13 decision 16, 2026-11-05: the Cashier tab's pre-arrival
+    // flow — picking a READY unit, setting dates, billing before the
+    // guest arrives — is the cashier's own action, and the three
+    // CONFIRMED transitions it leads into (CHECKED_IN/CANCELLED/
+    // NO_SHOW) are gated on this same key (BOOKING_TRANSITIONS,
+    // booking.ts). Deliberately NOT booking:checkout — nothing in the
+    // client's description puts checkout itself in the cashier's hands;
+    // that stays with front desk as before.
+    'booking:checkin': 'ALL',
     'cash:read': 'ALL',
     'cash:record': 'ALL',
     'fnb:create': 'ALL',

@@ -16,7 +16,15 @@ import { prisma } from '../../lib/prisma.js';
 // check-out are the trigger, and this avoids a second copy of the
 // version-increment / event-write / broadcast logic.
 import { applyAutomaticUnitStatusChange } from '../units/service.js';
-import type { CheckInBookingInput, CheckOutBookingInput, MoveBookingUnitInput, SearchBookingsQuery } from './schema.js';
+import type {
+  AddUnitToBookingInput,
+  CheckInBookingInput,
+  CheckOutBookingInput,
+  CreatePreArrivalBookingInput,
+  MoveBookingUnitInput,
+  ResolveConfirmedBookingInput,
+  SearchBookingsQuery,
+} from './schema.js';
 
 // Redesign, 2026-08-24 (client decision, live-testing feedback): "this
 // app's job is monitoring the resort's current, live state, not
@@ -28,12 +36,14 @@ import type { CheckInBookingInput, CheckOutBookingInput, MoveBookingUnitInput, S
 // checkInBooking below, already occupying real rooms right now.
 
 // Spec §3.2: "Timezone Asia/Manila everywhere... never store naive local
-// time." Still used for the one date this flow collects — the check-in
-// date — resolved to real midnight in Asia/Manila rather than however
-// UTC midnight happens to fall for that calendar day.
+// time." Used for every plain calendar date this module collects —
+// check-in's own arrival date, and (spec.md §13 decision 16) the
+// pre-arrival flow's check-in/check-out dates — resolved to real
+// midnight in Asia/Manila rather than however UTC midnight happens to
+// fall for that calendar day.
 const RESORT_TIMEZONE = 'Asia/Manila';
 
-function resolveArrivalDate(dateStr: string): Date {
+function resolveManilaDate(dateStr: string): Date {
   const [year, month, day] = dateStr.split('-').map(Number) as [number, number, number];
   return new TZDate(year, month - 1, day, 0, 0, RESORT_TIMEZONE);
 }
@@ -214,7 +224,7 @@ export async function checkInBooking(input: CheckInBookingInput, actor: BookingA
       source: 'OTHER',
       type: 'OVERNIGHT',
       status: 'CHECKED_IN',
-      arrivalDate: resolveArrivalDate(input.checkInDate),
+      arrivalDate: resolveManilaDate(input.checkInDate),
       startAt: new Date(),
       notes: input.notes,
       createdById: actor.id,
@@ -256,6 +266,157 @@ export async function checkInBooking(input: CheckInBookingInput, actor: BookingA
   return getBooking(booking.id);
 }
 
+// Validates a single candidate unit for either the pre-arrival flow or
+// add-room-to-booking — same guard shape as checkInBooking's own loop
+// above (not OUT_OF_ORDER/BLOCKED/OCCUPIED, a bookable kind), minus the
+// OUT_OF_ORDER/BLOCKED unit's own UNIT_NOT_READY acknowledgement step,
+// which neither new flow collects (both only ever offer a currently-
+// READY unit to begin with — see each caller's own comment for why).
+async function requireAvailableUnitForNewAssignment(unitId: string) {
+  const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
+  if (!unit) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'The selected unit could not be found.');
+  }
+  if (!isBookableUnitKind(unit.type)) {
+    throw new ApiError(422, 'UNIT_NOT_BOOKABLE', `${unit.code} is not a guest accommodation.`, {
+      unitId: unit.id,
+      unitCode: unit.code,
+      unitType: unit.type,
+    });
+  }
+  if (unit.status !== 'READY') {
+    throw new ApiError(409, 'UNIT_UNAVAILABLE', `${unit.code} is not Ready (currently ${unit.status}).`, {
+      unitId: unit.id,
+      unitCode: unit.code,
+      reason: unit.status,
+    });
+  }
+  return unit;
+}
+
+// Re-plan, spec.md §13 decision 16, 2026-11-05: billing before check-in.
+// The cashier picks a READY unit, sets check-in/check-out dates, and
+// the booking exists — and can be billed against — before the guest
+// ever arrives. Distinct from checkInBooking above, which stays
+// exactly as-is for a walk-up guest already standing there.
+//
+// The unit goes OCCUPIED right now, not at actual arrival — a
+// deliberate substitute for the date-overlap engine the 2026-08-24
+// redesign deleted (windowsConflict, BookingWindowSettings). Without
+// it, nothing would stop two cashiers booking the same currently-READY
+// room for two different stays; reusing the existing one-booking-per-
+// unit invariant (a unit can't be OCCUPIED by two bookings at once)
+// prevents that for free, with no reservation-window logic to rebuild.
+// The cost — a room booked for a future date looks identical on the
+// housekeeping board to one with a guest in it right now — is
+// mitigated in the frontend by showing the covering booking's own
+// status (CONFIRMED vs CHECKED_IN), not by a new UnitStatus (a real
+// Reserved status was considered and declined — see decision 16).
+//
+// checkOutDate is required here (unlike checkInBookingSchema) because
+// the night count drives room pricing — it writes straight into the
+// new BookingUnit's own occupiedFrom/occupiedTo, the Cashier-tab plan's
+// (§13.4) own fields, finally getting a real writer.
+export async function createPreArrivalBooking(input: CreatePreArrivalBookingInput, actor: BookingActor) {
+  const unit = await requireAvailableUnitForNewAssignment(input.unitId);
+  const occupiedFrom = resolveManilaDate(input.checkInDate);
+  const occupiedTo = resolveManilaDate(input.checkOutDate);
+  if (occupiedTo <= occupiedFrom) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'Check-out date must be after check-in date.');
+  }
+
+  const booking = await prisma.booking.create({
+    data: {
+      referenceNo: input.externalBookingId,
+      guestName: input.guestName,
+      source: 'OTHER',
+      type: 'OVERNIGHT',
+      status: 'CONFIRMED',
+      arrivalDate: occupiedFrom,
+      departureDate: occupiedTo,
+      startAt: new Date(),
+      notes: input.notes,
+      createdById: actor.id,
+      units: { create: [{ unitId: unit.id, occupiedFrom, occupiedTo }] },
+    },
+  });
+
+  await applyAutomaticUnitStatusChange(unit.id, 'OCCUPIED', actor);
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: booking.id,
+      actorId: actor.id,
+      at: new Date().toISOString(),
+      summary: `${input.externalBookingId} billed ahead of arrival — ${input.guestName} (${unit.code})`,
+      fromStatus: null,
+      toStatus: 'CONFIRMED',
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (pre-arrival) failed:', error);
+  }
+
+  return getBooking(booking.id);
+}
+
+// Resolves a CONFIRMED (pre-arrival) booking one of three ways. All
+// three are manual front-desk actions (no automatic no-show timer —
+// considered, deferred per decision 16) and all gated booking:checkin
+// (BOOKING_TRANSITIONS, packages/shared/src/booking.ts).
+//
+// CHECKED_IN is a status-only flip — the unit is already OCCUPIED from
+// the moment the booking was created, so there's no unit-status side
+// effect here, unlike checkInBooking's own walk-up path.
+//
+// CANCELLED/NO_SHOW both release the unit. A room that was booked but
+// never actually slept in isn't dirty — it goes straight back to
+// READY, not VACANT_DIRTY (no HOUSEKEEPING ticket either, the same
+// toStatus === 'VACANT_DIRTY' guard in applyAutomaticUnitStatusChange
+// already excludes READY from that for free). Without this release, a
+// cancelled or no-show booking would leave its unit permanently
+// OCCUPIED and unbookable — the main failure mode this design
+// introduces, and the reason this function exists rather than treating
+// the status flip as the whole job.
+export async function resolveConfirmedBooking(
+  bookingId: string,
+  input: ResolveConfirmedBookingInput,
+  actor: BookingActor,
+) {
+  const booking = await prisma.booking.findFirst({
+    where: { id: bookingId, deletedAt: null },
+    include: { units: { where: { deletedAt: null, occupiedTo: null }, include: { unit: true } } },
+  });
+  if (!booking) {
+    throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
+  }
+  if (booking.status !== 'CONFIRMED') {
+    throw new ApiError(422, 'INVALID_TRANSITION', 'Only a CONFIRMED (pre-arrival) booking can be resolved this way.');
+  }
+
+  await prisma.booking.update({ where: { id: bookingId }, data: { status: input.toStatus } });
+
+  if (input.toStatus === 'CANCELLED' || input.toStatus === 'NO_SHOW') {
+    for (const bu of booking.units) {
+      await applyAutomaticUnitStatusChange(bu.unit.id, 'READY', actor);
+    }
+  }
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: bookingId,
+      actorId: actor.id,
+      at: new Date().toISOString(),
+      summary: `${booking.referenceNo} ${input.toStatus === 'CHECKED_IN' ? 'checked in' : input.toStatus === 'CANCELLED' ? 'cancelled' : 'marked no-show'} — ${booking.guestName}`,
+      fromStatus: 'CONFIRMED',
+      toStatus: input.toStatus,
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (resolve pre-arrival) failed:', error);
+  }
+
+  return getBooking(bookingId);
+}
+
 // "Build checkout as a simple, permanent status flip: OCCUPIED ->
 // VACANT_DIRTY, unconditional — not gated on any payment-settlement
 // check, now or later." No balance/folio check anywhere in this
@@ -286,24 +447,21 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
     throw new ApiError(422, 'VALIDATION_ERROR', 'One or more selected units are not part of any active booking.');
   }
 
-  // Real gap found live-testing, 2026-08-24: this used to hard-require
-  // `bu.booking.status === 'CHECKED_IN'`, which permanently locked out
-  // any booking created through the old, now-removed "New booking" flow
-  // that never actually completed its own transition to CHECKED_IN
-  // before that flow was deleted — nothing in this codebase can move a
-  // legacy PENDING/CONFIRMED booking forward anymore, so a unit stuck
-  // behind one had no checkout path at all. Unit.status === 'OCCUPIED'
-  // is the real signal that matters — a room is either physically
-  // occupied or it isn't, regardless of what the booking's own
-  // bookkeeping status says. Only CANCELLED/CHECKED_OUT are rejected — a
-  // booking in either state has no business being tied to an Occupied
-  // unit's checkout.
+  // Re-tightened 2026-11-05 (spec.md §13 decision 16): this briefly
+  // required only "not CANCELLED/CHECKED_OUT" (2026-08-24) because a
+  // legacy PENDING/CONFIRMED booking from before that redesign had no
+  // way to move forward at all, and this was its only escape hatch.
+  // That's no longer true — CONFIRMED now has real forward edges
+  // (CHECKED_IN/CANCELLED/NO_SHOW, BOOKING_TRANSITIONS) — so a
+  // CONFIRMED (pre-arrival, not-yet-arrived) booking must be routed
+  // through one of *those*, not accidentally "checked out" through
+  // this endpoint instead. Back to requiring CHECKED_IN specifically.
   for (const bu of requested) {
     if (bu.unit.status !== 'OCCUPIED') {
       throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code} is not currently Occupied.`);
     }
-    if (BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY.includes(bu.booking.status as BookingStatusKey)) {
-      throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code}'s booking is already closed out.`);
+    if (bu.booking.status !== 'CHECKED_IN') {
+      throw new ApiError(422, 'INVALID_TRANSITION', `${bu.unit.code}'s booking has not checked in.`);
     }
   }
 
@@ -553,4 +711,41 @@ export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitI
   }
 
   return { bookingId, fromUnitId: input.fromUnitId, toUnitId: input.toUnitId };
+}
+
+// Add-room-to-booking (spec.md §13 decision 16, 2026-11-05) — distinct
+// from moveBookingUnit above: this never closes an existing assignment,
+// it only ever opens a new one. Same unit-availability guard as
+// createPreArrivalBooking (a currently-READY unit only), and the new
+// unit goes OCCUPIED the same way — "if they have several rooms" (the
+// client's own words) is this call, repeated once per extra room, not
+// a units array on the original booking call.
+export async function addUnitToBooking(bookingId: string, input: AddUnitToBookingInput, actor: BookingActor) {
+  const booking = await prisma.booking.findFirst({ where: { id: bookingId, deletedAt: null } });
+  if (!booking) {
+    throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
+  }
+  if (BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY.includes(booking.status as BookingStatusKey)) {
+    throw new ApiError(422, 'INVALID_TRANSITION', 'This booking is already closed out — a room cannot be added to it.');
+  }
+
+  const unit = await requireAvailableUnitForNewAssignment(input.unitId);
+  const now = new Date();
+  await prisma.bookingUnit.create({ data: { bookingId, unitId: unit.id, occupiedFrom: now } });
+  await applyAutomaticUnitStatusChange(unit.id, 'OCCUPIED', actor);
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: bookingId,
+      actorId: actor.id,
+      at: now.toISOString(),
+      summary: `${booking.referenceNo} added ${unit.code}`,
+      fromStatus: booking.status,
+      toStatus: booking.status,
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (add room) failed:', error);
+  }
+
+  return getBooking(bookingId);
 }

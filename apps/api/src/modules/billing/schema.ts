@@ -6,13 +6,46 @@ import { z } from 'zod';
 // issuance — same zod style as every other module's schema.ts
 // (geofenceInputSchema, createRemittanceRequestSchema).
 
-export const postFolioChargeSchema = z.object({
-  source: z.enum(FOLIO_CHARGE_SOURCE_KEYS),
-  sourceId: z.string().min(1).optional(),
-  description: z.string().trim().min(1).max(300),
-  qty: z.number().int().positive().default(1),
-  unitPrice: z.number().nonnegative(),
-});
+// Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): "the cost of
+// the room/unit must be automatic based on what the system admin has
+// setup" (client's own words) — a ROOM charge is priced server-side from
+// UnitType.baseRate and the billed BookingUnit's own date range
+// (service.ts's priceRoomCharge), never from client input. unitPrice and
+// qty are both optional here (rather than the plain-required shape every
+// other source still uses) specifically so the refinements below can
+// tell "ROOM, correctly omitted" apart from "non-ROOM, missing" and
+// reject each the right way: a client that still sends unitPrice/qty for
+// ROOM gets an explicit 422, not a silent overwrite — silently ignoring
+// it would hide a caller that's still doing the wrong thing.
+export const postFolioChargeSchema = z
+  .object({
+    source: z.enum(FOLIO_CHARGE_SOURCE_KEYS),
+    // For ROOM, this is the BookingUnit id being priced — required so
+    // priceRoomCharge knows which assignment's date range/UnitType to
+    // read. For every other source it stays what it always was: an
+    // optional loose pointer back to whatever record the charge came
+    // from (an FnbOrder, an AmenityRequest, ...).
+    sourceId: z.string().min(1).optional(),
+    description: z.string().trim().min(1).max(300),
+    qty: z.number().int().positive().optional(),
+    unitPrice: z.number().nonnegative().optional(),
+  })
+  .refine((data) => data.source !== 'ROOM' || data.unitPrice === undefined, {
+    message: "Room charges are priced automatically from the unit type's rate — do not submit unitPrice.",
+    path: ['unitPrice'],
+  })
+  .refine((data) => data.source !== 'ROOM' || data.qty === undefined, {
+    message: 'Room charges compute their own night count automatically — do not submit qty.',
+    path: ['qty'],
+  })
+  .refine((data) => data.source !== 'ROOM' || Boolean(data.sourceId), {
+    message: 'sourceId (the BookingUnit assignment being billed) is required for ROOM charges.',
+    path: ['sourceId'],
+  })
+  .refine((data) => data.source === 'ROOM' || data.unitPrice !== undefined, {
+    message: 'unitPrice is required.',
+    path: ['unitPrice'],
+  });
 export type PostFolioChargeInput = z.infer<typeof postFolioChargeSchema>;
 
 export const voidFolioChargeSchema = z.object({
@@ -38,13 +71,6 @@ export const changePaymentStatusSchema = z.object({
 });
 export type ChangePaymentStatusInput = z.infer<typeof changePaymentStatusSchema>;
 
-const receiptLineInputSchema = z.object({
-  description: z.string().trim().min(1).max(300),
-  qty: z.number().int().positive(),
-  unitPrice: z.number().nonnegative(),
-  sourceChargeId: z.string().min(1).optional(),
-});
-
 const receiptDeductionInputSchema = z.object({
   type: z.enum(RECEIPT_DEDUCTION_TYPE_KEYS),
   label: z.string().trim().min(1).max(200),
@@ -57,13 +83,22 @@ const receiptDeductionInputSchema = z.object({
 // shape, so what the cashier sees before confirming is never a
 // different calculation than what gets persisted.
 //
-// Deliberately permissive here (empty lines, blank preparedByName
-// allowed) — build plan stage 4 (2026-11-04): the billing page's first
-// preview call, made the moment a booking is opened for billing, has no
-// lines yet and exists only to fetch the resort header/guest block
-// (there's no standalone "GET /bookings/:id" — see this module's own
-// README entry). `issueReceiptSchema` below tightens both back to
-// required for the real, money-moving call.
+// Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): `lines` is gone
+// — a client-submitted lines array (with its unread sourceChargeId) was
+// the actual integrity gap this round fixes. Both previewReceipt and
+// issueReceipt now build their lines themselves, server-side, from the
+// booking's own non-voided FolioCharge rows (gatherReceiptLines in
+// service.ts) — there is no remaining path, preview included, where a
+// client can submit a lines array that affects what a receipt shows or
+// totals. Deductions stay client-typed — nothing in the client's plan
+// asked for discounts/downpayments to be automatic.
+//
+// Deliberately permissive here (blank preparedByName allowed) — build
+// plan stage 4 (2026-11-04): the billing page's first preview call, made
+// the moment a booking is opened for billing, exists only to fetch the
+// resort header/guest block (there's no standalone "GET /bookings/:id" —
+// see this module's own README entry). `issueReceiptSchema` below
+// tightens this back to required for the real, money-moving call.
 export const receiptDraftSchema = z.object({
   guestContactNo: z.string().trim().max(50).nullable().optional(),
   guestEmail: z.string().trim().max(200).nullable().optional(),
@@ -71,14 +106,12 @@ export const receiptDraftSchema = z.object({
   checkOutDate: z.string().datetime().nullable().optional(),
   nightsOfStay: z.number().int().positive().nullable().optional(),
   preparedByName: z.string().trim().max(200).default(''),
-  lines: z.array(receiptLineInputSchema).default([]),
   deductions: z.array(receiptDeductionInputSchema).default([]),
 });
 export type ReceiptDraftInput = z.infer<typeof receiptDraftSchema>;
 
 export const issueReceiptSchema = receiptDraftSchema.extend({
   preparedByName: z.string().trim().min(1).max(200),
-  lines: z.array(receiptLineInputSchema).min(1, 'At least one line item is required.'),
   // Cashier-typed — the {typed} in {typed}-{MMDDYYYY}-{NN}. Digits only
   // on the sample (e.g. "83887"), but not enforced as numeric here: a
   // pre-printed receipt booklet number is whatever's physically

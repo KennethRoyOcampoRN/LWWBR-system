@@ -100,3 +100,40 @@ export const moveBookingUnitSchema = z.object({
   toUnitId: z.string().min(1),
 });
 export type MoveBookingUnitInput = z.infer<typeof moveBookingUnitSchema>;
+
+// Re-plan, spec.md §13 decision 16, 2026-11-05: billing before check-in
+// — the cashier picks a READY unit, sets check-in/check-out dates
+// (required here, unlike checkInBookingSchema — night count drives
+// room pricing), and posts charges; check-in happens later, against
+// this already-existing booking. One unit per call, deliberately —
+// a second (or third) room is addUnitToBookingSchema below, not a
+// units array here, so the per-unit validation loop isn't duplicated
+// in two places. See createPreArrivalBooking in service.ts for why the
+// unit goes OCCUPIED immediately rather than waiting for arrival.
+export const createPreArrivalBookingSchema = z.object({
+  guestName: z.string().trim().min(1).max(200),
+  externalBookingId: z.string().trim().min(1).max(200),
+  checkInDate: z.string().date(),
+  checkOutDate: z.string().date(),
+  unitId: z.string().min(1),
+  notes: z.string().trim().max(2000).optional(),
+});
+export type CreatePreArrivalBookingInput = z.infer<typeof createPreArrivalBookingSchema>;
+
+// Resolves a CONFIRMED (pre-arrival) booking one of three ways — the
+// guest actually arrives, or doesn't. All three gated booking:checkin
+// (BOOKING_TRANSITIONS, packages/shared/src/booking.ts) — manual
+// front-desk actions only, no automatic no-show timer.
+export const resolveConfirmedBookingSchema = z.object({
+  toStatus: z.enum(['CHECKED_IN', 'CANCELLED', 'NO_SHOW']),
+  reason: z.string().trim().max(500).optional(),
+});
+export type ResolveConfirmedBookingInput = z.infer<typeof resolveConfirmedBookingSchema>;
+
+// Add-room-to-booking (spec.md §13 decision 16) — distinct from
+// moveBookingUnitSchema above: this never closes an existing
+// assignment, it only ever opens a new one.
+export const addUnitToBookingSchema = z.object({
+  unitId: z.string().min(1),
+});
+export type AddUnitToBookingInput = z.infer<typeof addUnitToBookingSchema>;
