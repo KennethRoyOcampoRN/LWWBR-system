@@ -1,10 +1,11 @@
 import { Prisma } from '@prisma/client';
-import type { ReceiptDeductionTypeKey } from '@lwwbr/shared';
+import { BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY, type ReceiptDeductionTypeKey } from '@lwwbr/shared';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { roundMoney, sumMoney } from '../../lib/money.js';
 import { prisma } from '../../lib/prisma.js';
 import { billingNumberScope, formatBillingNumber } from '../../lib/receiptNo.js';
+import { listUnsettledChargeToRoomOrders } from '../fnb/service.js';
 import { getResortIdentityForSnapshot } from '../settings/service.js';
 import type {
   ChangePaymentStatusInput,
@@ -26,6 +27,41 @@ async function requireBooking(bookingId: string) {
     throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
   }
   return booking;
+}
+
+// Cashier-tab plan (spec.md §13.4, 2026-11-05): given the entry-point
+// booking a bill was opened from, find every Booking row sharing its
+// referenceNo that's still "current" (not CANCELLED/CHECKED_OUT) —
+// reusing BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY, the exact
+// constant findOccupiedUnitsForReferenceNo in bookings/service.ts
+// already uses for the checkout checklist, rather than inventing a
+// second definition of "still active." referenceNo is not unique (a
+// group can check in across more than one submission under the same
+// external ID, each its own Booking row) — this is what makes the F&B
+// pull-in correct for such a group instead of reproducing the exact
+// keying bug the client caught in the receipt model itself.
+async function gatherBookingIdsForBilling(entryBooking: { id: string; referenceNo: string }): Promise<string[]> {
+  const siblings = await prisma.booking.findMany({
+    where: {
+      referenceNo: entryBooking.referenceNo,
+      deletedAt: null,
+      status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] },
+    },
+    select: { id: true },
+  });
+  const ids = new Set(siblings.map((b) => b.id));
+  ids.add(entryBooking.id); // always include the entry point, even if its own status is excluded
+  return [...ids];
+}
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the F&B
+// pull-in's read side — gathers unsettled charge-to-room orders across
+// every Booking row sharing the entry booking's external ID, not just
+// the entry-point row itself.
+export async function listUnsettledFnbCharges(bookingId: string) {
+  const booking = await requireBooking(bookingId);
+  const bookingIds = await gatherBookingIdsForBilling(booking);
+  return listUnsettledChargeToRoomOrders(bookingIds);
 }
 
 // ————————————————————————————————————————————————————————————
@@ -337,6 +373,41 @@ function isUniqueConstraintViolation(err: unknown): boolean {
 
 const MAX_BILLING_NUMBER_ATTEMPTS = 5;
 
+// Corrected 2026-11-05 (spec.md §13.4) — the client caught a design
+// error here: this used to compare bookingId, which warns on every
+// second room of a legitimate group checked in across more than one
+// submission under the same external ID (referenceNo isn't unique —
+// see gatherBookingIdsForBilling's own comment). The scope is
+// deliberately NOT globally unique — the same cashier-typed number can
+// legitimately recur across days, or collide within a day if mistyped
+// — so this checks whether an existing receipt under the same scope
+// belongs to a *different external booking*; if so, it's a soft warn
+// (409 DUPLICATE_BILLING_NUMBER) the caller can bypass by resubmitting
+// with confirmDuplicateBillingNumber: true. A same-external-booking
+// match (an ordinary reissue, or another room under the same group) now
+// correctly never triggers this.
+//
+// The `OR` with an explicit `externalBookingRef: null` branch is
+// deliberate, not redundant with the `not` filter — pinned empirically
+// against a real Postgres (spec.md §13.4's own note), not assumed:
+// Prisma compiles `{ not: value }` on a nullable column to plain SQL
+// `<>`, not `IS DISTINCT FROM`, so a legacy receipt with no
+// externalBookingRef yet (pre-backfill) would match neither side of
+// that comparison and be invisible to collision detection entirely. An
+// unknown (null) row is treated as "flag it," matching how a financial
+// collision check should err — toward a false-positive warning a
+// cashier clicks through once, never toward silently missing a real
+// collision.
+async function isDuplicateBillingNumber(scope: string, externalBookingRef: string): Promise<boolean> {
+  const collision = await prisma.receipt.findFirst({
+    where: {
+      billingNumberScope: scope,
+      OR: [{ externalBookingRef: { not: externalBookingRef } }, { externalBookingRef: null }],
+    },
+  });
+  return collision !== null;
+}
+
 // Client-confirmed design (spec.md §13 decision 13 build plan, gap 4):
 // the {typed}-{MMDDYYYY} scope is deliberately NOT globally unique — the
 // same cashier-typed number can legitimately recur across days, or
@@ -352,11 +423,22 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
   const totals = computeReceiptTotals(input);
   const scope = billingNumberScope(input.billingNumberTyped);
 
+  // Prefer validation over warning (spec.md §13.4, client decision,
+  // 2026-11-05): the billing number's typed base is the external
+  // booking ID, and checkInBookingSchema guarantees booking.referenceNo
+  // is never blank — a mismatch here is always a cashier mistype, not a
+  // legitimate case, so it's rejected outright rather than folded into
+  // the soft duplicate-warn below.
+  if (input.billingNumberTyped !== booking.referenceNo) {
+    throw new ApiError(
+      422,
+      'BILLING_NUMBER_MISMATCH',
+      `The billing number "${input.billingNumberTyped}" does not match this booking's own external ID ("${booking.referenceNo}").`,
+    );
+  }
+
   if (!input.confirmDuplicateBillingNumber) {
-    const collision = await prisma.receipt.findFirst({
-      where: { billingNumberScope: scope, bookingId: { not: bookingId } },
-    });
-    if (collision) {
+    if (await isDuplicateBillingNumber(scope, booking.referenceNo)) {
       throw new ApiError(
         409,
         'DUPLICATE_BILLING_NUMBER',
@@ -378,9 +460,10 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
           update: { seq: { increment: 1 } },
           create: { scope, seq: 1 },
         });
-        return tx.receipt.create({
+        const created = await tx.receipt.create({
           data: {
             bookingId,
+            externalBookingRef: booking.referenceNo,
             billingNumberScope: scope,
             billingSeq: seq,
             billingNumberFull: formatBillingNumber(scope, seq),
@@ -408,6 +491,16 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
           },
           include: RECEIPT_INCLUDE,
         });
+        // One ReceiptBooking row for the entry-point booking — this
+        // stage doesn't yet gather and bill a sibling booking's own
+        // room lines (that's Stage D, combined with rate rules' own
+        // per-night stage per spec.md §13.3/§13.4); a sibling's F&B
+        // charges pulled in via the existing postFolioCharge flow
+        // already attach to THIS booking's folio regardless of which
+        // Booking row the source FnbOrder itself belongs to, so no
+        // second ReceiptBooking row is needed for that case either.
+        await tx.receiptBooking.create({ data: { receiptId: created.id, bookingId } });
+        return created;
       });
       const json = await receiptToJson(receipt);
       assertReceiptReconciles(json);
@@ -433,13 +526,19 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
   throw new ApiError(500, 'UNREACHABLE', 'issueReceipt fell through its retry loop unexpectedly.');
 }
 
+// Queries ReceiptBooking, not Receipt.bookingId directly (corrected
+// 2026-11-05, spec.md §13.4) — a receipt issued from a different room's
+// entry point can still have covered this booking (a group checked in
+// across more than one submission under the same external ID), and
+// this must show up here too, not just in the entry-point room's own
+// history.
 export async function listReceiptsForBooking(bookingId: string) {
-  const receipts = await prisma.receipt.findMany({
+  const coverage = await prisma.receiptBooking.findMany({
     where: { bookingId },
-    include: RECEIPT_INCLUDE,
-    orderBy: { issuedAt: 'desc' },
+    include: { receipt: { include: RECEIPT_INCLUDE } },
+    orderBy: { receipt: { issuedAt: 'desc' } },
   });
-  return Promise.all(receipts.map(receiptToJson));
+  return Promise.all(coverage.map((c) => receiptToJson(c.receipt)));
 }
 
 export async function getReceipt(id: string) {

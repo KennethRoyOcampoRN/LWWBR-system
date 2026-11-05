@@ -17,6 +17,7 @@ import {
   listFolioCharges,
   listPayments,
   listReceiptsForBooking,
+  listUnsettledFnbCharges,
   postFolioCharge,
   previewReceipt,
   submitPayment,
@@ -100,6 +101,17 @@ billingRouter.post(
 // issueReceipt below would, from the exact same draft shape
 // (receiptDraftSchema), so what's previewed is never a different
 // calculation than what gets persisted on confirm.
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the F&B
+// pull-in's read side — gated receipt:issue, same as the preview
+// endpoint below, since this is specifically for billing use.
+billingRouter.get(
+  '/bookings/:bookingId/unsettled-fnb-charges',
+  requirePermission('receipt:issue'),
+  asyncHandler(async (req, res) => {
+    res.status(200).json({ charges: await listUnsettledFnbCharges(req.params.bookingId as string) });
+  }),
+);
+
 billingRouter.post(
   '/bookings/:bookingId/receipts/preview',
   requirePermission('receipt:issue'),

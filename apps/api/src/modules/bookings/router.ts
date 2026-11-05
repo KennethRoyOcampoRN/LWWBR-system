@@ -1,8 +1,21 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import { requirePermission } from '../auth/requirePermission.js';
-import { bookingGroupQuerySchema, checkInBookingSchema, checkOutBookingSchema } from './schema.js';
-import { checkInBooking, checkOutUnits, findOccupiedUnitsForReferenceNo, listUpcomingBookingsForUnit } from './service.js';
+import {
+  bookingGroupQuerySchema,
+  checkInBookingSchema,
+  checkOutBookingSchema,
+  moveBookingUnitSchema,
+  searchBookingsQuerySchema,
+} from './schema.js';
+import {
+  checkInBooking,
+  checkOutUnits,
+  findOccupiedUnitsForReferenceNo,
+  listUpcomingBookingsForUnit,
+  moveBookingUnit,
+  searchBookings,
+} from './service.js';
 
 export const bookingsRouter = Router();
 
@@ -71,5 +84,33 @@ bookingsRouter.get(
   asyncHandler(async (req, res) => {
     const bookings = await listUpcomingBookingsForUnit(req.params.id as string);
     res.status(200).json({ bookings });
+  }),
+);
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the booking
+// picker, gated by receipt:issue — this is specifically for finding a
+// booking to bill, not a general-purpose reservation search (which the
+// 2026-08-24 redesign deliberately removed, per this file's own
+// top-of-file comment).
+bookingsRouter.get(
+  '/bookings/search',
+  requirePermission('receipt:issue'),
+  asyncHandler(async (req, res) => {
+    const query = searchBookingsQuerySchema.parse(req.query);
+    const bookings = await searchBookings(query);
+    res.status(200).json({ bookings });
+  }),
+);
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): a mid-stay room
+// change. booking:checkin, not a new permission key — same front-office
+// actor profile as check-in itself.
+bookingsRouter.post(
+  '/bookings/:bookingId/move-unit',
+  requirePermission('booking:checkin'),
+  asyncHandler(async (req, res) => {
+    const body = moveBookingUnitSchema.parse(req.body);
+    const result = await moveBookingUnit(req.params.bookingId as string, body, req.authUser!);
+    res.status(200).json(result);
   }),
 );

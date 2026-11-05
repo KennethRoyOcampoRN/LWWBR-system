@@ -16,7 +16,7 @@ import { prisma } from '../../lib/prisma.js';
 // check-out are the trigger, and this avoids a second copy of the
 // version-increment / event-write / broadcast logic.
 import { applyAutomaticUnitStatusChange } from '../units/service.js';
-import type { CheckInBookingInput, CheckOutBookingInput } from './schema.js';
+import type { CheckInBookingInput, CheckOutBookingInput, MoveBookingUnitInput, SearchBookingsQuery } from './schema.js';
 
 // Redesign, 2026-08-24 (client decision, live-testing feedback): "this
 // app's job is monitoring the resort's current, live state, not
@@ -419,4 +419,134 @@ export async function listUpcomingBookingsForUnit(unitId: string) {
     take: 5,
   });
   return bookingUnits.map((bu) => bu.booking);
+}
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the booking
+// picker. There was no bookings-search endpoint at all before this (see
+// this file's own top-of-file comment on why it was removed in the
+// 2026-08-24 redesign) — this one exists for a narrower, real reason:
+// the Cashier tab needs to find a booking to bill, not browse every
+// booking ever. "Arriving" was considered and dropped (spec.md §13.4):
+// a Booking row is only ever created already CHECKED_IN, so there is
+// nothing a pre-arrival filter could ever match.
+const RECENT_DEPARTURE_WINDOW_DAYS = 7;
+
+export async function searchBookings(query: SearchBookingsQuery) {
+  const scopeFilter: Record<string, unknown> =
+    query.scope === 'recent'
+      ? { status: 'CHECKED_OUT', endAt: { gte: new Date(Date.now() - RECENT_DEPARTURE_WINDOW_DAYS * 24 * 60 * 60 * 1000) } }
+      : query.scope === 'in_house'
+        ? { status: 'CHECKED_IN' }
+        // No scope and no text query: default to the picker's natural
+        // initial view (in-house) rather than "every booking ever."
+        : query.q
+          ? { status: { not: 'CANCELLED' } }
+          : { status: 'CHECKED_IN' };
+
+  const textFilter = query.q
+    ? {
+        OR: [
+          { guestName: { contains: query.q, mode: 'insensitive' as const } },
+          { referenceNo: { contains: query.q, mode: 'insensitive' as const } },
+          // Matches an already-issued billing number back to whichever
+          // Booking row(s) it actually covered — ReceiptBooking, not
+          // Receipt.bookingId directly, same reasoning as
+          // listReceiptsForBooking in billing/service.ts.
+          { receiptCoverage: { some: { receipt: { billingNumberFull: { contains: query.q, mode: 'insensitive' as const } } } } },
+        ],
+      }
+    : {};
+
+  const bookings = await prisma.booking.findMany({
+    where: { deletedAt: null, ...scopeFilter, ...textFilter },
+    select: {
+      id: true,
+      referenceNo: true,
+      guestName: true,
+      status: true,
+      arrivalDate: true,
+      departureDate: true,
+      endAt: true,
+      units: { where: { deletedAt: null }, select: { unit: { select: { code: true, name: true } } } },
+    },
+    orderBy: { startAt: 'desc' },
+    take: 50,
+  });
+  return bookings.map((b) => ({
+    id: b.id,
+    referenceNo: b.referenceNo,
+    guestName: b.guestName,
+    status: b.status,
+    arrivalDate: b.arrivalDate,
+    departureDate: b.departureDate,
+    endAt: b.endAt,
+    units: b.units.map((bu) => bu.unit),
+  }));
+}
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): a mid-stay room
+// change under one booking. No UI calls this yet (planned for Stage C).
+// Closes the old BookingUnit row (occupiedTo = now) and opens a new one
+// for the new unit (occupiedFrom = now), same bookingId — this is two
+// writes, not an update, per the schema's own comment on BookingUnit.
+// Reuses booking:checkin rather than minting a new permission key: same
+// front-office actor profile as check-in itself. Two concurrent
+// BookingUnit rows with overlapping ranges for one booking is simply a
+// multi-room booking, not something this function needs to detect or
+// prevent — it only ever closes the one row it was told to move.
+export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitInput, actor: BookingActor) {
+  const booking = await prisma.booking.findFirst({ where: { id: bookingId, deletedAt: null } });
+  if (!booking) {
+    throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
+  }
+  if (BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY.includes(booking.status as BookingStatusKey)) {
+    throw new ApiError(422, 'INVALID_TRANSITION', 'This booking is already closed out and cannot be moved.');
+  }
+
+  const activeAssignment = await prisma.bookingUnit.findFirst({
+    where: { bookingId, unitId: input.fromUnitId, deletedAt: null, occupiedTo: null },
+    include: { unit: true },
+  });
+  if (!activeAssignment) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'This booking has no current, open assignment for that unit.');
+  }
+
+  const toUnit = await prisma.unit.findFirst({ where: { id: input.toUnitId, deletedAt: null } });
+  if (!toUnit) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'The destination unit could not be found.');
+  }
+  if (!isBookableUnitKind(toUnit.type)) {
+    throw new ApiError(422, 'UNIT_NOT_BOOKABLE', `${toUnit.code} is not a guest accommodation and cannot be moved into.`);
+  }
+  if (toUnit.status === 'OUT_OF_ORDER' || toUnit.status === 'BLOCKED' || toUnit.status === 'OCCUPIED') {
+    throw new ApiError(409, 'UNIT_UNAVAILABLE', `${toUnit.code} is not available to move into (currently ${toUnit.status}).`, {
+      unitId: toUnit.id,
+      unitCode: toUnit.code,
+      reason: toUnit.status,
+    });
+  }
+
+  const now = new Date();
+  await prisma.bookingUnit.update({ where: { id: activeAssignment.id }, data: { occupiedTo: now } });
+  await prisma.bookingUnit.create({
+    data: { bookingId, unitId: input.toUnitId, occupiedFrom: now },
+  });
+
+  await applyAutomaticUnitStatusChange(activeAssignment.unit.id, 'VACANT_DIRTY', actor);
+  await applyAutomaticUnitStatusChange(toUnit.id, 'OCCUPIED', actor);
+
+  try {
+    await getRealtimeAdapter().emit('property', 'booking.status.changed', {
+      entityId: bookingId,
+      actorId: actor.id,
+      at: now.toISOString(),
+      summary: `${booking.referenceNo} moved from ${activeAssignment.unit.code} to ${toUnit.code}`,
+      fromStatus: booking.status,
+      toStatus: booking.status,
+    });
+  } catch (error) {
+    console.error('Realtime broadcast for booking.status.changed (room move) failed:', error);
+  }
+
+  return { bookingId, fromUnitId: input.fromUnitId, toUnitId: input.toUnitId };
 }

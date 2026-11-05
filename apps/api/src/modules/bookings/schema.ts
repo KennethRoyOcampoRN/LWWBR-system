@@ -80,3 +80,23 @@ export const bookingGroupQuerySchema = z.object({
   referenceNo: z.string().trim().min(1).max(200),
 });
 export type BookingGroupQuery = z.infer<typeof bookingGroupQuerySchema>;
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the booking
+// picker — narrower than a general search, by design. "arriving" was
+// considered and dropped: a Booking row is only ever created already
+// CHECKED_IN, so there's nothing a pre-arrival scope could ever match.
+export const searchBookingsQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200).optional(),
+  scope: z.enum(['in_house', 'recent']).optional(),
+});
+export type SearchBookingsQuery = z.infer<typeof searchBookingsQuerySchema>;
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): a mid-stay room
+// change. fromUnitId disambiguates which of a booking's (possibly
+// several, for a multi-room booking) current unit assignments is being
+// moved — see moveBookingUnit in service.ts.
+export const moveBookingUnitSchema = z.object({
+  fromUnitId: z.string().min(1),
+  toUnitId: z.string().min(1),
+});
+export type MoveBookingUnitInput = z.infer<typeof moveBookingUnitSchema>;

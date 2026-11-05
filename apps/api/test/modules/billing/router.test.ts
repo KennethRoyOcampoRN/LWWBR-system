@@ -5,10 +5,12 @@ const mockPrisma = {
   user: { findFirst: vi.fn() },
   fileObject: { findFirst: vi.fn() },
   setting: { findUnique: vi.fn() },
-  booking: { findFirst: vi.fn() },
+  booking: { findFirst: vi.fn(), findMany: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  receiptBooking: { findMany: vi.fn(), create: vi.fn() },
+  fnbOrder: { findMany: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
   $transaction: vi.fn(),
 };
@@ -44,6 +46,7 @@ function authCookie() {
 
 const booking = {
   id: 'booking_1',
+  referenceNo: '83887',
   guestName: 'Roel Villagomez',
   guestAddress: null,
   guestPhone: null,
@@ -68,6 +71,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetSignedUrl.mockResolvedValue('https://storage.example/signed/logo.png');
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => fn(mockPrisma));
+  mockPrisma.receiptBooking.create.mockResolvedValue({ id: 'receipt_booking_1' });
 });
 
 describe('Folio charges', () => {
@@ -350,11 +354,11 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     expect(res.body.receipt.totalAmountDue).toBe(1000);
   });
 
-  it('409s with DUPLICATE_BILLING_NUMBER when the same scope was already used for a different booking, and never allocates a number', async () => {
+  it('409s with DUPLICATE_BILLING_NUMBER when the same scope was already used for a different external booking, and never allocates a number', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
-    mockPrisma.receipt.findFirst.mockResolvedValue({ id: 'receipt_other', bookingId: 'booking_2' });
+    mockPrisma.receipt.findFirst.mockResolvedValue({ id: 'receipt_other', bookingId: 'booking_2', externalBookingRef: '99999' });
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
@@ -373,7 +377,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
   it('issues anyway when confirmDuplicateBillingNumber is true', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     stubIssuance();
-    mockPrisma.receipt.findFirst.mockResolvedValue({ id: 'receipt_other', bookingId: 'booking_2' });
+    mockPrisma.receipt.findFirst.mockResolvedValue({ id: 'receipt_other', bookingId: 'booking_2', externalBookingRef: '99999' });
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
@@ -388,12 +392,17 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     expect(res.status).toBe(201);
   });
 
-  it('does not warn (and proceeds silently) when the same scope was already used for the SAME booking — an ordinary reissue', async () => {
+  it('does not warn (and proceeds silently) when the same scope was already used for the SAME external booking — an ordinary reissue', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     stubIssuance();
-    // findFirst is called with bookingId: { not: bookingId } — a
-    // same-booking row would never match that query, so returning null
-    // here is what proves the collision check is booking-scoped.
+    // Corrected 2026-11-05 (spec.md §13.4): the collision check now
+    // compares externalBookingRef, not bookingId — a second room
+    // billed under the same external ID (a legitimate group, or an
+    // ordinary reissue) must never trigger this. findFirst is called
+    // with an OR of { externalBookingRef: { not: '83887' } } and
+    // { externalBookingRef: null } — a same-external-booking row would
+    // never match that query, so returning null here is what proves
+    // the collision check is scoped correctly.
     mockPrisma.receipt.findFirst.mockResolvedValue(null);
 
     const res = await request(createApp())
@@ -403,8 +412,32 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
 
     expect(res.status).toBe(201);
     expect(mockPrisma.receipt.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ bookingId: { not: 'booking_1' } }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ externalBookingRef: { not: '83887' } }, { externalBookingRef: null }],
+        }),
+      }),
     );
+  });
+
+  // Pins the exact gap caught in review (spec.md §13.4): the typed
+  // billing number must equal this booking's own external ID, not just
+  // not-collide with someone else's. A mismatch is rejected outright
+  // (422), never folded into the soft duplicate-warn above.
+  it('422s with BILLING_NUMBER_MISMATCH when the typed billing number does not match this booking\'s own referenceNo', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking); // referenceNo: '83887'
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '99999', preparedByName: 'yssa', lines: [{ description: 'Room', qty: 1, unitPrice: 100 }] });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('BILLING_NUMBER_MISMATCH');
+    expect(mockPrisma.receipt.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.referenceSequence.upsert).not.toHaveBeenCalled();
   });
 
   // The actual retry requirement: a P2002 on the Receipt insert (inside
@@ -531,7 +564,9 @@ describe('Receipt read/void', () => {
       lines: [{ id: 'line_1', description: 'Room', qty: 1, unitPrice: 1100, amount: 1100 }],
       deductions: [],
     };
-    mockPrisma.receipt.findMany.mockResolvedValue([rawReceipt]);
+    // listReceiptsForBooking queries ReceiptBooking, not Receipt.findMany
+    // directly (corrected 2026-11-05, spec.md §13.4).
+    mockPrisma.receiptBooking.findMany.mockResolvedValue([{ receipt: rawReceipt }]);
     mockPrisma.receipt.findFirst.mockResolvedValue(rawReceipt);
 
     const listRes = await request(createApp()).get('/api/v1/bookings/booking_1/receipts').set('Cookie', authCookie());
@@ -561,5 +596,75 @@ describe('Receipt read/void', () => {
       .set('Cookie', authCookie())
       .send({ voidReason: 'again' });
     expect(res2.status).toBe(409);
+  });
+});
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): the F&B
+// pull-in's read side. Gathers across every Booking row sharing the
+// entry booking's external ID, not just the entry-point row — the same
+// keying fix the receipt model itself needed.
+describe('GET /api/v1/bookings/:bookingId/unsettled-fnb-charges', () => {
+  it('requires receipt:issue', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/unsettled-fnb-charges').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('gathers unsettled charge-to-room orders across every Booking row sharing the external ID', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue({ id: 'booking_1', referenceNo: '83887', deletedAt: null });
+    // A group checked in across two submissions under the same external
+    // ID — booking_1 (the entry point) and booking_2 (a sibling).
+    mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_1' }, { id: 'booking_2' }]);
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([
+      {
+        id: 'fnb_1',
+        referenceNo: 'FB-001',
+        bookingId: 'booking_1',
+        unit: { id: 'unit_1', code: 'R01', name: 'Room 1' },
+        subtotal: 500,
+        createdAt: new Date('2026-11-05T01:00:00.000Z'),
+      },
+      {
+        id: 'fnb_2',
+        referenceNo: 'FB-002',
+        bookingId: 'booking_2', // the sibling's own order — must still be found
+        unit: { id: 'unit_2', code: 'R02', name: 'Room 2' },
+        subtotal: 300,
+        createdAt: new Date('2026-11-05T02:00:00.000Z'),
+      },
+    ]);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([]); // nothing pulled in yet
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/unsettled-fnb-charges').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.charges).toHaveLength(2);
+    expect(res.body.charges.map((c: { fnbOrderId: string }) => c.fnbOrderId)).toEqual(['fnb_1', 'fnb_2']);
+    expect(mockPrisma.fnbOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ bookingId: { in: expect.arrayContaining(['booking_1', 'booking_2']) } }) }),
+    );
+  });
+
+  it('excludes an order already pulled into a (non-voided) FolioCharge', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue({ id: 'booking_1', referenceNo: '83887', deletedAt: null });
+    mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_1' }]);
+    mockPrisma.fnbOrder.findMany.mockResolvedValue([
+      {
+        id: 'fnb_1',
+        referenceNo: 'FB-001',
+        bookingId: 'booking_1',
+        unit: { id: 'unit_1', code: 'R01', name: 'Room 1' },
+        subtotal: 500,
+        createdAt: new Date(),
+      },
+    ]);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([{ sourceId: 'fnb_1' }]);
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/unsettled-fnb-charges').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.charges).toEqual([]);
   });
 });

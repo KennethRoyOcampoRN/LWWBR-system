@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   unit: { findFirst: vi.fn() },
+  bookingUnit: { findFirst: vi.fn() },
   menuItem: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
   fnbOrder: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   setting: { findUnique: vi.fn() },
@@ -308,6 +309,9 @@ describe('POST /api/v1/fnb-orders', () => {
   it('creates an order, snapshotting menu prices and computing the subtotal', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESTAURANT_MANAGER'));
     mockPrisma.unit.findFirst.mockResolvedValue({ id: 'unit_1', status: 'OCCUPIED' });
+    // Cashier-tab plan (spec.md §13.4): a CHARGE_TO_ROOM order resolves
+    // bookingId server-side from the unit's current active assignment.
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue({ bookingId: 'booking_1' });
     mockPrisma.menuItem.findMany.mockResolvedValue([
       fakeMenuItem({ id: 'menu_1', price: 250 }),
       fakeMenuItem({ id: 'menu_2', name: 'Halo-Halo', price: 120 }),

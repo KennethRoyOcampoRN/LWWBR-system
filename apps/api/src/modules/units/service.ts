@@ -1,5 +1,6 @@
 import { TZDate } from '@date-fns/tz';
 import {
+  BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
   canOverrideAutomaticTransition,
   getTransition,
   type EffectivePermissions,
@@ -210,8 +211,20 @@ export interface UnitSummary {
   sortOrder: number;
 }
 
+export interface UnitCurrentBooking {
+  bookingId: string;
+  referenceNo: string;
+  guestName: string;
+}
+
 export interface UnitSummaryWithNote extends UnitSummary {
   latestNote: string | null;
+  // Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): booking id +
+  // guest name on every unit card — previously fetched only inside the
+  // drawer, per unit, on open. One batched query below rather than N+1.
+  // null for a vacant unit, a common area/facility, or (defensively) an
+  // Occupied unit with no resolvable active BookingUnit row.
+  currentBooking: UnitCurrentBooking | null;
 }
 
 export async function listUnits(): Promise<UnitSummaryWithNote[]> {
@@ -237,10 +250,38 @@ export async function listUnits(): Promise<UnitSummaryWithNote[]> {
   });
   const latestByUnitId = new Map(latestEvents.map((e) => [e.unitId, e]));
 
+  // Same "Unit.status === 'OCCUPIED' is the real signal, a booking's own
+  // bookkeeping status can lag or get stuck" reasoning as
+  // findOccupiedUnitsForReferenceNo/listUpcomingBookingsForUnit in
+  // bookings/service.ts, reused here rather than re-derived — only
+  // CANCELLED/CHECKED_OUT are excluded. A unit can never have two
+  // simultaneously-active BookingUnit rows under non-excluded bookings
+  // (checkInBooking refuses check-in into an already-OCCUPIED unit), so
+  // "the" current booking per unit is always well-defined.
+  const occupiedUnitIds = units.filter((u) => u.status === 'OCCUPIED').map((u) => u.id);
+  const activeBookingUnits =
+    occupiedUnitIds.length === 0
+      ? []
+      : await prisma.bookingUnit.findMany({
+          where: {
+            unitId: { in: occupiedUnitIds },
+            deletedAt: null,
+            booking: { deletedAt: null, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
+          },
+          select: { unitId: true, booking: { select: { id: true, referenceNo: true, guestName: true } } },
+        });
+  const currentBookingByUnitId = new Map(
+    activeBookingUnits.map((bu) => [
+      bu.unitId,
+      { bookingId: bu.booking.id, referenceNo: bu.booking.referenceNo, guestName: bu.booking.guestName },
+    ]),
+  );
+
   return units.map((u) => ({
     ...u,
     status: u.status as UnitStatusKey,
     latestNote: latestByUnitId.get(u.id)?.note ?? null,
+    currentBooking: currentBookingByUnitId.get(u.id) ?? null,
   }));
 }
 

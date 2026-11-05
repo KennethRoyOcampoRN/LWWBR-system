@@ -1,4 +1,10 @@
-import { DEFAULT_FNB_ADVANCE_ORDER_LEAD_MINUTES, getFnbOrderTransition, type PermissionKey, type PermissionScope } from '@lwwbr/shared';
+import {
+  BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
+  DEFAULT_FNB_ADVANCE_ORDER_LEAD_MINUTES,
+  getFnbOrderTransition,
+  type PermissionKey,
+  type PermissionScope,
+} from '@lwwbr/shared';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
@@ -175,6 +181,19 @@ async function broadcastFnbOrderChanged(event: 'fnb.order.created' | 'fnb.order.
 // real question ("is this actually going to an occupied room") without
 // any balance math behind it.
 export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrderActor) {
+  // Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): a real
+  // prerequisite gap found while planning the Cashier tab's F&B
+  // pull-in — nothing set FnbOrder.bookingId for a CHARGE_TO_ROOM order
+  // before this, so there was nothing for the billing side to find.
+  // Resolved server-side, not by trusting input.bookingId from the
+  // client: the unit's current, active BookingUnit (its booking not
+  // CANCELLED/CHECKED_OUT) is the real answer, the same "Unit.status
+  // === 'OCCUPIED' plus the booking isn't closed out" signal
+  // bookings/service.ts already uses everywhere else. A unit can never
+  // have two simultaneously-active assignments (checkInBooking refuses
+  // check-in into an already-OCCUPIED unit), so this is always
+  // well-defined once the unit-occupied check below passes.
+  let chargeToRoomBookingId: string | null = null;
   if (input.settlement === 'CHARGE_TO_ROOM') {
     if (!input.unitId) {
       throw new ApiError(422, 'VALIDATION_ERROR', 'unitId is required for a CHARGE_TO_ROOM order.');
@@ -183,6 +202,14 @@ export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrder
     if (!unit || unit.status !== 'OCCUPIED') {
       throw new ApiError(422, 'UNIT_NOT_OCCUPIED', 'Charge-to-room requires a currently occupied unit.');
     }
+    const activeBookingUnit = await prisma.bookingUnit.findFirst({
+      where: {
+        unitId: input.unitId,
+        deletedAt: null,
+        booking: { deletedAt: null, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
+      },
+    });
+    chargeToRoomBookingId = activeBookingUnit?.bookingId ?? null;
   }
 
   const menuItemIds = [...new Set(input.lines.map((line) => line.menuItemId))];
@@ -215,7 +242,7 @@ export async function createFnbOrder(input: CreateFnbOrderInput, actor: FnbOrder
     data: {
       referenceNo,
       unitId: input.unitId,
-      bookingId: input.bookingId,
+      bookingId: input.settlement === 'CHARGE_TO_ROOM' ? chargeToRoomBookingId : input.bookingId,
       guestName: input.guestName,
       type: input.type,
       scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined,
@@ -344,4 +371,55 @@ export async function changeFnbOrderStatus(id: string, input: ChangeFnbOrderStat
   });
 
   return fnbOrderToJson(updated);
+}
+
+// Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): "unsettled"
+// charge-to-room orders for the F&B pull-in — deliberately a NOT-EXISTS
+// style filter rather than a new status column. There is no settled/
+// unsettled lifecycle concept anywhere on FnbOrder (settlement is a
+// payment-method classification only, never a state machine) — an
+// order is unsettled if it's CHARGE_TO_ROOM, not CANCELLED, belongs to
+// one of the given bookings, and no non-voided FolioCharge{source: FNB,
+// sourceId: this order's id} has been created from it yet. Takes an
+// array of bookingIds (not a single one) because one external booking
+// ID can span several Booking rows (spec.md §13.4) — the caller
+// (billing/service.ts) gathers that set first.
+export async function listUnsettledChargeToRoomOrders(bookingIds: string[]) {
+  if (bookingIds.length === 0) return [];
+  const orders = await prisma.fnbOrder.findMany({
+    where: {
+      bookingId: { in: bookingIds },
+      settlement: 'CHARGE_TO_ROOM',
+      status: { not: 'CANCELLED' },
+      deletedAt: null,
+    },
+    include: { unit: { select: { id: true, code: true, name: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (orders.length === 0) return [];
+
+  const alreadyPulledInOrderIds = new Set(
+    (
+      await prisma.folioCharge.findMany({
+        where: {
+          source: 'FNB',
+          sourceId: { in: orders.map((o) => o.id) },
+          status: { not: 'VOIDED' },
+          deletedAt: null,
+        },
+        select: { sourceId: true },
+      })
+    ).map((fc) => fc.sourceId),
+  );
+
+  return orders
+    .filter((o) => !alreadyPulledInOrderIds.has(o.id))
+    .map((o) => ({
+      fnbOrderId: o.id,
+      referenceNo: o.referenceNo,
+      bookingId: o.bookingId as string,
+      unit: o.unit,
+      subtotal: Number(o.subtotal),
+      createdAt: o.createdAt,
+    }));
 }

@@ -7383,3 +7383,44 @@ repo, not in these suites), `npm run build` clean. Scratch Postgres
 database and copied `node_modules` used for the proof were deleted
 afterward; nothing from it is part of this repo or this stage's
 migration state.
+
+**Cashier tab — Stage B (backend), 2026-11-05.** Full design in
+spec.md §13.4; this entry covers what shipped.
+
+`GET /bookings/search` (the picker, gated `receipt:issue`): matches
+guest name, `referenceNo`, and an already-issued `Receipt.billingNumberFull`
+(via the `ReceiptBooking` join, not `Receipt.bookingId`), scoped to
+in-house by default or `scope=recent` — "arriving" was dropped (a
+`Booking` row is only ever created already `CHECKED_IN`). `GET /units`
+gained a batched `currentBooking` field per unit (`bookingId`/
+`referenceNo`/`guestName`) — one extra query covering every `OCCUPIED`
+unit at once, not N+1; previously this was fetched only inside the
+drawer, per unit, on open. `GET /bookings/:bookingId/unsettled-fnb-charges`
+gathers across every `Booking` row sharing the entry booking's
+`referenceNo`, not just the entry-point row — the same keying question
+the receipt model needed fixing for, now applied consistently.
+`issueReceipt` validates the typed billing number equals
+`booking.referenceNo` exactly (422, not a warn) and now actually writes
+`externalBookingRef`/a `ReceiptBooking` row (both added schema-only in
+Stage A); `listReceiptsForBooking` moved off `Receipt.bookingId` onto
+the join. `POST /bookings/:bookingId/move-unit` records a mid-stay room
+change (no UI yet).
+
+`createFnbOrder` now resolves `bookingId` for a `CHARGE_TO_ROOM` order
+server-side, from the unit's current active `BookingUnit` — confirmed
+nothing set this field before (a real prerequisite gap found while
+planning: the F&B pull-in would have had nothing to find), fixed
+without touching `FnbPage.tsx` at all, since the server already has
+to validate the unit is `OCCUPIED` at that exact moment anyway and the
+client has no reliable way to know which booking that resolves to.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `apps/api` 654/654 (14 new: 9 for the booking picker/room-move
+in `test/modules/bookings/router.test.ts`, 3 for the unsettled-F&B
+gathering in `test/modules/billing/router.test.ts`, 2 for the unit-card
+booking summary in `test/modules/units/router.test.ts`; plus existing
+billing/fnb fixtures updated for the new `referenceNo`/`bookingUnit`
+mocks these changes now touch). `apps/web` 194/194 (unchanged — no UI
+this stage). `npm run build` clean across all three packages. No live
+database in this sandbox to run Stage A's pending backfills against
+(unchanged from that stage's own note).

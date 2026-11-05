@@ -7,7 +7,7 @@ const mockPrisma = {
   unitType: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn() },
   unitStatusEvent: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-  bookingUnit: { count: vi.fn() },
+  bookingUnit: { count: vi.fn(), findMany: vi.fn() },
   workOrder: { findMany: vi.fn(), count: vi.fn() },
   amenityRequest: { count: vi.fn(), findMany: vi.fn() },
   fnbOrder: { count: vi.fn() },
@@ -106,6 +106,42 @@ describe('GET /api/v1/units and /unit-types', () => {
     // response now sets Cache-Control: no-store so a browser can never
     // legitimately serve a cached read of live operational state.
     expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  // Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): booking id +
+  // guest name on every unit card — previously fetched only inside the
+  // drawer, per unit, on open.
+  it('includes the current booking on an OCCUPIED unit, batched in one extra query', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ status: 'OCCUPIED' })]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([
+      { unitId: 'unit_1', booking: { id: 'booking_1', referenceNo: '83887', guestName: 'Roel Villagomez' } },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.units[0].currentBooking).toEqual({
+      bookingId: 'booking_1',
+      referenceNo: '83887',
+      guestName: 'Roel Villagomez',
+    });
+    expect(mockPrisma.bookingUnit.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ unitId: { in: ['unit_1'] } }) }),
+    );
+  });
+
+  it('currentBooking is null for a non-OCCUPIED unit, and the booking-unit query is skipped entirely', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ status: 'VACANT_DIRTY' })]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.units[0].currentBooking).toBeNull();
+    expect(mockPrisma.bookingUnit.findMany).not.toHaveBeenCalled();
   });
 
   it('surfaces latestNote from any status-change panel, only while it is still attached to the latest event', async () => {
