@@ -296,6 +296,63 @@ describe('UnitsPage — billing entry point', () => {
   });
 });
 
+// Cashier-tab plan, Stage C (2026-11-05): "the unit cards must show
+// booking ID and guest name" (client's own words), distinguishing a
+// CONFIRMED (pre-arrival, room OCCUPIED but nobody there yet) booking
+// from a CHECKED_IN one — decision 16's own stated mitigation for the
+// OCCUPIED-at-booking-time design, now actually wired up.
+describe('UnitsPage — unit card booking summary', () => {
+  function stubFetch(currentBooking: { bookingId: string; referenceNo: string; guestName: string; status: string } | null) {
+    const unit = {
+      id: 'unit_1', code: 'R01', name: 'Room 1', unitTypeId: 't1', type: 'ROOM', capacity: 4, floor: null,
+      status: 'OCCUPIED', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking,
+    };
+    return vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [unit] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+  }
+
+  it('shows the guest name and booking ID on an OCCUPIED unit\'s card, with a distinct label for a CONFIRMED (pre-arrival) booking', async () => {
+    window.history.pushState({}, '', '/units');
+    vi.stubGlobal(
+      'fetch',
+      stubFetch({ bookingId: 'booking_1', referenceNo: 'EXT-200', guestName: 'Jane Dela Cruz', status: 'CONFIRMED' }),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Jane Dela Cruz')).toBeInTheDocument());
+    expect(screen.getByText('Booking ID EXT-200')).toBeInTheDocument();
+    expect(screen.getByText('Booked (not arrived)')).toBeInTheDocument();
+  });
+
+  it('labels a CHECKED_IN booking distinctly from a CONFIRMED one', async () => {
+    window.history.pushState({}, '', '/units');
+    vi.stubGlobal(
+      'fetch',
+      stubFetch({ bookingId: 'booking_1', referenceNo: 'EXT-100', guestName: 'Roel Villagomez', status: 'CHECKED_IN' }),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Roel Villagomez')).toBeInTheDocument());
+    expect(screen.getByText('Checked in')).toBeInTheDocument();
+    expect(screen.queryByText('Booked (not arrived)')).not.toBeInTheDocument();
+  });
+
+  it('shows nothing extra when the unit has no currentBooking', async () => {
+    window.history.pushState({}, '', '/units');
+    vi.stubGlobal('fetch', stubFetch(null));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    expect(screen.queryByText('Booked (not arrived)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Checked in')).not.toBeInTheDocument();
+  });
+});
+
 // Setup Rooms (client-directed feature, 2026-11-04): POST/PATCH
 // /unit-types already existed server-side but nothing in the web app
 // ever called them until this section.

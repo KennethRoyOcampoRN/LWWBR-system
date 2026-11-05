@@ -102,6 +102,12 @@ export async function getBooking(id: string) {
       id: bu.id,
       unitId: bu.unitId,
       rate: bu.rate,
+      // Cashier-tab plan, Stage C (2026-11-05): the billing page needs
+      // to tell a still-held assignment apart from one this booking has
+      // moved away from (releasedAt: null — see BookingUnit's own
+      // schema comment) to build its room list and the move/add-unit
+      // pickers correctly.
+      releasedAt: bu.releasedAt,
       unit: { id: bu.unit.id, code: bu.unit.code, name: bu.unit.name, status: bu.unit.status },
     })),
   });

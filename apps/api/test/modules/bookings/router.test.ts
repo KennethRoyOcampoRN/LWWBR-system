@@ -1410,3 +1410,38 @@ describe('POST /api/v1/bookings/:bookingId/add-unit — purely additive, distinc
     expect(res.status).toBe(404);
   });
 });
+
+// Cashier-tab plan, Stage C (2026-11-05): a standalone booking read for
+// the billing page — needs the booking's own status and unit list on
+// reload, neither conveniently available from any other response.
+describe('GET /api/v1/bookings/:bookingId', () => {
+  it('requires receipt:issue', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF', { department: 'HOUSEKEEPING' }));
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1').set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('returns the booking with its units, including releasedAt so the frontend can tell a held assignment apart from a moved-away one', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(
+      fakeBookingWithUnits({ status: 'CONFIRMED' }, [{ unitId: 'unit_1', code: 'R01', status: 'OCCUPIED' }]),
+    );
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.booking.status).toBe('CONFIRMED');
+    expect(res.body.booking.units[0]).toEqual(
+      expect.objectContaining({ unitId: 'unit_1', unit: expect.objectContaining({ code: 'R01' }) }),
+    );
+  });
+
+  it('404s for an unknown booking', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_bogus').set('Cookie', authCookie());
+
+    expect(res.status).toBe(404);
+  });
+});

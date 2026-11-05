@@ -24,10 +24,16 @@ const NAV_ITEMS: {
     | 'quotation:read'
     | 'stock:read'
     | 'shift:read'
-    | 'resort:configure';
+    | 'resort:configure'
+    | 'receipt:issue';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
+  // Cashier-tab plan, Stage C (2026-11-05): the standalone picker — a
+  // separate entry point from UnitsPage's own per-booking "Bill guest"
+  // link, for finding a booking to bill (or opening a new pre-arrival
+  // one) without first navigating to its room.
+  { to: '/cashier', label: 'Cashier', permission: 'receipt:issue' },
   // workorder:read is the floor every role holds (see rolePermissions.ts's
   // own comment: "everyone can create a ticket and 'My tasks' views need
   // to read at least your own") — this nav item is effectively always

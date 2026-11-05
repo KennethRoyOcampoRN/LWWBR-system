@@ -1,26 +1,24 @@
-import { RECEIPT_DEDUCTION_TYPE_KEYS, RECEIPT_DEDUCTION_TYPE_LABELS, type ReceiptDeductionTypeKey } from '@lwwbr/shared';
+import {
+  FOLIO_CHARGE_SOURCE_KEYS,
+  FOLIO_CHARGE_SOURCE_LABELS,
+  isBookableUnitKind,
+  RECEIPT_DEDUCTION_TYPE_KEYS,
+  RECEIPT_DEDUCTION_TYPE_LABELS,
+  type BookingStatusKey,
+  type FolioChargeSourceKey,
+  type ReceiptDeductionTypeKey,
+} from '@lwwbr/shared';
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '../components/Button.js';
 import { Card, Section } from '../components/Card.js';
 import { DataTable, type DataTableColumn } from '../components/DataTable.js';
+import { EmptyState } from '../components/EmptyState.js';
 import { Field, INPUT_CLASSES } from '../components/Field.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { StatusBadge } from '../components/StatusBadge.js';
 import { api, ApiRequestError } from '../lib/api.js';
-
-interface UnitTypeRow {
-  id: string;
-  name: string;
-  baseRate: number;
-  dayTourRate: number | null;
-  extraPersonRate: number | null;
-}
-
-interface DraftLine {
-  description: string;
-  qty: number;
-  unitPrice: number;
-}
+import { BOOKING_STATUS_BADGE_VARIANT, BOOKING_STATUS_LABELS } from '../lib/bookingStyle.js';
 
 interface DraftDeduction {
   type: ReceiptDeductionTypeKey;
@@ -28,7 +26,10 @@ interface DraftDeduction {
   amount: number;
 }
 
-interface ComputedLine extends DraftLine {
+interface ComputedLine {
+  description: string;
+  qty: number;
+  unitPrice: number;
   amount: number;
 }
 
@@ -71,36 +72,96 @@ interface IssuedReceipt extends PreviewResponse {
   preparedByName: string;
 }
 
-const EMPTY_LINE_FORM = { description: '', qty: '1', unitPrice: '' };
+interface BookingUnitRow {
+  id: string;
+  unitId: string;
+  releasedAt: string | null;
+  unit: { id: string; code: string; name: string; status: string };
+}
+
+interface BookingDetail {
+  id: string;
+  referenceNo: string;
+  guestName: string;
+  status: BookingStatusKey;
+  units: BookingUnitRow[];
+}
+
+interface FolioChargeRow {
+  id: string;
+  bookingId: string;
+  source: FolioChargeSourceKey;
+  description: string;
+  qty: number;
+  unitPrice: number;
+  amount: number;
+  status: string;
+}
+
+interface UnsettledFnbCharge {
+  fnbOrderId: string;
+  referenceNo: string;
+  bookingId: string;
+  unit: { id: string; code: string; name: string };
+  subtotal: number;
+  createdAt: string;
+}
+
+interface ReadyUnit {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  status: string;
+}
+
+// Non-ROOM sources only — a ROOM charge is always posted per-room, from
+// the Rooms section's own "Post room charge" action, never from this
+// generic form (postFolioChargeSchema itself rejects a client-submitted
+// unitPrice/qty for ROOM — see billing/service.ts's own comment).
+const NON_ROOM_SOURCE_KEYS = FOLIO_CHARGE_SOURCE_KEYS.filter((k) => k !== 'ROOM');
+
+const EMPTY_CHARGE_FORM = { source: NON_ROOM_SOURCE_KEYS[0] as FolioChargeSourceKey, description: '', qty: '1', unitPrice: '' };
 const EMPTY_DEDUCTION_FORM = { type: 'DOWNPAYMENT' as ReceiptDeductionTypeKey, label: 'Downpayment', amount: '' };
 
 function formatPeso(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Build plan stage 4 (spec.md §13 decision 13, 2026-11-04): the
-// cashier-facing billing page. Reached from UnitsPage's own "Bill
-// guest" link on a booking row (there's no standalone "pick a booking"
-// screen — the same booking-by-id entry point Check out already uses).
-// Builds a draft receipt (room/extra-person/other line quick-picks,
-// deduction rows), previews it against the real server-side
-// computation (POST .../receipts/preview — same calculation
-// issueReceipt uses, see billing/service.ts's own comment on why they
-// share computeReceiptTotals), then issues it. The first preview call
-// fires with no lines at all, purely to fetch the resort header/guest
-// block server-side (receiptDraftSchema allows this — see its own
-// comment) since there's no standalone booking-read endpoint this page
-// could call instead.
+// Re-plan, spec.md §13 decision 16, Stage C (2026-11-05): rebuilt around
+// the running folio rather than a client-typed receipt draft.
+// `receiptDraftSchema`/`issueReceiptSchema` no longer accept a `lines`
+// array at all — both `previewReceipt` and `issueReceipt` build it
+// themselves from the booking's own posted `FolioCharge` rows (gathered
+// across every sibling booking sharing the external ID). This page's
+// own folio table is read-only for exactly that reason: the cashier
+// posts charges (room, F&B pull-in, other), and the receipt preview
+// reflects whatever's actually been posted, not a separate draft that
+// could drift from it. Reached either from UnitsPage's own "Bill guest"
+// link on a booking row, or from the Cashier nav item's own picker/
+// new-pre-arrival-booking flow (CashierPage.tsx).
 export function BillingPage() {
   const { bookingId } = useParams<{ bookingId: string }>();
+  const navigate = useNavigate();
 
-  const [unitTypes, setUnitTypes] = useState<UnitTypeRow[]>([]);
+  const [booking, setBooking] = useState<BookingDetail | 'loading' | 'error'>('loading');
+  const [folioCharges, setFolioCharges] = useState<FolioChargeRow[]>([]);
+  const [unsettledFnb, setUnsettledFnb] = useState<UnsettledFnbCharge[]>([]);
+  const [readyUnits, setReadyUnits] = useState<ReadyUnit[]>([]);
   const [preview, setPreview] = useState<PreviewResponse | 'loading' | 'error'>('loading');
-  const [lines, setLines] = useState<DraftLine[]>([]);
   const [deductions, setDeductions] = useState<DraftDeduction[]>([]);
-  const [lineForm, setLineForm] = useState(EMPTY_LINE_FORM);
-  const [selectedUnitTypeId, setSelectedUnitTypeId] = useState('');
   const [deductionForm, setDeductionForm] = useState(EMPTY_DEDUCTION_FORM);
+  const [chargeForm, setChargeForm] = useState(EMPTY_CHARGE_FORM);
+  const [postingCharge, setPostingCharge] = useState(false);
+  const [chargeError, setChargeError] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveReason, setResolveReason] = useState('');
+  const [showReasonFor, setShowReasonFor] = useState<'CANCELLED' | 'NO_SHOW' | null>(null);
+  const [movingFromUnitId, setMovingFromUnitId] = useState<string | null>(null);
+  const [moveToUnitId, setMoveToUnitId] = useState('');
+  const [addUnitId, setAddUnitId] = useState('');
+  const [roomActionError, setRoomActionError] = useState<string | null>(null);
+  const [roomActionBusy, setRoomActionBusy] = useState(false);
 
   const [billingNumberTyped, setBillingNumberTyped] = useState('');
   const [preparedByName, setPreparedByName] = useState('');
@@ -123,7 +184,6 @@ export function BillingPage() {
       checkOutDate: checkOutDate ? new Date(checkOutDate).toISOString() : null,
       nightsOfStay: nightsOfStay ? Number(nightsOfStay) : null,
       preparedByName: preparedByName.trim(),
-      lines,
       deductions,
     };
   }
@@ -136,9 +196,6 @@ export function BillingPage() {
       .post<PreviewResponse>(`/bookings/${bookingId}/receipts/preview`, draftBody())
       .then((res) => {
         setPreview(res);
-        // First successful preview also seeds the guest-contact inputs
-        // from the booking's own record, if the cashier hasn't typed
-        // anything yet — a convenience, not an override once edited.
         if (!guestContactNo && res.guest.contactNo) setGuestContactNo(res.guest.contactNo);
         if (!guestEmail && res.guest.email) setGuestEmail(res.guest.email);
       })
@@ -152,40 +209,141 @@ export function BillingPage() {
       .finally(() => setPreviewing(false));
   }
 
+  function refetchFolio() {
+    if (!bookingId) return;
+    api
+      .get<{ folioCharges: FolioChargeRow[] }>(`/bookings/${bookingId}/folio-charges`)
+      .then((res) => setFolioCharges(res.folioCharges))
+      .catch(() => setFolioCharges([]));
+    api
+      .get<{ charges: UnsettledFnbCharge[] }>(`/bookings/${bookingId}/unsettled-fnb-charges`)
+      .then((res) => setUnsettledFnb(res.charges))
+      .catch(() => setUnsettledFnb([]));
+  }
+
+  function refetchBooking() {
+    if (!bookingId) return;
+    api
+      .get<{ booking: BookingDetail }>(`/bookings/${bookingId}`)
+      .then((res) => setBooking(res.booking))
+      .catch(() => setBooking('error'));
+  }
+
   useEffect(() => {
+    refetchBooking();
+    refetchFolio();
     void runPreview();
     api
-      .get<{ unitTypes: UnitTypeRow[] }>('/unit-types')
-      .then((res) => setUnitTypes(res.unitTypes))
-      .catch(() => setUnitTypes([]));
-    // Only on mount (keyed on bookingId) — every later recompute is the
-    // cashier explicitly clicking "Update preview" below, not an
+      .get<{ units: ReadyUnit[] }>('/units')
+      .then((res) => setReadyUnits(res.units.filter((u) => u.status === 'READY' && isBookableUnitKind(u.type))))
+      .catch(() => setReadyUnits([]));
+    // Only on mount (keyed on bookingId) — every later recompute/refetch
+    // is an explicit action (posting a charge, Update preview), not an
     // auto-refetch on every keystroke.
   }, [bookingId]);
 
-  function addRoomLine() {
-    const unitType = unitTypes.find((u) => u.id === selectedUnitTypeId);
-    if (!unitType) return;
-    setLineForm({ description: unitType.name, qty: '1', unitPrice: String(unitType.baseRate) });
+  async function handlePostCharge() {
+    if (!bookingId) return;
+    const qty = Number(chargeForm.qty);
+    const unitPrice = Number(chargeForm.unitPrice);
+    if (!chargeForm.description.trim() || !Number.isInteger(qty) || qty < 1 || !(unitPrice >= 0)) return;
+    setPostingCharge(true);
+    setChargeError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/folio-charges`, {
+        source: chargeForm.source,
+        description: chargeForm.description.trim(),
+        qty,
+        unitPrice,
+      });
+      setChargeForm(EMPTY_CHARGE_FORM);
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setChargeError(err instanceof ApiRequestError ? err.message : 'Could not post this charge.');
+    } finally {
+      setPostingCharge(false);
+    }
   }
 
-  function addExtraPersonLine() {
-    const unitType = unitTypes.find((u) => u.id === selectedUnitTypeId);
-    if (!unitType || unitType.extraPersonRate === null) return;
-    setLineForm({ description: `${unitType.name} — extra person`, qty: '1', unitPrice: String(unitType.extraPersonRate) });
+  async function pullInFnbCharge(charge: UnsettledFnbCharge) {
+    if (!bookingId) return;
+    setChargeError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/folio-charges`, {
+        source: 'FNB',
+        sourceId: charge.fnbOrderId,
+        description: `F&B order ${charge.referenceNo} (${charge.unit.code})`,
+        qty: 1,
+        unitPrice: charge.subtotal,
+      });
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setChargeError(err instanceof ApiRequestError ? err.message : 'Could not add this charge to the folio.');
+    }
   }
 
-  function commitLine() {
-    const qty = Number(lineForm.qty);
-    const unitPrice = Number(lineForm.unitPrice);
-    if (!lineForm.description.trim() || !Number.isInteger(qty) || qty < 1 || !(unitPrice >= 0)) return;
-    setLines((ls) => [...ls, { description: lineForm.description.trim(), qty, unitPrice }]);
-    setLineForm(EMPTY_LINE_FORM);
-    setSelectedUnitTypeId('');
+  async function postRoomCharge(bookingUnitId: string, description: string) {
+    if (!bookingId) return;
+    setChargeError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/folio-charges`, { source: 'ROOM', sourceId: bookingUnitId, description });
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setChargeError(err instanceof ApiRequestError ? err.message : 'Could not post the room charge.');
+    }
   }
 
-  function removeLine(index: number) {
-    setLines((ls) => ls.filter((_, i) => i !== index));
+  async function handleResolve(toStatus: 'CHECKED_IN' | 'CANCELLED' | 'NO_SHOW') {
+    if (!bookingId) return;
+    if ((toStatus === 'CANCELLED' || toStatus === 'NO_SHOW') && showReasonFor !== toStatus) {
+      setShowReasonFor(toStatus);
+      return;
+    }
+    setResolving(true);
+    try {
+      await api.post(`/bookings/${bookingId}/resolve`, { toStatus, reason: resolveReason.trim() || undefined });
+      setShowReasonFor(null);
+      setResolveReason('');
+      refetchBooking();
+    } catch (err) {
+      setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not resolve this booking.');
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  async function handleMoveUnit(fromUnitId: string) {
+    if (!bookingId || !moveToUnitId) return;
+    setRoomActionBusy(true);
+    setRoomActionError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/move-unit`, { fromUnitId, toUnitId: moveToUnitId });
+      setMovingFromUnitId(null);
+      setMoveToUnitId('');
+      refetchBooking();
+    } catch (err) {
+      setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not move this room.');
+    } finally {
+      setRoomActionBusy(false);
+    }
+  }
+
+  async function handleAddUnit() {
+    if (!bookingId || !addUnitId) return;
+    setRoomActionBusy(true);
+    setRoomActionError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/add-unit`, { unitId: addUnitId });
+      setAddUnitId('');
+      refetchBooking();
+    } catch (err) {
+      setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not add this room.');
+    } finally {
+      setRoomActionBusy(false);
+    }
   }
 
   function commitDeduction() {
@@ -229,27 +387,18 @@ export function BillingPage() {
 
   function startAnotherReceipt() {
     setIssuedReceipt(null);
-    setLines([]);
     setDeductions([]);
     setBillingNumberTyped('');
+    refetchFolio();
     void runPreview();
   }
 
-  const lineColumns: DataTableColumn<ComputedLine & { index: number }>[] = [
+  const folioColumns: DataTableColumn<FolioChargeRow>[] = [
     { key: 'description', header: 'Items', render: (l) => l.description },
+    { key: 'source', header: 'Source', render: (l) => FOLIO_CHARGE_SOURCE_LABELS[l.source] },
     { key: 'unitPrice', header: 'Price', render: (l) => formatPeso(l.unitPrice) },
     { key: 'qty', header: 'Quantity/Days', render: (l) => l.qty },
     { key: 'amount', header: 'Total', render: (l) => formatPeso(l.amount) },
-    {
-      key: 'actions',
-      header: 'Actions',
-      render: (l) => (
-        <Button variant="secondary" onClick={() => removeLine(l.index)}>
-          Remove
-        </Button>
-      ),
-      hideOnMobile: true,
-    },
   ];
 
   const deductionColumns: DataTableColumn<ComputedDeduction & { index: number }>[] = [
@@ -272,9 +421,137 @@ export function BillingPage() {
     return <IssuedReceiptView receipt={issuedReceipt} onStartAnother={startAnotherReceipt} />;
   }
 
+  const activeUnits = booking !== 'loading' && booking !== 'error' ? booking.units.filter((u) => !u.releasedAt) : [];
+
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Bill guest" description="Builds an Acknowledgement Receipt for this booking." />
+      <PageHeader
+        title="Bill guest"
+        description="Builds an Acknowledgement Receipt from this booking's running folio."
+        actions={
+          <Button type="button" variant="secondary" onClick={() => navigate('/cashier')}>
+            Back to Cashier
+          </Button>
+        }
+      />
+
+      {booking !== 'loading' && booking !== 'error' && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-ink">{booking.guestName}</p>
+              <p className="text-xs text-ink-secondary">Booking ID {booking.referenceNo}</p>
+            </div>
+            <StatusBadge variant={BOOKING_STATUS_BADGE_VARIANT[booking.status]}>
+              {BOOKING_STATUS_LABELS[booking.status]}
+            </StatusBadge>
+          </div>
+
+          {/* Re-plan, spec.md §13 decision 16: resolving a CONFIRMED
+              (pre-arrival) booking — the guest actually arrives, or
+              doesn't. Manual only, no automatic no-show timer. */}
+          {booking.status === 'CONFIRMED' && (
+            <div className="mt-4 flex flex-col gap-2">
+              <p className="text-sm font-medium text-ink">Resolve this pre-arrival booking</p>
+              {roomActionError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {roomActionError}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={() => void handleResolve('CHECKED_IN')} disabled={resolving}>
+                  Guest checked in
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => void handleResolve('CANCELLED')} disabled={resolving}>
+                  Cancel booking
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => void handleResolve('NO_SHOW')} disabled={resolving}>
+                  Mark no-show
+                </Button>
+              </div>
+              {showReasonFor && (
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field label={`Reason (optional) for ${showReasonFor === 'CANCELLED' ? 'cancelling' : 'marking no-show'}`}>
+                    <input className={INPUT_CLASSES} value={resolveReason} onChange={(e) => setResolveReason(e.target.value)} />
+                  </Field>
+                  <Button type="button" onClick={() => void handleResolve(showReasonFor)} disabled={resolving}>
+                    {resolving ? 'Confirming…' : 'Confirm'}
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={() => setShowReasonFor(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {booking !== 'loading' && booking !== 'error' && (
+        <Section title="Rooms" description="Move a room, add another, or post that room's own charge.">
+          {activeUnits.length === 0 && <EmptyState message="No rooms currently held by this booking." />}
+          <ul className="flex flex-col gap-2">
+            {activeUnits.map((bu) => (
+              <li key={bu.id} className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-ink">
+                    {bu.unit.code} — {bu.unit.name}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="secondary" onClick={() => void postRoomCharge(bu.id, `${bu.unit.code} room charge`)}>
+                      Post room charge
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => setMovingFromUnitId(movingFromUnitId === bu.id ? null : bu.id)}
+                    >
+                      Move
+                    </Button>
+                  </div>
+                </div>
+                {movingFromUnitId === bu.id && (
+                  <div className="flex flex-wrap items-end gap-3">
+                    <Field label="Move to (Ready only)">
+                      <select className={INPUT_CLASSES} value={moveToUnitId} onChange={(e) => setMoveToUnitId(e.target.value)}>
+                        <option value="">Select…</option>
+                        {readyUnits.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.code} — {u.name}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Button type="button" onClick={() => void handleMoveUnit(bu.unitId)} disabled={roomActionBusy || !moveToUnitId}>
+                      Confirm move
+                    </Button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          {roomActionError && (
+            <p role="alert" className="text-sm font-medium text-danger-600">
+              {roomActionError}
+            </p>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Add another room (Ready only)">
+              <select className={INPUT_CLASSES} value={addUnitId} onChange={(e) => setAddUnitId(e.target.value)}>
+                <option value="">Select…</option>
+                {readyUnits.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.code} — {u.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Button type="button" variant="secondary" onClick={() => void handleAddUnit()} disabled={roomActionBusy || !addUnitId}>
+              Add room
+            </Button>
+          </div>
+        </Section>
+      )}
 
       {preview === 'loading' && <p className="text-sm text-ink-secondary">Loading…</p>}
       {preview === 'error' && <p role="alert">Could not load this booking.</p>}
@@ -309,42 +586,37 @@ export function BillingPage() {
             </div>
           </Section>
 
-          <Section title="Line items">
-            <DataTable
-              columns={lineColumns}
-              rows={lines.map((l, index) => ({ ...l, amount: l.qty * l.unitPrice, index }))}
-              rowKey={(l) => String(l.index)}
-              emptyMessage="No line items yet."
-              renderMobileActions={(l) => (
-                <Button variant="secondary" onClick={() => removeLine(l.index)}>
-                  Remove
-                </Button>
-              )}
-            />
-            <div className="flex flex-wrap items-end gap-3">
-              <Field label="Unit type (for Room / Extra person)">
-                <select className={INPUT_CLASSES} value={selectedUnitTypeId} onChange={(e) => setSelectedUnitTypeId(e.target.value)}>
-                  <option value="">Select…</option>
-                  {unitTypes.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}
+          {/* Re-plan, spec.md §13 decision 16: the folio itself — read
+              only. previewReceipt/issueReceipt build their lines from
+              these same posted FolioCharge rows (gathered across every
+              sibling booking), so nothing typed here could ever drift
+              from what gets billed. */}
+          <Section title="Folio" description="Every charge posted to this booking (and any sibling room sharing its booking ID).">
+            <DataTable columns={folioColumns} rows={folioCharges} rowKey={(l) => l.id} emptyMessage="No charges posted yet." />
+            {chargeError && (
+              <p role="alert" className="text-sm font-medium text-danger-600">
+                {chargeError}
+              </p>
+            )}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+              <Field label="Source">
+                <select
+                  className={INPUT_CLASSES}
+                  value={chargeForm.source}
+                  onChange={(e) => setChargeForm((f) => ({ ...f, source: e.target.value as FolioChargeSourceKey }))}
+                >
+                  {NON_ROOM_SOURCE_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {FOLIO_CHARGE_SOURCE_LABELS[key]}
                     </option>
                   ))}
                 </select>
               </Field>
-              <Button type="button" variant="secondary" onClick={addRoomLine} disabled={!selectedUnitTypeId}>
-                Fill Room
-              </Button>
-              <Button type="button" variant="secondary" onClick={addExtraPersonLine} disabled={!selectedUnitTypeId}>
-                Fill Extra person
-              </Button>
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <Field label="Description">
                 <input
                   className={INPUT_CLASSES}
-                  value={lineForm.description}
-                  onChange={(e) => setLineForm((f) => ({ ...f, description: e.target.value }))}
+                  value={chargeForm.description}
+                  onChange={(e) => setChargeForm((f) => ({ ...f, description: e.target.value }))}
                 />
               </Field>
               <Field label="Quantity/Days">
@@ -352,8 +624,8 @@ export function BillingPage() {
                   type="number"
                   min="1"
                   className={INPUT_CLASSES}
-                  value={lineForm.qty}
-                  onChange={(e) => setLineForm((f) => ({ ...f, qty: e.target.value }))}
+                  value={chargeForm.qty}
+                  onChange={(e) => setChargeForm((f) => ({ ...f, qty: e.target.value }))}
                 />
               </Field>
               <Field label="Price">
@@ -362,16 +634,35 @@ export function BillingPage() {
                   min="0"
                   step="0.01"
                   className={INPUT_CLASSES}
-                  value={lineForm.unitPrice}
-                  onChange={(e) => setLineForm((f) => ({ ...f, unitPrice: e.target.value }))}
+                  value={chargeForm.unitPrice}
+                  onChange={(e) => setChargeForm((f) => ({ ...f, unitPrice: e.target.value }))}
                 />
               </Field>
               <div className="flex items-end">
-                <Button type="button" onClick={commitLine}>
-                  Add line
+                <Button type="button" onClick={() => void handlePostCharge()} disabled={postingCharge}>
+                  {postingCharge ? 'Posting…' : 'Post charge'}
                 </Button>
               </div>
             </div>
+          </Section>
+
+          {/* Cashier-tab plan, Stage B (2026-11-05): the F&B pull-in —
+              unsettled charge-to-room orders across every sibling
+              booking, one click each to post to the folio. */}
+          <Section title="Restaurant charges not yet on the folio">
+            {unsettledFnb.length === 0 && <EmptyState message="Nothing unsettled." />}
+            <ul className="flex flex-col gap-2">
+              {unsettledFnb.map((c) => (
+                <li key={c.fnbOrderId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 p-3 text-sm">
+                  <span>
+                    {c.unit.code} — Order {c.referenceNo} — {formatPeso(c.subtotal)}
+                  </span>
+                  <Button type="button" variant="secondary" onClick={() => void pullInFnbCharge(c)}>
+                    Add to folio
+                  </Button>
+                </li>
+              ))}
+            </ul>
           </Section>
 
           <Section title="Deductions">
@@ -470,7 +761,7 @@ export function BillingPage() {
               <Button
                 type="button"
                 onClick={() => void handleIssue(false)}
-                disabled={issuing || !billingNumberTyped.trim() || !preparedByName.trim() || lines.length === 0}
+                disabled={issuing || !billingNumberTyped.trim() || !preparedByName.trim() || preview.lines.length === 0}
               >
                 {issuing ? 'Issuing…' : 'Issue receipt'}
               </Button>

@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext.js';
 import { AmenitiesPage } from './routes/AmenitiesPage.js';
 import { AppShell } from './routes/AppShell.js';
 import { BillingPage } from './routes/BillingPage.js';
+import { CashierPage } from './routes/CashierPage.js';
 import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
 import { FnbPage } from './routes/FnbPage.js';
@@ -101,10 +102,19 @@ export function App() {
                     }
                   />
                   {/* Build plan stage 4 (spec.md §13 decision 13,
-                      2026-11-04): the cashier billing page — reached
-                      from UnitsPage's own "Bill guest" link on a
-                      booking row, not a standalone picker (none exists
-                      — see BillingPage.tsx's own header comment). */}
+                      2026-11-04); standalone picker added Cashier-tab
+                      plan Stage C (2026-11-05) — reachable either from
+                      UnitsPage's own "Bill guest" link on a booking row,
+                      or from the Cashier nav item's own picker/new-
+                      pre-arrival-booking flow below. */}
+                  <Route
+                    path="/cashier"
+                    element={
+                      <RequirePermission permission="receipt:issue">
+                        <CashierPage />
+                      </RequirePermission>
+                    }
+                  />
                   <Route
                     path="/billing/:bookingId"
                     element={

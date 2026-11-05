@@ -7807,3 +7807,66 @@ sibling-gathering test, an `in_house`-includes-`CONFIRMED` test, a
 `currentBooking.status === 'CONFIRMED'` test; two existing tests
 strengthened in place for the new shapes). `apps/web` 194/194
 (unchanged — Stage C itself follows).
+
+**Cashier tab re-plan, Stage C (frontend), 2026-11-05.** The UI itself,
+plus one more small backend addition found necessary while building it:
+`GET /bookings/:bookingId` (gated `receipt:issue`) — reuses the existing
+`getBooking()`, which every other action already returns on completion,
+but which the billing page needs on a plain page load/reload too (its
+own status, to show/hide the resolve actions; its unit list, to build
+the room-move/add-unit pickers). `getBooking`'s own unit mapping also
+gained `releasedAt`, so the frontend can tell a still-held assignment
+apart from one the booking has moved away from, same signal the backend
+fix used.
+
+New `CashierPage.tsx` (`/cashier`, nav item gated `receipt:issue`): the
+standalone picker — search by guest name/booking ID/billing number, or
+browse the in-house + pre-arrival scope (one list, per the client's own
+call on the picker-scope question) or recently-departed, each row
+showing its own status badge. A "New pre-arrival booking" action opens
+a form (guest name, external booking ID, check-in/check-out dates, a
+`READY`-only room picker) that calls `POST /bookings/pre-arrival` and
+navigates straight to the new booking's billing page.
+
+`UnitsPage.tsx`'s grid tile now renders `currentBooking` (guest name,
+booking ID, and a status badge) on any `OCCUPIED` unit — unused by the
+frontend until now despite existing server-side since the original
+Cashier-tab Stage B. The badge is the one thing that keeps a
+pre-arrival `CONFIRMED` booking (room `OCCUPIED`, nobody there yet)
+from looking identical to a real `CHECKED_IN` guest, closing the loop
+on decision 16's own stated mitigation for that cost.
+
+`BillingPage.tsx` rebuilt around the running folio rather than a
+client-typed receipt draft, matching what `previewReceipt`/
+`issueReceipt` actually do now: the former manual line-entry table
+(description/qty/price, "Fill Room"/"Fill Extra person" quick-picks,
+the `/unit-types` fetch backing them) is gone entirely, replaced by a
+read-only **Folio** table sourced from `GET /bookings/:id/folio-charges`
+(now sibling-gathering, per the pre-Stage-C fix above) plus a **Rooms**
+section (per-room "Post room charge" — no price/qty field, since the
+server computes both — and "Move", plus an "Add another room" action)
+and an **F&B pull-in** section (`GET /bookings/:id/unsettled-fnb-charges`,
+one click each to post to the folio). A **Resolve this pre-arrival
+booking** block appears only while the booking's own status is
+`CONFIRMED` (fetched via the new `GET /bookings/:bookingId`): Guest
+checked in / Cancel / Mark no-show, the latter two showing an optional
+reason field before confirming. Deductions stay exactly as they were —
+client-typed, never asked to be automatic. The preview/issue payload no
+longer sends `lines` at all (the field doesn't exist in the request
+shape anymore), closing the gap flagged before this stage began: the
+frontend was still building and sending a client `lines` array the
+backend had already started ignoring.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 692/692 passing, 3 skipped (unchanged — the
+`GET /bookings/:bookingId` endpoint's own permission/shape/404 tests
+are 3 of this count's new ones). `apps/web` 200/200 (two new test
+files — `CashierPage.test.tsx` for the picker's default scope and the
+pre-arrival-creation-to-billing-page flow — plus new/strengthened
+`UnitsPage.test.tsx` tests for the grid tile's booking summary, and the
+rebuilt `BillingPage.test.tsx` covering posting a room charge with no
+unitPrice/qty field anywhere in that flow, the resolve-action call, the
+duplicate-billing-number reissue path, and the permission gate).
+`vite build` flags the bundle just over its 500 kB informational
+chunk-size threshold (502 kB) — noted, not a build failure, and no
+code-splitting was in scope for this stage.

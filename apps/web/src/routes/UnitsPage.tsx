@@ -9,6 +9,7 @@ import {
   UNIT_STATUS_KEYS,
   unitKindGroup,
   type AnyUnitStatusKey,
+  type BookingStatusKey,
   type UnitKindKey,
   type UnitStatusKey,
 } from '@lwwbr/shared';
@@ -23,7 +24,7 @@ import { Skeleton, SkeletonCard, SkeletonList } from '../components/Skeleton.js'
 import { StatusBadge } from '../components/StatusBadge.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
-import { BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
+import { BOOKING_STATUS_BADGE_VARIANT, BOOKING_STATUS_LABELS, BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
 import { subscribeToUnitStatusChanges, type RealtimeConnectionStatus } from '../lib/realtime.js';
 import { UNIT_STATUS_CLASSES, UNIT_STATUS_LABELS } from '../lib/unitStatusStyle.js';
 
@@ -57,6 +58,13 @@ interface UnitRow {
   // Disappears the instant a later transition happens without a note, or
   // gets replaced if the new one has a note of its own.
   latestNote: string | null;
+  // Cashier-tab plan, Stage C (2026-11-05): booking id + guest name +
+  // status on every occupied unit's own card — "the unit cards must
+  // show booking ID and guest name" (client's own words), with status
+  // the one field that tells a CONFIRMED (pre-arrival, room OCCUPIED
+  // but nobody there yet) booking apart from an actual CHECKED_IN
+  // guest, per decision 16's own mitigation for OCCUPIED-at-booking-time.
+  currentBooking: { bookingId: string; referenceNo: string; guestName: string; status: BookingStatusKey } | null;
 }
 
 function formatPesoAmount(amount: number): string {
@@ -1617,6 +1625,21 @@ export function UnitsPage() {
                       <span className="text-xs font-medium">
                         {unit.isActive ? UNIT_STATUS_LABELS[unit.status] : 'Inactive'}
                       </span>
+                      {/* Cashier-tab plan, Stage C (2026-11-05): the one
+                          thing that keeps an OCCUPIED-at-booking-time
+                          room (CONFIRMED, nobody there yet) from looking
+                          identical to a room with a real guest in it —
+                          decision 16's own stated mitigation for that
+                          cost, finally wired up. */}
+                      {unit.currentBooking && (
+                        <span className="flex flex-col items-start gap-0.5 text-[11px] leading-tight text-ink-secondary">
+                          <span className="font-medium text-ink">{unit.currentBooking.guestName}</span>
+                          <span>Booking ID {unit.currentBooking.referenceNo}</span>
+                          <StatusBadge variant={BOOKING_STATUS_BADGE_VARIANT[unit.currentBooking.status]}>
+                            {BOOKING_STATUS_LABELS[unit.currentBooking.status]}
+                          </StatusBadge>
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>

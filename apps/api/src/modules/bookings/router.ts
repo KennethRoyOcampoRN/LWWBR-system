@@ -17,6 +17,7 @@ import {
   checkOutUnits,
   createPreArrivalBooking,
   findOccupiedUnitsForReferenceNo,
+  getBooking,
   listUpcomingBookingsForUnit,
   moveBookingUnit,
   resolveConfirmedBooking,
@@ -155,6 +156,23 @@ bookingsRouter.post(
   asyncHandler(async (req, res) => {
     const body = addUnitToBookingSchema.parse(req.body);
     const booking = await addUnitToBooking(req.params.bookingId as string, body, req.authUser!);
+    res.status(200).json({ booking });
+  }),
+);
+
+// Cashier-tab plan, Stage C (2026-11-05): a standalone booking read —
+// the billing page needs the booking's own status (to show/hide the
+// resolve actions and the CONFIRMED-vs-CHECKED_IN state) and its unit
+// list (to build the room-move/add-unit pickers), neither of which any
+// other response conveniently carries once the page is reloaded rather
+// than just-created. Gated receipt:issue, matching the one screen that
+// calls this — not a general-purpose booking lookup reintroducing the
+// 2026-08-24 redesign's removed GET /bookings/:id.
+bookingsRouter.get(
+  '/bookings/:bookingId',
+  requirePermission('receipt:issue'),
+  asyncHandler(async (req, res) => {
+    const booking = await getBooking(req.params.bookingId as string);
     res.status(200).json({ booking });
   }),
 );
