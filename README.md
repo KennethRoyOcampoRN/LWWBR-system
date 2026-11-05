@@ -7348,3 +7348,38 @@ additive schema change, no behavior to test yet), `apps/web` 194/194
 to run the backfills against (confirmed via `npx prisma db pull
 --print` → `P1001`); both are pending alongside the next `db push`,
 documented in spec.md §13.4.
+
+**Cashier tab — Stage A review fixes, 2026-11-05.** Two things flagged
+in review before Stage B builds on Stage A's schema:
+
+1. `Receipt.externalBookingRef`'s NULL behavior in the corrected
+   duplicate check was an untested assumption, not pinned. Rather than
+   reason about it, started this sandbox's own local Postgres 16
+   (installed but not running by default — `service postgresql start`),
+   built a throwaway scratch Prisma schema against an isolated scratch
+   database, and logged the actual SQL Prisma generates for
+   `{ not: value }` on a nullable column: plain `<>`, not `IS DISTINCT
+   FROM`. Standard SQL null semantics mean a `NULL` row matches neither
+   side of that comparison — a legacy, not-yet-backfilled receipt would
+   be invisible to collision detection entirely, a real gap in the one
+   check that stops two guests sharing a billing number. Fix (also
+   verified against the same scratch database): the duplicate check
+   ORs in an explicit `{ externalBookingRef: null }` branch, treating
+   an unknown row as "flag it" rather than silently skipping it.
+   `externalBookingRef` itself stays nullable for now — there's still
+   no live database reachable from this sandbox to run the backfill
+   that would justify tightening it to `NOT NULL`; the schema comment
+   says so and points at spec.md §13.4 for the full reasoning.
+2. Added `@@index([externalBookingRef])` on `Receipt` — it's the
+   billing identity now and nothing indexed it.
+
+`BookingUnit.occupiedFrom` has the same eventual-tightening question,
+noted in its own comment, left as-is for now — lower risk since no
+service code reads it yet. Verification: `npm run typecheck`/`lint`
+clean across all three packages, `apps/api` 639/639 and `apps/web`
+194/194 (both unchanged — still a pure schema change, the actual null-
+semantics proof lived in a throwaway scratch project outside this
+repo, not in these suites), `npm run build` clean. Scratch Postgres
+database and copied `node_modules` used for the proof were deleted
+afterward; nothing from it is part of this repo or this stage's
+migration state.

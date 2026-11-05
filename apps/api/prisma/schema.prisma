@@ -460,7 +460,12 @@ model BookingUnit {
   // rows with no value yet — the backfill above fills every row before
   // the column is relied on; application code should treat it as
   // always-present once backfilled, same caveat as occupiedTo being
-  // genuinely nullable (open-ended) for a different reason.
+  // genuinely nullable (open-ended) for a different reason. Same
+  // eventual-tightening-to-NOT-NULL question as Receipt.externalBookingRef
+  // below, flagged in review 2026-11-05 — lower risk here specifically
+  // because nothing branches on this column's nullability yet (no
+  // service code reads it until Stage B/D), unlike externalBookingRef's
+  // own duplicate-check query, which does right now.
   occupiedFrom DateTime?
   occupiedTo   DateTime?
   createdAt    DateTime  @default(now())
@@ -695,11 +700,26 @@ model Receipt {
   // receipt must cover every non-cancelled, non-checked-out Booking
   // row sharing it, not just the one in bookingId above. See
   // ReceiptBooking for which rows a given receipt actually covered.
-  // Nullable at the DB level only because this is an additive migration
+  // Nullable at the DB level because this is an additive migration
   // against already-issued receipts with no value yet (backfilled from
-  // their own booking.referenceNo) and because this stage is schema
-  // only — issueReceipt starts writing it in the Cashier-tab plan's
-  // Stage B. Treat as always-present once that lands.
+  // their own booking.referenceNo) — NOT because a row can legitimately
+  // lack one going forward; checkInBookingSchema requires
+  // externalBookingId with min(1), so issueReceipt (Stage B) will
+  // always have a real value to write. Tightening this to NOT NULL is
+  // the actual target, once the backfill has run against a live
+  // database — there is none reachable from this sandbox to run it
+  // against (see the stage's own README/spec note). Until that
+  // backfill runs, DO NOT write a duplicate-collision query that
+  // compares this column with a plain `{ not: value }` filter and
+  // assumes it also catches NULL rows — pinned empirically (a scratch
+  // Postgres + Prisma client, not reasoned about): Prisma compiles
+  // `{ not: value }` on a nullable column to a plain SQL `<>`, not
+  // `IS DISTINCT FROM`, so a NULL row never matches either side of that
+  // comparison and would be silently invisible to collision detection.
+  // The duplicate check must instead OR in an explicit `{ ref: null }`
+  // branch so a legacy, not-yet-backfilled receipt is treated as
+  // "unknown, flag it" rather than silently skipped — see
+  // billing/service.ts's own comment on isDuplicateBillingNumber.
   externalBookingRef String?
 
   // Billing number: {typedByCashier}-{MMDDYYYY in Asia/Manila}-{NN}.
@@ -798,6 +818,13 @@ model Receipt {
   // left open even though the ReferenceSequence upsert itself is
   // atomic under normal operation.
   @@index([bookingId])
+  // Added 2026-11-05, caught in review: externalBookingRef is now the
+  // billing identity — the corrected duplicate check filters on it, and
+  // the Cashier-tab picker (Stage B/C) is specified to find a booking
+  // by a typed billing number — but nothing indexed it until now.
+  // billingNumberScope's own composite unique above doesn't help here;
+  // that covers scope-prefix lookups, not a lookup keyed on this column.
+  @@index([externalBookingRef])
 }
 
 // Cashier-tab plan (spec.md, 2026-11-05): which Booking rows a receipt
