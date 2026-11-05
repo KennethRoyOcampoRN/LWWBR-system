@@ -565,7 +565,7 @@ All six original open questions have been answered by the client. These are sett
 3. **Whether the cashier may apply discounts**, and if so whether a manager must approve them. MVP allows a rate override with a mandatory reason, audited. Tighten if the client wants approval flow.
 4. **Deposit and cancellation policy** — how much down payment is required to hold a booking, and what happens to it on a no-show. MVP records payments without enforcing a policy.
 
-### 13.3 Rate rules by date range and weekday — build plan (2026-11-04, planned not built)
+### 13.3 Rate rules by date range and weekday — build plan (2026-11-04, corrected 2026-11-05, planned not built)
 Client wants rates that vary by date range and day of week (weekend/seasonal pricing), with "most specific wins" conflict resolution, no rate locking at booking time, and no cashier price override on room lines. This plan covers the model, the per-night lookup, and the staged build-out; nothing below has been implemented yet.
 
 **Model.**
@@ -573,6 +573,7 @@ Client wants rates that vary by date range and day of week (weekend/seasonal pri
 model RateRule {
   id            String    @id @default(cuid())
   appliesToAll  Boolean   @default(false)   // true: every UnitType; false: only the joined ones
+  label         String?                       // e.g. "Christmas", "Immaculate Conception" — admin-facing only, see below
   startDate     DateTime                      // Manila-midnight-anchored, same TZDate convention as resolveDate
   endDate       DateTime
   weekdayMask   Int                           // bit i = weekday i (Sun=0..Sat=6) included; 127 = every day
@@ -592,21 +593,31 @@ model RateRuleUnitType {
   @@id([ruleId, unitTypeId])
 }
 ```
+`label` (Correction B, 2026-11-05) is nullable — a plain weekday/weekend rule doesn't need one, a holiday rule does. **It does not appear on the printed receipt.** `ReceiptLine.description` stays the room/unit-type description (e.g. "2 COUPLE B - BALI"), matching the sample receipt's own format from decision 13 — mixing a rate-plan name into the guest-facing line would change that format without being asked, and since `ReceiptLine` already snapshots `description`/`qty`/`unitPrice` at issue time, a later rename of the rule's label could never retroactively alter an issued receipt anyway, so nothing about immutability forces this either way. `label` is for telling rules apart in the Setup Rates UI and shows up for free in `AuditLog` diffs. If the client wants the rate name on the printed line later, that's a distinct, explicit ask — not assumed here.
+
 A new `raterule:manage` permission key, not overloaded onto `unittype:manage` — rate changes are a materially different, money-sensitive concern from room metadata, same reasoning as `receipt:issue` staying separate from `folio:*`. Audit is free: the Prisma audit extension (`lib/auditExtension.ts`) captures every create/update/delete on every model except `AuditLog`/`Session` automatically — `RateRule` lands in `AuditLog` with zero extra code, just by existing.
 
-**Specificity ladder** (a pure function, unit-testable without a DB, same style as `isAudited`/`redactSensitiveFields` in `auditExtension.ts`): given a set of rules that already match a `(unitTypeId, date, rateKind)` candidate, pick the winner by, in order:
+**Specificity ladder — corrected 2026-11-05 (Correction A).** The original order (below, struck through in spirit, kept here so nobody reinstates it) evaluated `weekdayMask` bit-count *before* date span. Client's real case: a Dec 1–31 2026 Mon–Thu rule at a regular rate, a Dec 1–31 Fri–Sun rule at a weekend rate, and a Dec 8 2026 (a Tuesday) holiday rule that must beat both. Entered naturally, the holiday rule has `weekdayMask` covering all seven days over a 1-day span, while the Mon–Thu rule covers 4 weekdays over a 31-day span. Under the original rung order — fewer `weekdayMask` bits wins, checked before date span — the 4-bit Mon–Thu rule beat the 7-bit holiday rule, so the holiday rate never applied on the one day it was supposed to.
+
+~~Original (wrong) order: 1. unit-type specificity, 2. weekdayMask bit count, 3. date span, 4. createdAt, 5. id.~~
+
+**Corrected order**, given a set of rules that already match a `(unitTypeId, date, rateKind)` candidate (date-range and weekday-mask containment is a prerequisite for being a candidate at all — the ladder below only orders the rules that already cover the date in question):
 1. `appliesToAll === false` beats `true` (a rule naming specific unit types beats one applying to all)
-2. fewer set bits in `weekdayMask` beats more (a rule restricted to a weekday subset beats one covering all seven)
-3. shorter `endDate - startDate` beats longer
+2. shorter `endDate - startDate` beats longer — **moved up from rung 3**
+3. fewer set bits in `weekdayMask` beats more (a rule restricted to a weekday subset beats one covering all seven)
 4. later `createdAt` beats earlier
 5. (hardening beyond the client's four rungs) later `id` beats earlier, as a true last-resort tiebreak if two rules are created within the same timestamp tick
 
-Each rung needs its own test, including two rules identical in everything but creation time.
+Worked through the client's own scenario: on **Dec 8**, all three rules are candidates (each covers that date and weekday); rung 1 ties (none names a specific unit type in this example); rung 2 decides outright — the holiday rule's 1-day span beats both 31-day rules — so Dec 8 resolves to the holiday rate without rung 3 ever being reached. On **Dec 7** (Monday) and **Dec 9** (Wednesday), the holiday rule's date range doesn't cover either day, so it isn't a candidate at all; only the Mon–Thu rule is, and it wins by elimination. On **Dec 11–13** (Fri/Sat/Sun), neither the holiday rule nor the Mon–Thu rule is a candidate (wrong date range / wrong weekday respectively); the weekend rule wins by elimination. Each rung still needs its own test, including two rules identical in everything but creation time, plus this exact three-rule scenario asserting all three dates by name.
 
 **Per-night lookup.** For each night of a stay, resolve `(unitTypeId, that night's Manila date, rateKind)` against active, non-deleted rules whose date range covers the night and whose `weekdayMask` includes that night's weekday; apply the ladder; fall back to `UnitType.baseRate`/`dayTourRate`/`extraPersonRate` if nothing matches (rules are overrides, not a replacement). Group consecutive nights that resolve to the same price into one `ReceiptLine` (qty = run length) — a 2-night weekday-then-weekend stay produces two lines, not one blended line; a 3-night stay at one flat rate still produces one line. Resolution happens once, at issue time, from current rules — "the date doesn't matter since they will pay when they get to the resort" means no rate locking at booking, and the receipt's existing snapshot mechanism (decision 13) already guarantees a later rule change can't retroactively alter an issued receipt; this needs a dedicated test making that explicit rather than trusting it by inference. No cashier price override on a room line — any reduction goes through the existing deductions section, keeping every reduction typed/labelled and the statutory `DISCOUNT_SENIOR`/`DISCOUNT_PWD` columns in `receipts-detail` complete.
 
+**Dependency on the Cashier-tab plan's `BookingUnit` work (see the separate Cashier-tab plan delivered 2026-11-05):** "which `unitTypeId` applies on night N" is not knowable today — `BookingUnit` has no date boundaries, so a booking's unit assignment is a flat, undated set. The per-night lookup above needs the per-unit date boundaries that plan adds (`BookingUnit.occupiedFrom`/`occupiedTo`) to know which unit, and therefore which unit type, was occupied on a given night before it can even ask `resolveRate()` the question. Stage D below and that plan's own final room-line-builder stage are the same code path touched twice if built separately — see that plan's own note recommending they be done as one combined stage.
+
+**Setup Rates UI convenience:** a holiday rule is one date, not a range — the add/edit form should offer a "Single date" mode that fills `startDate`/`endDate` from one date picker rather than making the admin re-enter the same date twice.
+
 **Staging**, each ending in a review before the next starts:
 - Stage A: schema + permission + seed grants only.
-- Stage B: `resolveRate()` service, the ladder logic unit-tested with fixtures, no endpoints yet.
-- Stage C: admin CRUD endpoints + a Setup Rates UI.
-- Stage D: wire `resolveRate()` into `BillingPage`'s room-line builder, replacing the flat `baseRate` multiply with the per-night grouped-line expansion; `assertReceiptReconciles` needs new multi-rate-stay test fixtures, not new logic — it already recomputes from the persisted lines regardless of how many there are or how their prices were chosen.
+- Stage B: `resolveRate()` service, the ladder logic unit-tested with fixtures (including the corrected-ladder scenario above), no endpoints yet.
+- Stage C: admin CRUD endpoints + a Setup Rates UI (with the single-date convenience).
+- Stage D: wire `resolveRate()` into `BillingPage`'s room-line builder, replacing the flat `baseRate` multiply with the per-night grouped-line expansion — **combined with the Cashier-tab plan's own final stage**, since both rework the same room-line builder and the Cashier tab's `BookingUnit` date boundaries are this stage's own prerequisite. `assertReceiptReconciles` needs new multi-rate-stay test fixtures, not new logic — it already recomputes from the persisted lines regardless of how many there are or how their prices were chosen.
