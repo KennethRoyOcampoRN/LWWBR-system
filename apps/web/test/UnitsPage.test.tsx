@@ -309,7 +309,6 @@ describe('UnitsPage — Setup Rooms', () => {
     dayTourRate: null,
     extraPersonRate: 300,
     colorHex: null,
-    photo: null,
     isActive: true,
     sortOrder: 0,
   };
@@ -365,6 +364,6 @@ describe('UnitsPage — Setup Rooms', () => {
     await user.click(screen.getByRole('button', { name: 'Add room type' }));
 
     await waitFor(() => expect(createdBody).not.toBeNull());
-    expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500, photoFileId: null });
+    expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500 });
   });
 });

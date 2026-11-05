@@ -17,7 +17,6 @@ const mockPrisma = {
   quotationRequest: { findMany: vi.fn() },
   stockItem: { findMany: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
-  fileObject: { findFirst: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -25,11 +24,6 @@ vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
 const mockRealtimeEmit = vi.fn();
 vi.mock('../../../src/adapters/realtime/index.js', () => ({
   getRealtimeAdapter: () => ({ emit: mockRealtimeEmit }),
-}));
-
-const mockGetSignedUrl = vi.fn();
-vi.mock('../../../src/adapters/storage/index.js', () => ({
-  getStorageAdapter: () => ({ getSignedUrl: mockGetSignedUrl }),
 }));
 
 const { createApp } = await import('../../../src/app.js');
@@ -75,7 +69,6 @@ function fakeUnit(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetSignedUrl.mockImplementation((key: string) => Promise.resolve(`https://signed.example/${key}`));
   mockPrisma.auditLog.findFirst.mockResolvedValue(null);
   mockPrisma.auditLog.count.mockResolvedValue(0);
   mockPrisma.auditLog.findMany.mockResolvedValue([]);
@@ -155,8 +148,7 @@ describe('GET /api/v1/units and /unit-types', () => {
 // Setup Rooms (client-directed feature, 2026-11-04): these endpoints
 // already existed, but nothing in the web app ever called them — there
 // was no test coverage either. Adding it alongside the new UI, plus the
-// new photoFileId field (one photo per room type, same shape as the
-// resort logo).
+// These predate this comment but had no test coverage until added here.
 describe('POST/PATCH /api/v1/unit-types', () => {
   it('requires unittype:manage, not just unit:read', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
@@ -167,15 +159,8 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     expect(res.status).toBe(403);
   });
 
-  it('creates a unit type with a photo, returning a signed URL', async () => {
+  it('creates a unit type', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.fileObject.findFirst.mockResolvedValue({
-      id: 'file_1',
-      filename: 'room.jpg',
-      mimeType: 'image/jpeg',
-      storageKey: 'unit-types/room.jpg',
-      deletedAt: null,
-    });
     mockPrisma.unitType.create.mockResolvedValue({
       id: 'type_1',
       name: 'Standard Room',
@@ -185,7 +170,6 @@ describe('POST/PATCH /api/v1/unit-types', () => {
       dayTourRate: null,
       extraPersonRate: null,
       colorHex: null,
-      photoFileId: 'file_1',
       isActive: true,
       sortOrder: 0,
     });
@@ -193,44 +177,24 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .post('/api/v1/unit-types')
       .set('Cookie', authCookie())
-      .send({ name: 'Standard Room', defaultCapacity: 2, baseRate: 1500, photoFileId: 'file_1' });
+      .send({ name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 });
 
     expect(res.status).toBe(201);
-    expect(res.body.unitType.photo).toEqual({
-      id: 'file_1',
-      filename: 'room.jpg',
-      mimeType: 'image/jpeg',
-      url: 'https://signed.example/unit-types/room.jpg',
-    });
-    expect(res.body.unitType.photoFileId).toBeUndefined(); // the raw FileObject id never leaks past this
+    expect(res.body.unitType.baseRate).toBe(1500);
   });
 
-  it('rejects an unknown photoFileId on create', async () => {
+  it('updates an existing unit type', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.fileObject.findFirst.mockResolvedValue(null);
-
-    const res = await request(createApp())
-      .post('/api/v1/unit-types')
-      .set('Cookie', authCookie())
-      .send({ name: 'Standard Room', defaultCapacity: 2, baseRate: 1500, photoFileId: 'file_does_not_exist' });
-
-    expect(res.status).toBe(422);
-    expect(mockPrisma.unitType.create).not.toHaveBeenCalled();
-  });
-
-  it('clears a previously set photo when photoFileId is explicitly null', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', photoFileId: 'file_1' });
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1' });
     mockPrisma.unitType.update.mockResolvedValue({
       id: 'type_1',
-      name: 'Standard Room',
+      name: 'Deluxe Room',
       description: null,
       defaultCapacity: 2,
-      baseRate: { toString: () => '1500.00' },
+      baseRate: { toString: () => '1800.00' },
       dayTourRate: null,
       extraPersonRate: null,
       colorHex: null,
-      photoFileId: null,
       isActive: true,
       sortOrder: 0,
     });
@@ -238,11 +202,10 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .patch('/api/v1/unit-types/type_1')
       .set('Cookie', authCookie())
-      .send({ photoFileId: null });
+      .send({ name: 'Deluxe Room', baseRate: 1800 });
 
     expect(res.status).toBe(200);
-    expect(res.body.unitType.photo).toBeNull();
-    expect(mockPrisma.fileObject.findFirst).not.toHaveBeenCalled(); // null short-circuits the existence check
+    expect(res.body.unitType.name).toBe('Deluxe Room');
   });
 });
 

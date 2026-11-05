@@ -63,16 +63,11 @@ function formatPesoAmount(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-interface UnitTypePhoto {
-  id: string;
-  filename: string;
-  mimeType: string;
-  url: string;
-}
-
 // Setup Rooms (client-directed feature, 2026-11-04): expanded from the
 // id/name shape the Check-in/Add-unit pickers only ever needed, to the
 // full UnitType record the new management section below lists and edits.
+// No photo field — client decision, 2026-11-05: item photos on UnitType
+// are unnecessary (unlike AmenityItem/MenuItem, which keep theirs).
 interface UnitTypeRow {
   id: string;
   name: string;
@@ -82,7 +77,6 @@ interface UnitTypeRow {
   dayTourRate: number | null;
   extraPersonRate: number | null;
   colorHex: string | null;
-  photo: UnitTypePhoto | null;
   isActive: boolean;
   sortOrder: number;
 }
@@ -1250,7 +1244,7 @@ const EMPTY_UNIT_TYPE_FORM: UnitTypeFormState = {
   colorHex: '',
 };
 
-function unitTypeFormToBody(form: UnitTypeFormState, photoFileId: string | null | undefined) {
+function unitTypeFormToBody(form: UnitTypeFormState) {
   return {
     name: form.name.trim(),
     description: form.description.trim() || undefined,
@@ -1259,7 +1253,6 @@ function unitTypeFormToBody(form: UnitTypeFormState, photoFileId: string | null 
     dayTourRate: form.dayTourRate.trim() === '' ? undefined : Number(form.dayTourRate),
     extraPersonRate: form.extraPersonRate.trim() === '' ? undefined : Number(form.extraPersonRate),
     colorHex: form.colorHex.trim() || undefined,
-    photoFileId,
   };
 }
 
@@ -1272,44 +1265,25 @@ function unitTypeFormToBody(form: UnitTypeFormState, photoFileId: string | null 
 // convention as AmenitiesPage/FnbPage's own inline item-management
 // forms, rather than a separate page or folding it into Resort Settings
 // (which is scoped to resort identity/branding, a different concern).
+// No photo field — client decision, 2026-11-05: item photos on UnitType
+// are unnecessary (unlike AmenityItem/MenuItem, which keep theirs).
 function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; onSaved: () => void }) {
   const [addForm, setAddForm] = useState(EMPTY_UNIT_TYPE_FORM);
-  const [addPhoto, setAddPhoto] = useState<UnitTypePhoto | null>(null);
-  const [addPhotoUploading, setAddPhotoUploading] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState(EMPTY_UNIT_TYPE_FORM);
-  const [editPhoto, setEditPhoto] = useState<UnitTypePhoto | null>(null);
-  const [editPhotoUploading, setEditPhotoUploading] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
-
-  async function uploadPhoto(file: File, setUploading: (v: boolean) => void, setPhoto: (p: UnitTypePhoto | null) => void, setError: (e: string | null) => void) {
-    setUploading(true);
-    setError(null);
-    try {
-      const uploaded = await api.upload<{ file: { id: string; filename: string; mimeType: string } }>('/files', file);
-      // Same local-object-URL-until-next-save reasoning as
-      // ResortSettingsPage's own handleLogoChange — the upload response
-      // has no signed URL yet.
-      setPhoto({ id: uploaded.file.id, filename: uploaded.file.filename, mimeType: uploaded.file.mimeType, url: URL.createObjectURL(file) });
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not upload the photo.');
-    } finally {
-      setUploading(false);
-    }
-  }
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
     setAddError(null);
     setAdding(true);
     try {
-      await api.post('/unit-types', unitTypeFormToBody(addForm, addPhoto?.id ?? null));
+      await api.post('/unit-types', unitTypeFormToBody(addForm));
       setAddForm(EMPTY_UNIT_TYPE_FORM);
-      setAddPhoto(null);
       onSaved();
     } catch (err) {
       setAddError(err instanceof ApiRequestError ? err.message : 'Could not add the room type.');
@@ -1329,7 +1303,6 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
       extraPersonRate: type.extraPersonRate === null ? '' : String(type.extraPersonRate),
       colorHex: type.colorHex ?? '',
     });
-    setEditPhoto(type.photo);
     setEditError(null);
   }
 
@@ -1343,7 +1316,7 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
     setEditError(null);
     setEditSubmitting(true);
     try {
-      await api.patch(`/unit-types/${id}`, unitTypeFormToBody(editForm, editPhoto?.id ?? null));
+      await api.patch(`/unit-types/${id}`, unitTypeFormToBody(editForm));
       setEditingId(null);
       onSaved();
     } catch (err) {
@@ -1359,17 +1332,6 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
   }
 
   const columns: DataTableColumn<UnitTypeRow>[] = [
-    {
-      key: 'photo',
-      header: '',
-      render: (t) =>
-        t.photo ? (
-          <img src={t.photo.url} alt="" className="h-10 w-10 rounded object-cover" />
-        ) : (
-          <div className="h-10 w-10 rounded bg-gray-100" />
-        ),
-      hideOnMobile: true,
-    },
     { key: 'name', header: 'Name', render: (t) => <span className="font-medium">{t.name}</span> },
     { key: 'capacity', header: 'Capacity', render: (t) => t.defaultCapacity },
     { key: 'baseRate', header: 'Base rate', render: (t) => formatPesoAmount(t.baseRate) },
@@ -1401,7 +1363,7 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
   ];
 
   return (
-    <Section title="Setup: Rooms" description="Room types, rates, and photos — printed and charged from here.">
+    <Section title="Setup: Rooms" description="Room types and rates — printed and charged from here.">
       <div className="flex flex-col gap-4">
         <DataTable
           columns={columns}
@@ -1415,16 +1377,9 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
           <Card className="border border-gray-200">
             <form onSubmit={(e) => void submitEdit(e, editingId)} className="flex flex-col gap-4">
               {editError && <p role="alert" className="text-sm font-medium text-danger-600">{editError}</p>}
-              <UnitTypeFormFields
-                form={editForm}
-                setForm={setEditForm}
-                photo={editPhoto}
-                photoUploading={editPhotoUploading}
-                onPhotoChange={(file) => file && void uploadPhoto(file, setEditPhotoUploading, setEditPhoto, setEditError)}
-                onRemovePhoto={() => setEditPhoto(null)}
-              />
+              <UnitTypeFormFields form={editForm} setForm={setEditForm} />
               <div className="flex gap-2">
-                <Button type="submit" disabled={editSubmitting || editPhotoUploading}>
+                <Button type="submit" disabled={editSubmitting}>
                   {editSubmitting ? 'Saving…' : 'Save changes'}
                 </Button>
                 <Button type="button" variant="secondary" onClick={cancelEdit}>
@@ -1439,15 +1394,8 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
           <form onSubmit={(e) => void handleAdd(e)} className="flex flex-col gap-4">
             <h3 className="text-sm font-semibold text-ink">Add a room type</h3>
             {addError && <p role="alert" className="text-sm font-medium text-danger-600">{addError}</p>}
-            <UnitTypeFormFields
-              form={addForm}
-              setForm={setAddForm}
-              photo={addPhoto}
-              photoUploading={addPhotoUploading}
-              onPhotoChange={(file) => file && void uploadPhoto(file, setAddPhotoUploading, setAddPhoto, setAddError)}
-              onRemovePhoto={() => setAddPhoto(null)}
-            />
-            <Button type="submit" disabled={adding || addPhotoUploading} className="w-fit">
+            <UnitTypeFormFields form={addForm} setForm={setAddForm} />
+            <Button type="submit" disabled={adding} className="w-fit">
               {adding ? 'Adding…' : 'Add room type'}
             </Button>
           </form>
@@ -1460,36 +1408,12 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
 function UnitTypeFormFields({
   form,
   setForm,
-  photo,
-  photoUploading,
-  onPhotoChange,
-  onRemovePhoto,
 }: {
   form: UnitTypeFormState;
   setForm: (updater: (f: UnitTypeFormState) => UnitTypeFormState) => void;
-  photo: UnitTypePhoto | null;
-  photoUploading: boolean;
-  onPhotoChange: (file: File | null) => void;
-  onRemovePhoto: () => void;
 }) {
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <span className="text-sm font-medium text-ink">Photo</span>
-        {photo && <img src={photo.url} alt="" className="h-20 w-20 rounded-lg border border-gray-200 object-cover" />}
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp,image/heic"
-          disabled={photoUploading}
-          aria-label="Room type photo"
-          onChange={(e) => onPhotoChange(e.target.files?.[0] ?? null)}
-        />
-        {photo && (
-          <Button type="button" variant="secondary" onClick={onRemovePhoto} disabled={photoUploading}>
-            Remove photo
-          </Button>
-        )}
-      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Name">
           <input required className={INPUT_CLASSES} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />

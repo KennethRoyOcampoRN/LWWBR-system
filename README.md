@@ -7287,3 +7287,25 @@ planned in this same round but deliberately not built — see spec.md
 specificity ladder (plus a fifth hardening rung, `id` as an ultimate
 ordering tiebreak), and the four-stage build-out, each ending in a
 review before the next starts.
+
+**Correction, 2026-11-05: `UnitType` photo support removed.** The
+2026-11-04 entry above (and spec.md §13 decision 14) originally added
+`photoFileId` to `UnitType`/`AmenityItem`/`MenuItem` alike. Client
+decision, 2026-11-05: item photos on room types are unnecessary —
+dropped `UnitType.photoFileId`, its `UnitTypePhoto` relation and the
+`FileObject` back-relation, the `photo` field from `unitTypeToJson`
+(now sync again — it no longer awaits a signed-URL lookup), the photo
+uploader/thumbnail from `SetupRoomsSection`, and the now-irrelevant
+photo tests on `POST`/`PATCH /unit-types`. `AmenityItem`/`MenuItem`
+keep their photo field and uploaders unchanged — this was a
+`UnitType`-only reversal. spec.md §13 decision 14 is updated in place
+to match (not a new decision row — it corrects a factual claim about
+what was built, the same day after the one-day-old photo feature
+hadn't yet reached a live deployment). Verification: `npm run
+typecheck`/`lint` clean, `apps/api` 639/639 (the 4
+`POST`/`PATCH /unit-types` photo tests were replaced with 2 plain
+create/update tests plus 1 permission test — net 1 fewer than the
+2026-11-04 total), `apps/web` 194/194 (no test count change — the
+2026-11-04 Setup Rooms tests never asserted on a photo field in a way
+that needed removing beyond the fixture's own `photo: null`). `npm run
+build` clean.

@@ -9,7 +9,6 @@ import {
   type UnitStatusKey,
 } from '@lwwbr/shared';
 import { format } from 'date-fns';
-import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { getRealtimeAdapter } from '../../adapters/realtime/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { logAudit } from '../../lib/auditLog.js';
@@ -163,46 +162,26 @@ export async function applyAutomaticUnitStatusChange(
   return { id: unitId, code: unit.code, fromStatus, toStatus, version: newVersion };
 }
 
-// Same signed-URL-not-raw-storageKey reasoning as settings/service.ts's
-// own logoToJson — there is no generic GET /files/:id route.
-async function photoToJson(photoFileId: string | null) {
-  if (!photoFileId) return null;
-  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
-  if (!file) return null;
-  return { id: file.id, filename: file.filename, mimeType: file.mimeType, url: await getStorageAdapter().getSignedUrl(file.storageKey) };
-}
-
 // Prisma's Decimal doesn't serialize to a plain JSON number on its own
 // (res.json() would emit its internal object shape) — every UnitType
 // response goes through this so the API surface is always plain numbers.
-async function unitTypeToJson<
-  T extends { baseRate: unknown; dayTourRate: unknown; extraPersonRate: unknown; photoFileId: string | null },
->(unitType: T) {
-  const { photoFileId, ...rest } = unitType;
+function unitTypeToJson<T extends { baseRate: unknown; dayTourRate: unknown; extraPersonRate: unknown }>(
+  unitType: T,
+) {
   return {
-    ...rest,
+    ...unitType,
     baseRate: Number(unitType.baseRate),
     dayTourRate: unitType.dayTourRate === null ? null : Number(unitType.dayTourRate),
     extraPersonRate: unitType.extraPersonRate === null ? null : Number(unitType.extraPersonRate),
-    photo: await photoToJson(photoFileId),
   };
 }
 
 export async function listUnitTypes() {
   const unitTypes = await prisma.unitType.findMany({ where: { deletedAt: null }, orderBy: { sortOrder: 'asc' } });
-  return Promise.all(unitTypes.map(unitTypeToJson));
-}
-
-async function assertPhotoFileExists(photoFileId: string | null | undefined) {
-  if (!photoFileId) return;
-  const file = await prisma.fileObject.findFirst({ where: { id: photoFileId, deletedAt: null } });
-  if (!file) {
-    throw new ApiError(422, 'VALIDATION_ERROR', 'The referenced photo file could not be found.');
-  }
+  return unitTypes.map(unitTypeToJson);
 }
 
 export async function createUnitType(input: CreateUnitTypeInput) {
-  await assertPhotoFileExists(input.photoFileId);
   const unitType = await prisma.unitType.create({ data: input });
   return unitTypeToJson(unitType);
 }
@@ -212,7 +191,6 @@ export async function updateUnitType(id: string, input: UpdateUnitTypeInput) {
   if (!existing) {
     throw new ApiError(404, 'NOT_FOUND', 'Unit type not found');
   }
-  await assertPhotoFileExists(input.photoFileId);
   const unitType = await prisma.unitType.update({ where: { id }, data: input });
   return unitTypeToJson(unitType);
 }
