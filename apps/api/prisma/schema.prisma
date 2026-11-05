@@ -468,6 +468,32 @@ model BookingUnit {
   // own duplicate-check query, which does right now.
   occupiedFrom DateTime?
   occupiedTo   DateTime?
+  // Added 2026-11-05, spec.md §13 decision 16 correction — caught in
+  // review: occupiedTo cannot double as "is this row still active,"
+  // because it means two different things depending on who writes it.
+  // createPreArrivalBooking writes the *planned* checkout date into it
+  // (the assignment is still live; occupiedTo just happens to be
+  // non-null and usually in the future). moveBookingUnit writes the
+  // *actual* closure timestamp when a room changes. A date-based
+  // predicate trying to tell these apart from occupiedTo alone breaks
+  // on a late no-show: a Dec 1-3 booking resolved NO_SHOW on Dec 5 has
+  // occupiedTo = Dec 3, which is neither "null" nor "still in the
+  // future" by then, so a filter built on occupiedTo's own value would
+  // (and did, briefly) leave the unit permanently OCCUPIED in exactly
+  // that case. releasedAt is the unambiguous answer instead: null means
+  // still held, any value means closed, independent of what occupiedTo
+  // says or when "now" happens to fall. moveBookingUnit sets this (not
+  // occupiedTo) when it closes the old assignment — occupiedTo there
+  // keeps meaning "the date range this assignment actually covered,"
+  // which per-night rate resolution (§13.3 Stage D) needs preserved,
+  // not overwritten by the closure action. resolveConfirmedBooking sets
+  // it the same way on CANCELLED/NO_SHOW. No backfill needed: nothing
+  // in production has used the pre-arrival or move flow yet (unreleased
+  // feature), so every existing row's correct value is the default,
+  // null — "still held" was never ambiguous before this field existed
+  // because occupiedTo: null was still the right answer for every row
+  // that existed so far.
+  releasedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?

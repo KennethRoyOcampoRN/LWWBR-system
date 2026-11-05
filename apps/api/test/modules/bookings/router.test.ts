@@ -845,7 +845,7 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ bookingId: 'booking_1', fromUnitId: 'unit_1', toUnitId: 'unit_2' });
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: expect.objectContaining({ occupiedTo: expect.any(Date) }) }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: expect.objectContaining({ releasedAt: expect.any(Date) }) }),
     );
     expect(mockPrisma.bookingUnit.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ bookingId: 'booking_1', unitId: 'unit_2', occupiedFrom: expect.any(Date) }) }),
@@ -855,14 +855,13 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'OCCUPIED' }) }));
   });
 
-  // Real bug caught in review, 2026-11-05: this query used to be a
-  // plain `occupiedTo: null`, which only matches a walk-up-created row
-  // (checkInBooking never sets occupiedTo at all) — a pre-arrival
-  // booking's BookingUnit always has occupiedTo set (the planned
-  // checkout date, written by createPreArrivalBooking), so moving a
-  // room on a CONFIRMED booking would 422 with "no current, open
-  // assignment" even though the assignment is very much still active.
-  it('queries the active assignment with "occupiedTo null OR in the future", not a plain occupiedTo: null', async () => {
+  // Bug caught in review, 2026-11-05, found and fixed twice: this query
+  // used to be a plain `occupiedTo: null` (only matches a walk-up-
+  // created row), then briefly "occupiedTo null OR in the future" (still
+  // broke on a late-resolved pre-arrival row once its planned checkout
+  // date had passed). `releasedAt: null` is the real, date-independent
+  // fix — see BookingUnit.releasedAt's own schema comment.
+  it('queries the active assignment by releasedAt: null, not by occupiedTo at all', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
     mockPrisma.booking.findFirst.mockResolvedValue({ id: 'booking_1', referenceNo: '80512', status: 'CHECKED_IN', deletedAt: null });
     mockPrisma.bookingUnit.findFirst.mockResolvedValue(null);
@@ -873,15 +872,16 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
       .send({ fromUnitId: 'unit_1', toUnitId: 'unit_2' });
 
     const whereArg = mockPrisma.bookingUnit.findFirst.mock.calls[0]?.[0]?.where;
-    expect(whereArg).toEqual(
-      expect.objectContaining({ OR: [{ occupiedTo: null }, { occupiedTo: { gte: expect.any(Date) } }] }),
-    );
+    expect(whereArg).toEqual(expect.objectContaining({ releasedAt: null }));
   });
 
-  // The actual scenario the bug above produced: a pre-arrival booking's
+  // The actual scenario the first bug produced: a pre-arrival booking's
   // room gets moved before the guest ever arrives. occupiedTo here is a
-  // real future Date (what createPreArrivalBooking actually writes),
-  // not null — proving the move succeeds against that shape now.
+  // real future Date (what createPreArrivalBooking actually writes) and
+  // releasedAt is null (never closed) — proving the move succeeds
+  // against that shape, and that closing it writes releasedAt, not
+  // occupiedTo (which stays untouched, preserving the planned date for
+  // per-night rate resolution).
   it('moves a room on a CONFIRMED (pre-arrival) booking whose BookingUnit.occupiedTo is a future planned checkout date', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue({ id: 'booking_1', referenceNo: 'EXT-200', status: 'CONFIRMED', deletedAt: null });
@@ -890,6 +890,7 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
       bookingId: 'booking_1',
       unitId: 'unit_1',
       occupiedTo: new Date('2099-01-01T00:00:00.000Z'),
+      releasedAt: null,
       deletedAt: null,
       unit: { id: 'unit_1', code: 'R01', status: 'OCCUPIED' },
     });
@@ -907,7 +908,7 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: expect.objectContaining({ occupiedTo: expect.any(Date) }) }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
     );
   });
 
@@ -1060,14 +1061,21 @@ describe('POST /api/v1/bookings/pre-arrival', () => {
 });
 
 describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pre-arrival) booking', () => {
-  // Real bug caught in review, 2026-11-05: createPreArrivalBooking
-  // writes the *planned* checkout date into occupiedTo (service.ts:340),
-  // not null — unlike a walk-up checkInBooking row, which never sets it
-  // at all. A fake fixture with occupiedTo: null (the original version
-  // of this helper) would make the release loop "work" against a shape
-  // the real pre-arrival flow never produces, hiding the exact bug this
-  // describe block exists to guard against. occupiedTo here is a real
-  // future Date, matching what createPreArrivalBooking actually writes.
+  // Bug caught in review, 2026-11-05, found and fixed twice before this.
+  // First version: createPreArrivalBooking writes the *planned*
+  // checkout date into occupiedTo (service.ts:340), not null — unlike a
+  // walk-up checkInBooking row, which never sets it at all — so a plain
+  // `occupiedTo: null` release query matched zero rows. Second version
+  // ("occupiedTo null OR still in the future") still broke on a late
+  // no-show: once the planned checkout date has actually passed, that
+  // predicate excludes the row too, for the same permanently-OCCUPIED
+  // outcome. `releasedAt` (BookingUnit's own schema comment has the
+  // full reasoning) is the real fix — null is unambiguous regardless of
+  // what occupiedTo says or when "now" falls relative to it. The
+  // fixture here still carries a future occupiedTo (what
+  // createPreArrivalBooking actually writes) specifically so these
+  // tests exercise the real shape, not a convenient null that would
+  // hide a regression back to either of the first two bugs.
   function fakeConfirmedBooking(overrides: Partial<Record<string, unknown>> = {}) {
     return {
       id: 'booking_1',
@@ -1080,6 +1088,7 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
           id: 'bu_1',
           unitId: 'unit_1',
           occupiedTo: new Date('2099-01-01T00:00:00.000Z'),
+          releasedAt: null,
           unit: { id: 'unit_1', code: 'R01', status: 'OCCUPIED' },
         },
       ],
@@ -1117,10 +1126,10 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
   // Pins the actual where-clause shape, not just that a release happened
   // — the bug this guards against was invisible to every other test here
   // precisely because the Prisma mock returns units regardless of the
-  // filter. "Still held" = occupiedTo null OR still in the future, never
-  // a plain occupiedTo: null (which only matches a walk-up-created row,
-  // not a pre-arrival one).
-  it('queries units with "occupiedTo null OR in the future", not a plain occupiedTo: null', async () => {
+  // filter. "Still held" = releasedAt: null, full stop — never a
+  // predicate built on occupiedTo's own value (see BookingUnit.releasedAt's
+  // schema comment for why no date-based version of this can work).
+  it('queries units by releasedAt: null, not by occupiedTo at all', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValueOnce(fakeConfirmedBooking()).mockResolvedValueOnce(
       fakeBookingWithUnits({ status: 'CHECKED_IN' }),
@@ -1129,19 +1138,18 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
     await request(createApp()).post('/api/v1/bookings/booking_1/resolve').set('Cookie', authCookie()).send({ toStatus: 'CHECKED_IN' });
 
     const unitsWhere = mockPrisma.booking.findFirst.mock.calls[0]?.[0]?.include?.units?.where;
-    expect(unitsWhere).toEqual(
-      expect.objectContaining({ OR: [{ occupiedTo: null }, { occupiedTo: { gte: expect.any(Date) } }] }),
-    );
+    expect(unitsWhere).toEqual(expect.objectContaining({ releasedAt: null }));
   });
 
   // The actual requirement (user's own words): both CANCELLED and
   // NO_SHOW must release the unit, landing it on READY specifically —
   // "a room booked but never slept in isn't dirty" — not VACANT_DIRTY.
-  // Also closes the BookingUnit row itself (occupiedTo = now), not just
-  // the Unit row — flagged in the same review: otherwise a future
+  // Also closes the BookingUnit row itself via releasedAt (not
+  // occupiedTo, which stays untouched — see that field's own schema
+  // comment) — flagged in the same review: otherwise a future
   // per-night rate lookup could see this row and a new booking's row
   // both claiming the same unit on the same date.
-  it.each(['CANCELLED', 'NO_SHOW'])('%s releases the unit back to READY, not VACANT_DIRTY, and closes the BookingUnit row', async (toStatus) => {
+  it.each(['CANCELLED', 'NO_SHOW'])('%s releases the unit back to READY, not VACANT_DIRTY, and closes the BookingUnit row via releasedAt', async (toStatus) => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValueOnce(fakeConfirmedBooking()).mockResolvedValueOnce(
       fakeBookingWithUnits({ status: toStatus }, [{ unitId: 'unit_1', code: 'R01', status: 'READY' }]),
@@ -1157,7 +1165,7 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
     expect(res.status).toBe(200);
     expect(mockPrisma.booking.update).toHaveBeenCalledWith({ where: { id: 'booking_1' }, data: { status: toStatus } });
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: expect.objectContaining({ occupiedTo: expect.any(Date) }) }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
     );
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'READY' }) }),
@@ -1165,6 +1173,54 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
     // READY is excluded from the VACANT_DIRTY-gated auto-housekeeping-
     // ticket guard in applyAutomaticUnitStatusChange — no WorkOrder here.
     expect(mockPrisma.workOrder.create).not.toHaveBeenCalled();
+  });
+
+  // The exact scenario the second bug missed, named explicitly: a
+  // no-show noticed days after the planned stay, not on the day. A
+  // Dec 1-3 booking resolved NO_SHOW on Dec 5 has occupiedTo already in
+  // the past — the previous "null OR future" predicate would have
+  // excluded this row and left the unit permanently OCCUPIED, exactly
+  // reproducing the original bug in the window where it's most likely
+  // to actually happen (no-shows are typically noticed late). releasedAt
+  // being the sole signal, independent of occupiedTo's own value, means
+  // this case is no different from an on-time resolution.
+  it('releases the unit for a NO_SHOW resolved days after the planned checkout date has already passed', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst
+      .mockResolvedValueOnce(
+        fakeConfirmedBooking({
+          units: [
+            {
+              id: 'bu_1',
+              unitId: 'unit_1',
+              // Planned Dec 1-3; resolved Dec 5 — occupiedTo is two
+              // days in the past by the time this call happens.
+              occupiedTo: new Date('2026-12-03T00:00:00.000Z'),
+              releasedAt: null,
+              unit: { id: 'unit_1', code: 'R01', status: 'OCCUPIED' },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(fakeBookingWithUnits({ status: 'NO_SHOW' }, [{ unitId: 'unit_1', code: 'R01', status: 'READY' }]));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+    mockPrisma.bookingUnit.update.mockResolvedValue({});
+    vi.setSystemTime(new Date('2026-12-05T10:00:00.000Z'));
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/resolve')
+      .set('Cookie', authCookie())
+      .send({ toStatus: 'NO_SHOW' });
+
+    vi.useRealTimers();
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
+    );
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'READY' }) }),
+    );
   });
 
   it('releases every unit of a multi-room pre-arrival booking on cancellation', async () => {

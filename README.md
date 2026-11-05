@@ -7645,3 +7645,51 @@ scenario test, replacing none; the existing release/move tests were
 strengthened in place, not added to, since they already existed and
 were simply passing for the wrong reason). `apps/web` 194/194
 (unchanged).
+
+**Cashier tab re-plan, Stage B fix #2: the date-based predicate still
+broke on a late no-show, 2026-11-05.** Caught in review on the fix
+above: `activeBookingUnitWhere`'s "`occupiedTo` null OR still in the
+future" only works while the planned checkout date hasn't passed yet. A
+booking for Dec 1-3 resolved `NO_SHOW` on Dec 5 — the realistic case;
+no-shows are typically noticed days late, not on the day — has
+`occupiedTo = Dec 3`, which is neither null nor in the future relative
+to Dec 5. The predicate excludes the row, the release loop runs zero
+times, and the unit stays `OCCUPIED` permanently, reproducing the exact
+original bug in its most likely trigger window. The booking's own
+status still flips to `NO_SHOW` (that update runs before the release
+loop), so the failure mode is a booking correctly marked no-show next to
+a room that still reads occupied — harder to notice than either failure
+alone.
+
+No date-based predicate can close this gap, because a past `occupiedTo`
+is genuinely ambiguous: it means "closed by a move" when
+`moveBookingUnit` writes it, and "a stay whose planned end has passed"
+when `createPreArrivalBooking`'s own date just ages into the past — the
+same overload the first fix diagnosed but worked around rather than
+resolved. Real fix this time: new `BookingUnit.releasedAt` (nullable
+`DateTime`, Prisma schema) as the one column whose only job is "is this
+assignment still held" — null means held, any value means closed,
+independent of `occupiedTo` or what day it happens to be.
+`activeBookingUnitWhere(now)` is gone; both `resolveConfirmedBooking`'s
+unit query and `moveBookingUnit`'s active-assignment lookup now filter
+on `releasedAt: null` directly, and both close by setting
+`releasedAt = now` instead of overwriting `occupiedTo` — which stays
+exactly what it already meant (the planned/actual date range this
+assignment covers) for whenever rate rules (§13.3 Stage D) need it. No
+backfill: nothing in production has exercised the pre-arrival or move
+flow yet, so every existing row's correct value is the new column's own
+default, `null`.
+
+New test pins the late-no-show case by name: a `CONFIRMED` booking whose
+`occupiedTo` is already two days in the past at resolution time, marked
+`NO_SHOW`, asserting the unit still releases to `READY`. The two
+where-clause-pinning tests from the previous fix were updated to assert
+`releasedAt: null` instead of the date-OR predicate they'd pinned a
+version ago.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 684/684 (1 net new — the late-no-show test; two
+existing tests were strengthened in place for the new `releasedAt`
+shape, not added to). `apps/web` 194/194 (unchanged). No live database
+in this sandbox to run the (trivial, no-backfill-needed) schema push
+against — consistent with every prior stage's own note.
