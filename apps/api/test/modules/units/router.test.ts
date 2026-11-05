@@ -116,16 +116,20 @@ describe('GET /api/v1/units and /unit-types', () => {
     mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ status: 'OCCUPIED' })]);
     mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
     mockPrisma.bookingUnit.findMany.mockResolvedValue([
-      { unitId: 'unit_1', booking: { id: 'booking_1', referenceNo: '83887', guestName: 'Roel Villagomez' } },
+      { unitId: 'unit_1', booking: { id: 'booking_1', referenceNo: '83887', guestName: 'Roel Villagomez', status: 'CHECKED_IN' } },
     ]);
 
     const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
 
     expect(res.status).toBe(200);
+    // status included (added 2026-11-05, spec.md §13 decision 16
+    // correction): the unit card's CONFIRMED-vs-CHECKED_IN distinction
+    // depends on this field actually being here.
     expect(res.body.units[0].currentBooking).toEqual({
       bookingId: 'booking_1',
       referenceNo: '83887',
       guestName: 'Roel Villagomez',
+      status: 'CHECKED_IN',
     });
     // Bug caught in review, 2026-11-05 (spec.md §13 decision 16): after
     // a room move, a unit has a released BookingUnit row and a live
@@ -136,6 +140,24 @@ describe('GET /api/v1/units and /unit-types', () => {
     expect(mockPrisma.bookingUnit.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ unitId: { in: ['unit_1'] }, releasedAt: null }) }),
     );
+  });
+
+  // Re-plan, spec.md §13 decision 16: a pre-arrival booking moves its
+  // unit to OCCUPIED immediately, so its card must show status:
+  // CONFIRMED — the one field that lets the frontend distinguish it
+  // from an actual guest, per the client's own request.
+  it('currentBooking carries status: CONFIRMED for a pre-arrival booking (room OCCUPIED, nobody there yet)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    mockPrisma.unit.findMany.mockResolvedValue([fakeUnit({ status: 'OCCUPIED' })]);
+    mockPrisma.unitStatusEvent.findMany.mockResolvedValue([]);
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([
+      { unitId: 'unit_1', booking: { id: 'booking_1', referenceNo: 'EXT-200', guestName: 'Jane Dela Cruz', status: 'CONFIRMED' } },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/units').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.units[0].currentBooking.status).toBe('CONFIRMED');
   });
 
   it('currentBooking is null for a non-OCCUPIED unit, and the booking-unit query is skipped entirely', async () => {

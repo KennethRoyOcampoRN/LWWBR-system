@@ -86,6 +86,33 @@ beforeEach(() => {
 });
 
 describe('Folio charges', () => {
+  // Corrected 2026-11-05 (spec.md §13 decision 16): this used to scope
+  // to the single entry-point bookingId only, unlike gatherReceiptLines/
+  // listUnsettledFnbCharges, which both gather every Booking row sharing
+  // the entry booking's referenceNo. A cashier viewing this folio for a
+  // multi-booking group would see an incomplete bill right up until
+  // issuing, where the total would suddenly include charges never shown
+  // on screen.
+  it('gathers folio charges across every Booking row sharing the entry booking\'s referenceNo', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking); // referenceNo: '83887'
+    // A group checked in across two submissions under the same external
+    // ID — booking_1 (the entry point) and booking_2 (a sibling).
+    mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_2' }]);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', bookingId: 'booking_1', description: 'Room 1', qty: 1, unitPrice: 1100, amount: 1100 },
+      { id: 'charge_2', bookingId: 'booking_2', description: 'Room 2', qty: 1, unitPrice: 1100, amount: 1100 },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/folio-charges').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.folioCharges).toHaveLength(2);
+    expect(mockPrisma.folioCharge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ bookingId: { in: expect.arrayContaining(['booking_1', 'booking_2']) } }) }),
+    );
+  });
+
   it('posts a MISC folio charge with amount computed server-side (qty * unitPrice), not trusted from the client', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);

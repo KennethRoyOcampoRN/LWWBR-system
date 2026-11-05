@@ -7768,3 +7768,42 @@ packages. `apps/api` 686/686 (2 net new — the `createFnbOrder`
 where-clause test and the `checkOutUnits` one; the other three
 where-clause assertions were added to existing tests, not new ones).
 `apps/web` 194/194 (unchanged).
+
+**Cashier tab re-plan, pre-Stage-C backend corrections, 2026-11-05.**
+Verified against the Stage C frontend plan before building it, per the
+client's own instruction to flag gaps rather than work around them.
+Three found:
+
+- `UnitCurrentBooking` (`units/service.ts`) was `{ bookingId,
+  referenceNo, guestName }` — no `status`. Decision 16's own text
+  already claimed the mitigation this enables ("the unit card
+  distinguishes a `CONFIRMED` booking from a `CHECKED_IN` one
+  visually... `GET /units`'s `currentBooking` ... carries the covering
+  booking's own `status`") — that line was aspirational, never actually
+  shipped. Added the field; `listUnits`'s own query already selected
+  everything else needed.
+- `listFolioCharges` (`billing/service.ts`) scoped to the single
+  entry-point `bookingId`, while `gatherReceiptLines` (what
+  `issueReceipt`/`previewReceipt` actually bill) and
+  `listUnsettledFnbCharges` both gather every `Booking` row sharing the
+  entry booking's `referenceNo`. A cashier viewing the folio for a
+  multi-booking group would see an incomplete bill right up until
+  issuing, where the total would suddenly include charges never shown
+  on screen — the client's own framing: "that's worse than most
+  outright failures, because it looks like the system is overcharging."
+  Now gathers via the same `gatherBookingIdsForBilling`.
+- `searchBookings`'s default and `scope=in_house` filtered to
+  `status: 'CHECKED_IN'` only, under the pre-decision-16 assumption
+  that `CONFIRMED` was unreachable. Client decision: widen both to
+  `status IN (CHECKED_IN, CONFIRMED)` — one list, not a separate scope,
+  since "find this guest's bill" shouldn't require deciding in advance
+  whether they're pre-arrival or in-house. Each row's own `status`
+  stays visible in the response so the two remain distinguishable at a
+  glance, same approach as the unit card.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 689/689 (3 net new — a `listFolioCharges`
+sibling-gathering test, an `in_house`-includes-`CONFIRMED` test, a
+`currentBooking.status === 'CONFIRMED'` test; two existing tests
+strengthened in place for the new shapes). `apps/web` 194/194
+(unchanged — Stage C itself follows).

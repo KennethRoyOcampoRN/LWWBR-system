@@ -649,22 +649,36 @@ export async function listUpcomingBookingsForUnit(unitId: string) {
 // this file's own top-of-file comment on why it was removed in the
 // 2026-08-24 redesign) — this one exists for a narrower, real reason:
 // the Cashier tab needs to find a booking to bill, not browse every
-// booking ever. "Arriving" was considered and dropped (spec.md §13.4):
-// a Booking row is only ever created already CHECKED_IN, so there is
-// nothing a pre-arrival filter could ever match.
+// booking ever.
+//
+// Corrected 2026-11-05 (spec.md §13 decision 16): "arriving" was
+// originally dropped because a Booking row was only ever created
+// already CHECKED_IN — true before decision 16, false after. A
+// CONFIRMED (pre-arrival) booking is exactly as billable as a
+// checked-in one, which is the whole point of billing-before-check-in,
+// so in_house/default now mean "status IN (CHECKED_IN, CONFIRMED)" —
+// one list, not a separate scope, per the client's own reasoning: a
+// cashier's question is "find this guest's bill," not "is this guest
+// pre-arrival or in-house" — forcing that choice first is backwards,
+// and a separate scope would hide the thing this tab exists for from
+// its own default view. The two stay visually distinguishable by each
+// row's own `status` in the response (same approach as the unit card),
+// not by which list they're in.
 const RECENT_DEPARTURE_WINDOW_DAYS = 7;
+const IN_HOUSE_STATUSES = ['CHECKED_IN', 'CONFIRMED'] as const;
 
 export async function searchBookings(query: SearchBookingsQuery) {
   const scopeFilter: Record<string, unknown> =
     query.scope === 'recent'
       ? { status: 'CHECKED_OUT', endAt: { gte: new Date(Date.now() - RECENT_DEPARTURE_WINDOW_DAYS * 24 * 60 * 60 * 1000) } }
       : query.scope === 'in_house'
-        ? { status: 'CHECKED_IN' }
+        ? { status: { in: [...IN_HOUSE_STATUSES] } }
         // No scope and no text query: default to the picker's natural
-        // initial view (in-house) rather than "every booking ever."
+        // initial view (in-house + pre-arrival) rather than "every
+        // booking ever."
         : query.q
           ? { status: { not: 'CANCELLED' } }
-          : { status: 'CHECKED_IN' };
+          : { status: { in: [...IN_HOUSE_STATUSES] } };
 
   const textFilter = query.q
     ? {

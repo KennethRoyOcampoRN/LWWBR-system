@@ -3,6 +3,7 @@ import {
   BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
   canOverrideAutomaticTransition,
   getTransition,
+  type BookingStatusKey,
   type EffectivePermissions,
   type PermissionKey,
   type PermissionScope,
@@ -222,6 +223,13 @@ export interface UnitCurrentBooking {
   bookingId: string;
   referenceNo: string;
   guestName: string;
+  // Added 2026-11-05 (spec.md §13 decision 16 correction): decision 16's
+  // own text already claimed this card-level mitigation existed — "the
+  // unit card distinguishes a CONFIRMED booking from a CHECKED_IN one
+  // visually" — but the field it depends on was never actually added.
+  // Without it the Stage C unit card has no way to tell a pre-arrival
+  // booking (room OCCUPIED, nobody there yet) from an actual guest.
+  status: BookingStatusKey;
 }
 
 export interface UnitSummaryWithNote extends UnitSummary {
@@ -287,12 +295,17 @@ export async function listUnits(): Promise<UnitSummaryWithNote[]> {
             releasedAt: null,
             booking: { deletedAt: null, status: { notIn: [...BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY] } },
           },
-          select: { unitId: true, booking: { select: { id: true, referenceNo: true, guestName: true } } },
+          select: { unitId: true, booking: { select: { id: true, referenceNo: true, guestName: true, status: true } } },
         });
   const currentBookingByUnitId = new Map(
     activeBookingUnits.map((bu) => [
       bu.unitId,
-      { bookingId: bu.booking.id, referenceNo: bu.booking.referenceNo, guestName: bu.booking.guestName },
+      {
+        bookingId: bu.booking.id,
+        referenceNo: bu.booking.referenceNo,
+        guestName: bu.booking.guestName,
+        status: bu.booking.status as BookingStatusKey,
+      },
     ]),
   );
 

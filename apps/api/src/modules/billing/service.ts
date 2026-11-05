@@ -72,9 +72,22 @@ function folioChargeToJson<T extends { unitPrice: unknown; amount: unknown }>(ch
   return { ...charge, unitPrice: Number(charge.unitPrice), amount: Number(charge.amount) };
 }
 
+// Corrected 2026-11-05, same review that caught the issueReceipt/
+// previewReceipt sibling-gathering requirement: this used to scope to
+// the single entry-point bookingId only, while gatherReceiptLines (what
+// issueReceipt/previewReceipt actually bill) and listUnsettledFnbCharges
+// above both gather every Booking row sharing the entry booking's
+// referenceNo. A cashier viewing this folio for a multi-booking group
+// would see an incomplete bill right up until issuing, where the total
+// would suddenly include charges never shown on screen — the same
+// wrong-attribution failure mode this whole decision has been chasing,
+// just surfacing as "the system charged more than it showed me" instead
+// of a misattributed charge.
 export async function listFolioCharges(bookingId: string) {
+  const booking = await requireBooking(bookingId);
+  const bookingIds = await gatherBookingIdsForBilling(booking);
   const charges = await prisma.folioCharge.findMany({
-    where: { bookingId, deletedAt: null },
+    where: { bookingId: { in: bookingIds }, deletedAt: null },
     orderBy: { createdAt: 'asc' },
   });
   return charges.map(folioChargeToJson);

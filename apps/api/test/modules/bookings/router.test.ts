@@ -781,7 +781,13 @@ describe('GET /api/v1/bookings/search — the Cashier-tab booking picker', () =>
     expect(res.status).toBe(403);
   });
 
-  it('defaults to in-house bookings when neither q nor scope is given', async () => {
+  // Corrected 2026-11-05 (spec.md §13 decision 16): a CONFIRMED
+  // (pre-arrival) booking is exactly as billable as a checked-in one —
+  // the whole point of billing-before-check-in — so the default and
+  // in_house scope both widened to include it. One list, not a
+  // separate scope (client decision): a cashier's question is "find
+  // this guest's bill," not "is this guest pre-arrival or in-house."
+  it('defaults to in-house + pre-arrival bookings when neither q nor scope is given', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
     mockPrisma.booking.findMany.mockResolvedValue([]);
 
@@ -789,7 +795,19 @@ describe('GET /api/v1/bookings/search — the Cashier-tab booking picker', () =>
 
     expect(res.status).toBe(200);
     expect(mockPrisma.booking.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ status: 'CHECKED_IN' }) }),
+      expect.objectContaining({ where: expect.objectContaining({ status: { in: ['CHECKED_IN', 'CONFIRMED'] } }) }),
+    );
+  });
+
+  it('scope=in_house also includes CONFIRMED (pre-arrival) bookings, not just CHECKED_IN', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    mockPrisma.booking.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp()).get('/api/v1/bookings/search?scope=in_house').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: { in: ['CHECKED_IN', 'CONFIRMED'] } }) }),
     );
   });
 
