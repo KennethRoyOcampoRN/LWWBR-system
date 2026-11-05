@@ -109,13 +109,16 @@ export async function getBooking(id: string) {
 // live-testing 2026-08-24: a booking created and checked in through the
 // *old*, now-removed "New booking" flow may never have actually
 // transitioned to CHECKED_IN before that flow was deleted, leaving it
-// stuck at a legacy PENDING/CONFIRMED status forever (nothing in this
-// codebase can move it forward anymore — BOOKING_TRANSITIONS empties
-// both edges now). The room itself is still genuinely, physically
-// Occupied regardless of what that bookkeeping field says, and that's
-// the fact that actually matters for "can this be checked out." Only
-// CANCELLED/CHECKED_OUT are excluded — a booking in either state has no
-// business being treated as the current occupant of anything.
+// stuck at a legacy PENDING/CONFIRMED status with no transition back
+// then. (CONFIRMED has real edges again as of decision 16's pre-arrival
+// flow, but a genuinely stuck pre-redesign row is still just sitting on
+// a status nothing will ever act on specifically for it.) The room
+// itself is still genuinely, physically Occupied regardless of what
+// that bookkeeping field says, and that's the fact that actually
+// matters for "can this be checked out." Only
+// CANCELLED/CHECKED_OUT/NO_SHOW are excluded — a booking in any of
+// those states has no business being treated as the current occupant
+// of anything.
 export async function findOccupiedUnitsForReferenceNo(referenceNo: string) {
   const bookingUnits = await prisma.bookingUnit.findMany({
     where: {
@@ -388,8 +391,9 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
 // It doesn't: a booking created through the old, now-removed "New
 // booking" flow may never have completed its own transition before that
 // flow was deleted, leaving it stuck at a legacy PENDING/CONFIRMED
-// status forever — nothing in this codebase can move it forward anymore
-// (BOOKING_TRANSITIONS empties both edges now). That first fix still
+// status with no transition back then (CONFIRMED has real edges again
+// as of decision 16, but that doesn't reach a row stuck there from
+// before this function's own fix). That first fix still
 // filtered such a booking out by endAt once its old departure date
 // passed, exactly reproducing the original bug for a booking with a
 // stuck status. The room being Occupied is the actual ground truth for

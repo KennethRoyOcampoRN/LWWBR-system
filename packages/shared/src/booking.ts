@@ -11,6 +11,19 @@ import type { PermissionKey } from './permissions.js';
 // is gone — a Booking row is now created only at the moment of
 // check-in (see the units/checkin flow), already occupying real rooms
 // right now, not reserving them for a future window.
+//
+// Partially reversed, spec.md §13 decision 16, 2026-11-05: the Cashier
+// tab bills a room before the guest arrives — picks a READY unit, sets
+// check-in/check-out dates, posts charges — and check-in happens
+// against that already-existing booking afterward. CONFIRMED is
+// reachable again (see BOOKING_TRANSITIONS below) specifically for
+// this pre-arrival window. The deleted overlap engine is NOT rebuilt:
+// a pre-arrival booking instead flips its unit straight to OCCUPIED
+// (same as a real check-in would), reusing the existing one-booking-
+// per-unit guard to prevent two cashiers double-booking the same
+// currently-READY room, rather than checking date ranges. PENDING
+// stays unreachable — nothing in the client's own description of this
+// flow needs a distinct "not yet confirmed" step before CONFIRMED.
 
 export const BOOKING_TYPE_KEYS = ['OVERNIGHT', 'DAY_TOUR'] as const;
 export type BookingTypeKey = (typeof BOOKING_TYPE_KEYS)[number];
@@ -34,17 +47,24 @@ export interface BookingTransition {
   permission: PermissionKey;
 }
 
-// Simplified, 2026-08-24: a Booking row is now created directly at
-// CHECKED_IN (check-in creates it — there's no more "PENDING awaiting
-// arrival" step, since every guest already has a real reservation
-// elsewhere and this app only records the point they actually show up).
-// The only live edge left is the same one as before: CHECKED_IN ->
-// CHECKED_OUT. PENDING/CONFIRMED/CANCELLED/NO_SHOW keep empty edges —
-// nothing in this codebase can ever produce or act on a booking in one
-// of those states anymore, so there's no button to wire up regardless.
+// Simplified, 2026-08-24, partially reversed 2026-11-05 (spec.md §13
+// decision 16). Two live edges now:
+// - CHECKED_IN -> CHECKED_OUT: unchanged, the walk-up flow's own path
+//   (checkInBooking creates a Booking directly at CHECKED_IN).
+// - CONFIRMED -> CHECKED_IN/CANCELLED/NO_SHOW: the Cashier tab's
+//   pre-arrival flow — a booking created CONFIRMED by the new
+//   pre-arrival creation endpoint, resolved one of three ways by a
+//   manual front-desk action. All three gated on booking:checkin, the
+//   same actor profile as check-in itself (no automatic no-show timer
+//   — considered, deferred). PENDING keeps an empty edge — nothing in
+//   the client's own description of this flow needs it.
 export const BOOKING_TRANSITIONS: Record<BookingStatusKey, BookingTransition[]> = {
   PENDING: [],
-  CONFIRMED: [],
+  CONFIRMED: [
+    { to: 'CHECKED_IN', permission: 'booking:checkin' },
+    { to: 'CANCELLED', permission: 'booking:checkin' },
+    { to: 'NO_SHOW', permission: 'booking:checkin' },
+  ],
   CHECKED_IN: [{ to: 'CHECKED_OUT', permission: 'booking:checkout' }],
   CHECKED_OUT: [],
   CANCELLED: [],
@@ -67,9 +87,13 @@ export function allowedBookingTransitions(
 }
 
 // Still used by listUpcomingBookingsForUnit (the Unit drawer's Bookings
-// section) and by the checkout grouping query — a booking in either of
-// these states no longer holds its unit(s), so it must never surface as
-// something still relevant to a room's current state. NO_SHOW is
-// deliberately *not* here for the same historical reason as before, even
-// though nothing produces it anymore.
-export const BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY: readonly BookingStatusKey[] = ['CANCELLED', 'CHECKED_OUT'];
+// section), the checkout grouping query, and the Cashier-tab plan's
+// gatherBookingIdsForBilling (spec.md §13.4) — a booking in any of
+// these states no longer holds its unit(s) or has an open folio, so it
+// must never surface as something still relevant to a room's current
+// state. NO_SHOW added 2026-11-05 (spec.md §13 decision 16) now that
+// it's reachable — a booking that never arrived is exactly as "not
+// current" as one that already checked out; the unit-release side of
+// that transition (flipping the unit back off OCCUPIED) is the new
+// NO_SHOW endpoint's own job, not this constant's.
+export const BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY: readonly BookingStatusKey[] = ['CANCELLED', 'CHECKED_OUT', 'NO_SHOW'];

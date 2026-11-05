@@ -7424,3 +7424,66 @@ mocks these changes now touch). `apps/web` 194/194 (unchanged — no UI
 this stage). `npm run build` clean across all three packages. No live
 database in this sandbox to run Stage A's pending backfills against
 (unchanged from that stage's own note).
+
+**Cashier tab re-plan + lifecycle reversal, Stage A (spec.md §13
+decision 16), 2026-11-05.** The client's fuller description of the
+Cashier tab's billing flow — room cost must be automatic, billing
+happens before check-in, the bill is a running folio keyed to the
+booking number — changed the tab's shape enough to pause Stage C and
+re-plan. Full reasoning in spec.md §13 decision 16; short version:
+
+All three requirements turn out to be one gap. Independently confirmed
+what the client's own review had already caught: `receiptLineInputSchema`
+accepts any `description`/`qty`/`unitPrice` for any line, and
+`sourceChargeId` is copied through (`billing/service.ts`) without ever
+being read back — the arithmetic (decision 13) was always correct over
+whatever lines it was given, but nothing checked that those lines were
+authoritative. The fix spans all three points: `FolioCharge` becomes
+the real running folio (open for as long as
+`BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY` excludes it, spanning
+every `Booking` row sharing one external ID via the already-built
+`gatherBookingIdsForBilling`), a `source: ROOM` charge is priced
+server-side only, and `issueReceipt` will source `ReceiptLine`s from
+the folio's own rows rather than trusting a submitted array.
+
+Billing-before-check-in reverses part of the 2026-08-24 redesign —
+`CONFIRMED` is reachable again, via a new pre-arrival creation
+endpoint (not `checkInBooking`, which is unaffected). A room goes
+`OCCUPIED` the moment that booking is created, not at physical
+arrival — a deliberate substitute for the date-overlap engine
+2026-08-24 deleted, reusing the existing one-booking-per-unit guard to
+stop two cashiers double-booking the same `READY` room, rather than
+rebuilding overlap checking. A real `Reserved` `UnitStatus` was
+considered and declined (cheap to add, impossible to safely remove —
+see `INSPECTED`'s own fate); the cost (a room booked for next Friday
+looks identical on the housekeeping board to one with a guest in it)
+is mitigated in Stage C by showing the covering booking's own status
+on the unit card, not by a new enum value.
+
+Stage A this round turned out to be shared-package only — every schema
+field this needs (`BookingUnit.occupiedFrom`/`occupiedTo`,
+`Receipt.externalBookingRef`/`ReceiptBooking`) already exists from the
+original Cashier-tab plan's own Stage A, and `FolioCharge`/`ReceiptLine`
+already carry everything the folio rework needs too. What shipped:
+`BOOKING_TRANSITIONS` (`packages/shared/src/booking.ts`) gains real
+edges — `CONFIRMED → CHECKED_IN`/`CANCELLED`/`NO_SHOW`, all gated
+`booking:checkin` — and `BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY`
+gains `NO_SHOW` alongside `CANCELLED`/`CHECKED_OUT`, since a booking
+that never arrived is exactly as "not current" as one that already
+left. `PENDING` stays legacy — nothing in the client's own description
+needs a step before `CONFIRMED`. Two stale code comments elsewhere in
+`bookings/service.ts` that asserted "`CONFIRMED` can never move
+forward" were corrected for accuracy while in there.
+
+Verification: `npm run typecheck`/`lint` clean across all three
+packages. `packages/shared` 96/96 (5 new: the three new `CONFIRMED`
+transitions, `PENDING` staying legacy, and
+`BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY` gaining `NO_SHOW`).
+`apps/api` 654/654 (unchanged — no API behavior changed this stage).
+`apps/web` 194/194 (unchanged). `npm run build` clean across all three
+packages.
+
+Next: Stage B — the pre-arrival creation endpoint, the server-priced
+`ROOM` folio-charge path, `issueReceipt` sourcing lines from
+`FolioCharge`, the `checkOutUnits` guard tightening (require
+`CHECKED_IN` specifically), and the add-room-to-booking action.
