@@ -86,7 +86,7 @@ function bookingToJson<
 async function findBookingWithUnits(id: string) {
   const booking = await prisma.booking.findFirst({
     where: { id, deletedAt: null },
-    include: { units: { include: { unit: true } } },
+    include: { units: { include: { unit: { include: { unitType: true } } } } },
   });
   if (!booking) {
     throw new ApiError(404, 'NOT_FOUND', 'Booking not found');
@@ -106,9 +106,25 @@ export async function getBooking(id: string) {
       // to tell a still-held assignment apart from one this booking has
       // moved away from (releasedAt: null — see BookingUnit's own
       // schema comment) to build its room list and the move/add-unit
-      // pickers correctly.
+      // pickers correctly. occupiedTo added 2026-11-06 (item 2's fix):
+      // the frontend uses its presence/absence to decide whether to
+      // show the "supply a checkout date" field for a walk-up room that
+      // has never been priced yet — once priceRoomCharge backfills it,
+      // the field stops appearing for that room automatically.
       releasedAt: bu.releasedAt,
-      unit: { id: bu.unit.id, code: bu.unit.code, name: bu.unit.name, status: bu.unit.status },
+      occupiedTo: bu.occupiedTo,
+      unit: {
+        id: bu.unit.id,
+        code: bu.unit.code,
+        name: bu.unit.name,
+        status: bu.unit.status,
+        // 2026-11-06 (item 4's fix): the room-charge description used
+        // to hardcode "{code} room charge" — the guest-facing receipt
+        // line read "C01 room charge" instead of a real room
+        // description. The frontend builds it from the unit type's own
+        // name instead, which this wasn't exposing before.
+        unitTypeName: bu.unit.unitType.name,
+      },
     })),
   });
 }
@@ -412,14 +428,15 @@ export async function createPreArrivalBooking(input: CreatePreArrivalBookingInpu
 // OCCUPIED and unbookable — the main failure mode this design
 // introduces, and the reason this function exists rather than treating
 // the status flip as the whole job. The released BookingUnit row is
-// also closed — via releasedAt, not occupiedTo (see that field's own
-// schema comment) — not just the Unit row, so it stops reading as
-// "still held" once a future per-night rate lookup (spec.md §13.3
-// Stage D) needs to tell this row apart from a brand new booking's row
-// claiming the same unit once it's READY and rebooked. occupiedTo
-// itself is left untouched — it keeps meaning "the planned end of this
-// assignment," which Stage D will want preserved regardless of how the
-// assignment actually ended.
+// also closed on both fields now (corrected 2026-11-06, spec.md §13
+// decision 16 — same sweep that fixed checkOutUnits/moveBookingUnit for
+// the identical gap): releasedAt marks it unambiguously inactive (see
+// BookingUnit.releasedAt's own schema comment); occupiedTo moves to the
+// resolution moment rather than staying at the originally planned end
+// — a cancelled/no-show stay was never actually occupied past this
+// point, and leaving occupiedTo at the old plan risked a real (if
+// unlikely) ROOM charge posted afterward pricing nights that never
+// happened.
 export async function resolveConfirmedBooking(
   bookingId: string,
   input: ResolveConfirmedBookingInput,
@@ -441,7 +458,7 @@ export async function resolveConfirmedBooking(
 
   if (input.toStatus === 'CANCELLED' || input.toStatus === 'NO_SHOW') {
     for (const bu of booking.units) {
-      await prisma.bookingUnit.update({ where: { id: bu.id }, data: { releasedAt: now } });
+      await prisma.bookingUnit.update({ where: { id: bu.id }, data: { releasedAt: now, occupiedTo: now } });
       await applyAutomaticUnitStatusChange(bu.unit.id, 'READY', actor);
     }
   }
@@ -526,6 +543,28 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
 
   for (const bu of requested) {
     await applyAutomaticUnitStatusChange(bu.unit.id, 'VACANT_DIRTY', actor);
+  }
+
+  // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): this
+  // used to close out nothing on the BookingUnit row itself — only
+  // Unit.status changed. Two consequences, both real: (1) with
+  // occupiedTo left at the originally planned departure, a guest with
+  // several rooms who releases one two nights early would still have
+  // that room price to the full planned stay if a ROOM charge were
+  // posted against it afterward — the released room keeps billing for
+  // nights it was no longer held. (2) with releasedAt left null, this
+  // row kept reading as "still held" (releasedAt: null) forever —
+  // createFnbOrder's own active-assignment lookup, and every other
+  // query filtering on it, would have kept treating this guest as the
+  // unit's current occupant even after a new booking later moved in.
+  // Both now close here: releasedAt marks the row inactive
+  // unambiguously (see BookingUnit.releasedAt's own schema comment);
+  // occupiedTo is set to the actual checkout moment — not merely left
+  // alone — specifically so a later per-night price lookup reflects
+  // nights genuinely stayed, not the original plan.
+  const checkOutMoment = new Date();
+  for (const bu of requested) {
+    await prisma.bookingUnit.update({ where: { id: bu.id }, data: { releasedAt: checkOutMoment, occupiedTo: checkOutMoment } });
   }
 
   // Group the requested units by their own Booking row — a single
@@ -728,23 +767,25 @@ export async function searchBookings(query: SearchBookingsQuery) {
 }
 
 // Cashier-tab plan (spec.md §13.4, Stage B, 2026-11-05): a mid-stay room
-// change under one booking. No UI calls this yet (planned for Stage C).
-// Closes the old BookingUnit row and opens a new one for the new unit
-// (occupiedFrom = now), same bookingId — this is two writes, not an
-// update, per the schema's own comment on BookingUnit. Closing now sets
-// releasedAt (not occupiedTo — see BookingUnit.releasedAt's own schema
-// comment, added in the same review that found this function's active-
-// assignment lookup had the identical bug as resolveConfirmedBooking's
-// release query): occupiedTo stays whatever it already meant for this
-// row (null for a walk-up assignment, the planned checkout date for a
-// pre-arrival one) rather than being overwritten with the move's own
-// timestamp, which per-night rate resolution (§13.3 Stage D) will want
-// preserved. Reuses booking:checkin rather than minting a new
-// permission key: same front-office actor profile as check-in itself.
-// Two concurrent BookingUnit rows with overlapping ranges for one
-// booking is simply a multi-room booking, not something this function
-// needs to detect or prevent — it only ever closes the one row it was
-// told to move.
+// change under one booking. Closes the old BookingUnit row and opens a
+// new one for the new unit (occupiedFrom = now), same bookingId — this
+// is two writes, not an update, per the schema's own comment on
+// BookingUnit. Closing now sets both releasedAt and occupiedTo to the
+// move's own moment (corrected 2026-11-06, spec.md §13 decision 16 —
+// same sweep that fixed checkOutUnits for the identical gap): releasedAt
+// marks the row unambiguously inactive (BookingUnit.releasedAt's own
+// schema comment); occupiedTo moving to "now" — not staying at whatever
+// it meant before the move — is what makes the moved-away room price
+// correctly for the nights it actually held, not the stay's original
+// full plan. A previous version of this comment argued occupiedTo
+// should stay untouched for per-night rate resolution's sake; that
+// reasoning was wrong — the room genuinely stopped being held at this
+// moment, and a price lookup needs that truth, not the pre-move plan.
+// Reuses booking:checkin rather than minting a new permission key: same
+// front-office actor profile as check-in itself. Two concurrent
+// BookingUnit rows with overlapping ranges for one booking is simply a
+// multi-room booking, not something this function needs to detect or
+// prevent — it only ever closes the one row it was told to move.
 export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitInput, actor: BookingActor) {
   const booking = await prisma.booking.findFirst({ where: { id: bookingId, deletedAt: null } });
   if (!booking) {
@@ -778,7 +819,7 @@ export async function moveBookingUnit(bookingId: string, input: MoveBookingUnitI
     });
   }
 
-  await prisma.bookingUnit.update({ where: { id: activeAssignment.id }, data: { releasedAt: now } });
+  await prisma.bookingUnit.update({ where: { id: activeAssignment.id }, data: { releasedAt: now, occupiedTo: now } });
   await prisma.bookingUnit.create({
     data: { bookingId, unitId: input.toUnitId, occupiedFrom: now },
   });

@@ -89,7 +89,9 @@ function fakeBookingWithUnits(
     unitId: u.unitId,
     bookingId,
     rate: null,
-    unit: { id: u.unitId, code: u.code, name: `Room ${u.code}`, status: u.status },
+    releasedAt: null,
+    occupiedTo: null,
+    unit: { id: u.unitId, code: u.code, name: `Room ${u.code}`, status: u.status, unitType: { name: 'Standard Room' } },
   }));
   return {
     id: bookingId,
@@ -497,6 +499,39 @@ describe('POST /api/v1/bookings/checkout — checklist-based, redesign 2026-08-2
     expect(mockPrisma.booking.update).not.toHaveBeenCalled();
   });
 
+  // Client's own scenario, caught live-testing (spec.md §13 decision
+  // 16): a guest with three rooms releases one two nights early. The
+  // booking must stay CHECKED_IN (confirmed by the previous test), but
+  // this pins the actual bug found in review — the released room's own
+  // BookingUnit row must close on both fields (releasedAt so it stops
+  // reading as held, occupiedTo so a later ROOM charge prices the
+  // nights actually stayed, not the full original plan), while the
+  // other two rooms' rows are untouched.
+  it("three-room booking, one checked out early: that room's row closes on both fields, the other two are untouched", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const booking = fakeBookingWithUnits({}, [
+      { unitId: 'unit_1', code: 'R01', status: 'OCCUPIED' },
+      { unitId: 'unit_2', code: 'R02', status: 'OCCUPIED' },
+      { unitId: 'unit_3', code: 'R03', status: 'OCCUPIED' },
+    ]);
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+    mockPrisma.bookingUnit.update.mockResolvedValue({});
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkout').set('Cookie', authCookie()).send({ unitIds: ['unit_1'] });
+
+    expect(res.status).toBe(200);
+    // Booking stays CHECKED_IN — two rooms are still Occupied.
+    expect(res.body.finalizedBookingIds).toEqual([]);
+    expect(mockPrisma.booking.update).not.toHaveBeenCalled();
+    // Only unit_1's own row (bu_0) closes, on both fields.
+    expect(mockPrisma.bookingUnit.update).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith({
+      where: { id: 'bu_0' },
+      data: { releasedAt: expect.any(Date), occupiedTo: expect.any(Date) },
+    });
+  });
+
   it('checking out both units of a multi-unit booking together finalizes it in one call', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
     const booking = fakeBookingWithUnits({}, [
@@ -894,8 +929,12 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ bookingId: 'booking_1', fromUnitId: 'unit_1', toUnitId: 'unit_2' });
+    // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): both
+    // fields close now, not just releasedAt — occupiedTo moves to the
+    // move's own moment too, so the vacated room prices for nights
+    // actually held, not the stay's original full plan.
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: expect.objectContaining({ releasedAt: expect.any(Date) }) }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date), occupiedTo: expect.any(Date) } }),
     );
     expect(mockPrisma.bookingUnit.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ bookingId: 'booking_1', unitId: 'unit_2', occupiedFrom: expect.any(Date) }) }),
@@ -958,7 +997,7 @@ describe('POST /api/v1/bookings/:bookingId/move-unit', () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date), occupiedTo: expect.any(Date) } }),
     );
   });
 
@@ -1215,7 +1254,7 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
     expect(res.status).toBe(200);
     expect(mockPrisma.booking.update).toHaveBeenCalledWith({ where: { id: 'booking_1' }, data: { status: toStatus } });
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date), occupiedTo: expect.any(Date) } }),
     );
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'READY' }) }),
@@ -1266,7 +1305,7 @@ describe('POST /api/v1/bookings/:bookingId/resolve — resolving a CONFIRMED (pr
 
     expect(res.status).toBe(200);
     expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date) } }),
+      expect.objectContaining({ where: { id: 'bu_1' }, data: { releasedAt: expect.any(Date), occupiedTo: expect.any(Date) } }),
     );
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'READY' }) }),

@@ -6,7 +6,7 @@ const mockPrisma = {
   fileObject: { findFirst: vi.fn() },
   setting: { findUnique: vi.fn() },
   booking: { findFirst: vi.fn(), findMany: vi.fn() },
-  bookingUnit: { findFirst: vi.fn() },
+  bookingUnit: { findFirst: vi.fn(), update: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
@@ -250,6 +250,71 @@ describe('Folio charges', () => {
 
       expect(res.status).toBe(201);
       expect(res.body.folioCharge.qty).toBe(3); // Nov 10 -> Nov 13
+    });
+
+    // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): a
+    // walk-up booking's BookingUnit has neither occupiedFrom nor
+    // occupiedTo (checkInBooking creates it as a bare { unitId }), and
+    // Booking.departureDate stays null for a walk-up forever — every
+    // walk-up room was therefore permanently unbillable before this
+    // fix. occupiedFrom now falls back to booking.arrivalDate (always
+    // set — checkInBookingSchema requires a checkInDate); the end date
+    // has no such fallback, so the cashier supplies one.
+    it('bills a walk-up booking end to end: occupiedFrom falls back to booking.arrivalDate, occupiedTo comes from the cashier-supplied checkOutDate', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue({ ...booking, arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null });
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue({
+        id: 'bu_1',
+        bookingId: 'booking_1',
+        deletedAt: null,
+        occupiedFrom: null,
+        occupiedTo: null,
+        unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+        booking: { arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null },
+      });
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (walk-up)', checkOutDate: '2026-11-12' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.folioCharge.qty).toBe(2);
+      expect(res.body.folioCharge.unitPrice).toBe(1500);
+      // Backfilled onto the BookingUnit row so a reprice (or a future
+      // per-night rate lookup) never has to ask again.
+      expect(mockPrisma.bookingUnit.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'bu_1' },
+          data: { occupiedFrom: new Date('2026-11-10T00:00:00.000Z'), occupiedTo: expect.any(Date) },
+        }),
+      );
+    });
+
+    it('422s ROOM_CHECKOUT_DATE_REQUIRED for a walk-up room with no checkOutDate supplied and nothing else to resolve it', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue({ ...booking, arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null });
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue({
+        id: 'bu_1',
+        bookingId: 'booking_1',
+        deletedAt: null,
+        occupiedFrom: null,
+        occupiedTo: null,
+        unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+        booking: { arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null },
+      });
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (walk-up)' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('ROOM_CHECKOUT_DATE_REQUIRED');
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
     });
   });
 

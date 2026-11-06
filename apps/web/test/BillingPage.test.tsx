@@ -27,7 +27,15 @@ const checkedInBooking = {
   referenceNo: '83887',
   guestName: 'Roel Villagomez',
   status: 'CHECKED_IN',
-  units: [{ id: 'bu_1', unitId: 'unit_1', releasedAt: null, unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED' } }],
+  units: [
+    {
+      id: 'bu_1',
+      unitId: 'unit_1',
+      releasedAt: null,
+      occupiedTo: '2026-11-12T00:00:00.000Z',
+      unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED', unitTypeName: 'Couple B' },
+    },
+  ],
 };
 
 const confirmedBooking = {
@@ -99,6 +107,9 @@ describe('BillingPage', () => {
         expect(body.source).toBe('ROOM');
         expect(body).not.toHaveProperty('unitPrice');
         expect(body).not.toHaveProperty('qty');
+        // Item 4's fix: built from the unit and its type, not the old
+        // hardcoded "{code} room charge".
+        expect(body.description).toBe('Couple B (R01)');
         postedRoomCharge = true;
         return jsonResponse(201, { folioCharge: { id: 'charge_1', ...body } });
       }
@@ -125,7 +136,7 @@ describe('BillingPage', () => {
     // action at all, since the server prices it automatically. Posting
     // auto-recomputes the preview (no separate "Update preview" click
     // needed).
-    await user.click(screen.getByRole('button', { name: 'Post room charge' }));
+    await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
     await waitFor(() => expect(postedRoomCharge).toBe(true));
     await waitFor(() => expect(previewCallCount).toBe(2));
     await waitFor(() => expect(screen.getAllByText('₱2,200.00').length).toBeGreaterThan(0));
@@ -139,6 +150,96 @@ describe('BillingPage', () => {
     expect(screen.getByText('83887-11042026-01')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'ACKNOWLEDGEMENT RECEIPT' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Print' })).toBeInTheDocument();
+  });
+
+  // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): a 422
+  // from this action used to set chargeError, rendered in the Folio
+  // section — but the trigger button lives in the Rooms section, which
+  // renders roomActionError. The error was invisible where the cashier
+  // was actually looking, so the button looked dead.
+  it('shows a failed room-charge error in the Rooms section, not the Folio section', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/folio-charges') && init?.method === 'POST') {
+        return jsonResponse(422, { error: { code: 'ROOM_CHECKOUT_DATE_REQUIRED', message: 'Supply a checkout date to price this room.' } });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, emptyPreview);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
+
+    const errorText = await screen.findByText('Supply a checkout date to price this room.');
+    // The error renders inside the Rooms section (where "Move" lives),
+    // not the Folio section (where "Post charge" lives).
+    const roomsSection = screen.getByText('Move').closest('section');
+    expect(roomsSection).toContainElement(errorText);
+  });
+
+  // Item 2's frontend coverage: a walk-up room (occupiedTo still null —
+  // never priced) must show the checkout-date field, disable the
+  // charge button until it's filled, and send it in the request body.
+  it('shows a checkout-date field for a walk-up room (occupiedTo still null) and sends it when charging', async () => {
+    const user = userEvent.setup();
+    let postedBody: Record<string, unknown> | null = null;
+    const walkUpBooking = {
+      ...checkedInBooking,
+      units: [
+        {
+          id: 'bu_1',
+          unitId: 'unit_1',
+          releasedAt: null,
+          occupiedTo: null,
+          unit: { id: 'unit_1', code: 'R01', name: 'Room 1', status: 'OCCUPIED', unitTypeName: 'Couple B' },
+        },
+      ],
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: walkUpBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/folio-charges') && init?.method === 'POST') {
+        postedBody = JSON.parse(init.body as string);
+        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...postedBody } });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, emptyPreview);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Checkout date (walk-up — not on file)')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Checkout date (walk-up — not on file)'), '2026-11-12');
+    expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
+
+    await waitFor(() => expect(postedBody).toMatchObject({ checkOutDate: '2026-11-12' }));
   });
 
   it('on a duplicate-billing-number warning, confirming reissues with confirmDuplicateBillingNumber: true', async () => {

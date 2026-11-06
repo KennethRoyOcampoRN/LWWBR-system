@@ -1,3 +1,4 @@
+import { TZDate } from '@date-fns/tz';
 import { Prisma } from '@prisma/client';
 import { BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY, type ReceiptDeductionTypeKey } from '@lwwbr/shared';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
@@ -95,17 +96,52 @@ export async function listFolioCharges(bookingId: string) {
 
 const MS_PER_NIGHT = 24 * 60 * 60 * 1000;
 
+// Same Asia/Manila-midnight parsing as bookings/service.ts's own
+// resolveManilaDate — spec §3.2: "Timezone Asia/Manila everywhere...
+// never store naive local time." Duplicated locally rather than
+// imported: that helper isn't exported, and this module's one caller
+// (the checkOutDate fallback below) doesn't justify promoting it to a
+// shared lib location on its own.
+const RESORT_TIMEZONE = 'Asia/Manila';
+function resolveManilaDate(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number) as [number, number, number];
+  return new TZDate(year, month - 1, day, 0, 0, RESORT_TIMEZONE);
+}
+
 // Cashier-tab plan, spec.md §13 decision 16 (2026-11-05): "the cost of
 // the room/unit must be automatic based on what the system admin has
 // setup" (client's own words). sourceId for a ROOM charge is the
 // BookingUnit assignment being billed — its own occupiedFrom/occupiedTo
-// (falling back to the booking's own departureDate when the assignment
-// is still open-ended, e.g. a room added via addUnitToBooking that
-// hasn't been moved off since) gives the night count, and its Unit's
-// UnitType.baseRate gives the per-night price. Rate RULES (seasonal/
-// day-of-week pricing) are future work per the plan's own parenthetical
-// — baseRate is the whole story for now.
-async function priceRoomCharge(bookingId: string, bookingUnitId: string): Promise<{ unitPrice: number; qty: number }> {
+// gives the night count, and its Unit's UnitType.baseRate gives the
+// per-night price. Rate RULES (seasonal/day-of-week pricing) are future
+// work per the plan's own parenthetical — baseRate is the whole story
+// for now.
+//
+// Bug caught in review, 2026-11-06: this used to require
+// bookingUnit.occupiedFrom outright and 422 if it was null — which it
+// always is for a walk-up booking, since checkInBooking creates
+// BookingUnit rows as bare { unitId } with no dates at all. Every
+// walk-up booking (the one flow that already existed before decision
+// 16) was therefore permanently unbillable. Fixed with the same
+// null-or-fallback shape the end date already used: occupiedFrom falls
+// back to booking.arrivalDate, which checkInBookingSchema's own
+// required checkInDate guarantees is never null for any booking,
+// walk-up or pre-arrival. The end date has no such guaranteed fallback
+// — Booking.departureDate stays null for a walk-up forever (2026-08-24
+// redesign's own deliberate choice) — so when neither occupiedTo nor
+// departureDate resolves it, the cashier is asked for one explicitly
+// (checkOutDate, postFolioChargeSchema) rather than silently guessing.
+// Once resolved from any source, both dates are written back onto the
+// BookingUnit row so a later reprice (or Stage D's per-night rate
+// resolution) never has to ask again — this is the same row a pre-
+// arrival booking already has these fields on from creation; a
+// walk-up's just gets filled in lazily, at the moment billing actually
+// needs it, which is the only moment this app ever learns it.
+async function priceRoomCharge(
+  bookingId: string,
+  bookingUnitId: string,
+  cashierCheckOutDate?: string,
+): Promise<{ unitPrice: number; qty: number }> {
   const bookingUnit = await prisma.bookingUnit.findFirst({
     where: { id: bookingUnitId, bookingId, deletedAt: null },
     include: { unit: { include: { unitType: true } }, booking: true },
@@ -113,17 +149,30 @@ async function priceRoomCharge(bookingId: string, bookingUnitId: string): Promis
   if (!bookingUnit) {
     throw new ApiError(422, 'VALIDATION_ERROR', 'sourceId must be an existing room assignment on this booking.');
   }
-  if (!bookingUnit.occupiedFrom) {
-    throw new ApiError(422, 'VALIDATION_ERROR', 'This room assignment has no check-in date to price from.');
+
+  const from = bookingUnit.occupiedFrom ?? bookingUnit.booking.arrivalDate;
+
+  let to = bookingUnit.occupiedTo ?? bookingUnit.booking.departureDate;
+  if (!to && cashierCheckOutDate) {
+    to = resolveManilaDate(cashierCheckOutDate);
   }
-  const to = bookingUnit.occupiedTo ?? bookingUnit.booking.departureDate;
   if (!to) {
-    throw new ApiError(422, 'VALIDATION_ERROR', 'This room assignment has no check-out date to price from.');
+    throw new ApiError(
+      422,
+      'ROOM_CHECKOUT_DATE_REQUIRED',
+      'This room has no checkout date on file (a walk-up booking never collects one) — supply one to price this charge.',
+    );
   }
-  const nights = Math.round((to.getTime() - bookingUnit.occupiedFrom.getTime()) / MS_PER_NIGHT);
+
+  const nights = Math.round((to.getTime() - from.getTime()) / MS_PER_NIGHT);
   if (nights <= 0) {
     throw new ApiError(422, 'VALIDATION_ERROR', 'Check-out must be after check-in to price a room charge.');
   }
+
+  if (!bookingUnit.occupiedFrom || !bookingUnit.occupiedTo) {
+    await prisma.bookingUnit.update({ where: { id: bookingUnit.id }, data: { occupiedFrom: from, occupiedTo: to } });
+  }
+
   return { unitPrice: Number(bookingUnit.unit.unitType.baseRate), qty: nights };
 }
 
@@ -145,7 +194,7 @@ export async function postFolioCharge(bookingId: string, input: PostFolioChargeI
     if (!input.sourceId) {
       throw new ApiError(422, 'VALIDATION_ERROR', 'sourceId is required for ROOM charges.');
     }
-    const priced = await priceRoomCharge(bookingId, input.sourceId);
+    const priced = await priceRoomCharge(bookingId, input.sourceId, input.checkOutDate);
     qty = priced.qty;
     unitPrice = priced.unitPrice;
   } else {

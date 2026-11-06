@@ -7870,3 +7870,80 @@ duplicate-billing-number reissue path, and the permission gate).
 `vite build` flags the bundle just over its 500 kB informational
 chunk-size threshold (502 kB) — noted, not a build failure, and no
 code-splitting was in scope for this stage.
+
+**Cashier tab re-plan, Stage C live-test fixes, 2026-11-06.** Four bugs
+caught on the client's first live run of Stage C.
+
+1. **`postRoomCharge`'s error rendered in the wrong section.**
+   `BillingPage.tsx` set `chargeError` (rendered in the Folio section)
+   from a function whose own trigger button ("Post room charge," now
+   "Charge room to folio") lives in the Rooms section, which renders
+   `roomActionError` — a 422 was caught and shown where the cashier
+   wasn't looking, so the button looked dead. Fixed, then swept the
+   rest of the page for the same shape: `pullInFnbCharge` (trigger in
+   the "Restaurant charges" section, error rendering in "Folio") and
+   `handleIssue` (trigger in the "Issue receipt" card, error rendering
+   in "Totals") had the identical mismatch. All three now render their
+   error where the triggering button actually is — `chargeError` now
+   renders in both the Folio and Restaurant-charges sections,
+   `issueError` in both Totals and the Issue-receipt card.
+2. **Walk-up bookings were permanently unbillable.** `priceRoomCharge`
+   (`billing/service.ts`) required `BookingUnit.occupiedFrom` outright
+   and 422'd when it was null — which it always is for a walk-up,
+   since `checkInBooking` creates `BookingUnit` rows as a bare
+   `{ unitId }` with no dates at all. The one flow that already
+   existed before decision 16 broke immediately on first real use.
+   Decision: `occupiedFrom` now falls back to `booking.arrivalDate`
+   (`checkInBookingSchema`'s own required `checkInDate` guarantees this
+   is never null, walk-up or pre-arrival); the end date has no such
+   guaranteed source — `Booking.departureDate` stays null for a walk-up
+   forever, the 2026-08-24 redesign's own deliberate choice — so when
+   neither `occupiedTo` nor `departureDate` resolves it, the cashier is
+   asked for one explicitly (new `checkOutDate` field,
+   `postFolioChargeSchema`), surfaced in `BillingPage.tsx` as a
+   per-room date field that only appears for a room still missing one.
+   Whichever dates get resolved are written back onto the `BookingUnit`
+   row so a reprice (or a future per-night rate lookup) never has to
+   ask again. New `GET /bookings/:bookingId` unit shape also gained
+   `unitTypeName` (item 4) and the existing `occupiedTo` is what the
+   frontend checks to decide whether to show this field at all.
+3. **Partial checkout overcharged the guest.** `checkOutUnits` already
+   handled partial checkout correctly at the status level (the booking
+   stays `CHECKED_IN` while other rooms are `OCCUPIED`), but wrote
+   neither `releasedAt` nor `occupiedTo` on the released room's own
+   `BookingUnit` row — only `Unit.status` changed. Two real
+   consequences: `occupiedTo ?? booking.departureDate` kept billing to
+   the planned departure, so a guest with three rooms releasing one two
+   nights early paid full nights on all three; and the row kept reading
+   as held (`releasedAt: null` forever), the exact gap `createFnbOrder`'s
+   active-assignment lookup depends on not existing. Fixed: both fields
+   close now, to the actual checkout moment. Swept for the same shape
+   across every other path that ends an assignment — `moveBookingUnit`
+   had the identical gap (a previous round's own comment had argued
+   `occupiedTo` should stay untouched there "for rate resolution's
+   sake"; that reasoning was wrong, reverted) and now closes both
+   fields too; `resolveConfirmedBooking`'s `CANCELLED`/`NO_SHOW` branch
+   gained `occupiedTo` alongside its existing `releasedAt` for the same
+   reason, consistency, even though the practical exposure there is
+   smaller (a cancelled stay has no nights to overcharge for in the
+   first place).
+4. **Two UI fixes.** The room-charge description hardcoded
+   `` `${unit.code} room charge` `` — the guest-facing receipt line
+   read "C01 room charge" instead of a real description. `getBooking`'s
+   unit mapping gained `unitTypeName`; the frontend now builds
+   `"{unitType.name} ({unit.code})"`. And the confusable button pair —
+   "Add room" (assigns a unit, `addUnitToBooking`) sitting next to
+   "Post room charge" (bills it) — is relabeled "Assign room" /
+   "Charge room to folio."
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 695/695 passing, 3 skipped (new: a walk-up
+end-to-end billing test, a `ROOM_CHECKOUT_DATE_REQUIRED` test, and the
+client's own three-room-one-early-checkout scenario, asserting the
+booking stays `CHECKED_IN`, only the released room's `BookingUnit` row
+closes on both fields, and the other two are untouched — plus the
+`moveBookingUnit`/`resolveConfirmedBooking` assertions strengthened in
+place for the new `occupiedTo` write). `apps/web` 202/202 (new: the
+error-routing fix pinned directly, and the walk-up checkout-date field
+exercised end to end — appears, disables the charge button until
+filled, sends it in the request body).

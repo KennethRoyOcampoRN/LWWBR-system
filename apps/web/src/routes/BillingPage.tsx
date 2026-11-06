@@ -76,7 +76,12 @@ interface BookingUnitRow {
   id: string;
   unitId: string;
   releasedAt: string | null;
-  unit: { id: string; code: string; name: string; status: string };
+  // Added 2026-11-06 (item 2's fix): presence/absence decides whether
+  // this room still needs a cashier-supplied checkout date before it
+  // can be priced — null only for a walk-up room never yet billed, or
+  // one newly added via addUnitToBooking.
+  occupiedTo: string | null;
+  unit: { id: string; code: string; name: string; status: string; unitTypeName: string };
 }
 
 interface BookingDetail {
@@ -162,6 +167,10 @@ export function BillingPage() {
   const [addUnitId, setAddUnitId] = useState('');
   const [roomActionError, setRoomActionError] = useState<string | null>(null);
   const [roomActionBusy, setRoomActionBusy] = useState(false);
+  // Item 2's fix: a walk-up room (occupiedTo still null — never
+  // priced) needs the cashier to supply a checkout date before it can
+  // be charged. Keyed by BookingUnit id, one per room row.
+  const [roomCheckOutDates, setRoomCheckOutDates] = useState<Record<string, string>>({});
 
   const [billingNumberTyped, setBillingNumberTyped] = useState('');
   const [preparedByName, setPreparedByName] = useState('');
@@ -284,15 +293,20 @@ export function BillingPage() {
     }
   }
 
-  async function postRoomCharge(bookingUnitId: string, description: string) {
+  // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): this
+  // used to set chargeError, rendered down in the Folio section — but
+  // this action's own trigger button lives in the Rooms section, which
+  // renders roomActionError. A 422 from this call was being caught and
+  // shown where the cashier wasn't looking, so the button looked dead.
+  async function postRoomCharge(bookingUnitId: string, description: string, checkOutDate?: string) {
     if (!bookingId) return;
-    setChargeError(null);
+    setRoomActionError(null);
     try {
-      await api.post(`/bookings/${bookingId}/folio-charges`, { source: 'ROOM', sourceId: bookingUnitId, description });
+      await api.post(`/bookings/${bookingId}/folio-charges`, { source: 'ROOM', sourceId: bookingUnitId, description, checkOutDate });
       refetchFolio();
       void runPreview();
     } catch (err) {
-      setChargeError(err instanceof ApiRequestError ? err.message : 'Could not post the room charge.');
+      setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not post the room charge.');
     }
   }
 
@@ -488,47 +502,76 @@ export function BillingPage() {
       )}
 
       {booking !== 'loading' && booking !== 'error' && (
-        <Section title="Rooms" description="Move a room, add another, or post that room's own charge.">
+        <Section title="Rooms" description="Move a room, assign another, or charge that room's own stay to the folio.">
           {activeUnits.length === 0 && <EmptyState message="No rooms currently held by this booking." />}
           <ul className="flex flex-col gap-2">
-            {activeUnits.map((bu) => (
-              <li key={bu.id} className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-ink">
-                    {bu.unit.code} — {bu.unit.name}
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="secondary" onClick={() => void postRoomCharge(bu.id, `${bu.unit.code} room charge`)}>
-                      Post room charge
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => setMovingFromUnitId(movingFromUnitId === bu.id ? null : bu.id)}
-                    >
-                      Move
-                    </Button>
+            {activeUnits.map((bu) => {
+              // Item 2's fix: a walk-up room has never had occupiedTo
+              // set — this app never collects a checkout date for it
+              // any other way — so the cashier supplies one here before
+              // the charge can be priced. A pre-arrival room (occupiedTo
+              // already set at booking time) never shows this field.
+              const needsCheckOutDate = !bu.occupiedTo;
+              const description = `${bu.unit.unitTypeName} (${bu.unit.code})`;
+              return (
+                <li key={bu.id} className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-ink">
+                      {bu.unit.code} — {bu.unit.name}
+                    </span>
+                    <div className="flex flex-wrap items-end gap-2">
+                      {needsCheckOutDate && (
+                        <Field label="Checkout date (walk-up — not on file)">
+                          <input
+                            type="date"
+                            className={INPUT_CLASSES}
+                            value={roomCheckOutDates[bu.id] ?? ''}
+                            onChange={(e) => setRoomCheckOutDates((d) => ({ ...d, [bu.id]: e.target.value }))}
+                          />
+                        </Field>
+                      )}
+                      {/* Relabeled 2026-11-06 (item 4's fix): the client
+                          read "Add room" (which only assigns a unit,
+                          addUnitToBooking below) as the way to add this
+                          room's own cost — "Charge room to folio" is
+                          the action that actually bills it. */}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => void postRoomCharge(bu.id, description, roomCheckOutDates[bu.id] || undefined)}
+                        disabled={needsCheckOutDate && !roomCheckOutDates[bu.id]}
+                      >
+                        Charge room to folio
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => setMovingFromUnitId(movingFromUnitId === bu.id ? null : bu.id)}
+                      >
+                        Move
+                      </Button>
+                    </div>
                   </div>
-                </div>
-                {movingFromUnitId === bu.id && (
-                  <div className="flex flex-wrap items-end gap-3">
-                    <Field label="Move to (Ready only)">
-                      <select className={INPUT_CLASSES} value={moveToUnitId} onChange={(e) => setMoveToUnitId(e.target.value)}>
-                        <option value="">Select…</option>
-                        {readyUnits.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.code} — {u.name}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Button type="button" onClick={() => void handleMoveUnit(bu.unitId)} disabled={roomActionBusy || !moveToUnitId}>
-                      Confirm move
-                    </Button>
-                  </div>
-                )}
-              </li>
-            ))}
+                  {movingFromUnitId === bu.id && (
+                    <div className="flex flex-wrap items-end gap-3">
+                      <Field label="Move to (Ready only)">
+                        <select className={INPUT_CLASSES} value={moveToUnitId} onChange={(e) => setMoveToUnitId(e.target.value)}>
+                          <option value="">Select…</option>
+                          {readyUnits.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.code} — {u.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Button type="button" onClick={() => void handleMoveUnit(bu.unitId)} disabled={roomActionBusy || !moveToUnitId}>
+                        Confirm move
+                      </Button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
           {roomActionError && (
             <p role="alert" className="text-sm font-medium text-danger-600">
@@ -536,7 +579,7 @@ export function BillingPage() {
             </p>
           )}
           <div className="flex flex-wrap items-end gap-3">
-            <Field label="Add another room (Ready only)">
+            <Field label="Assign another room to this booking (Ready only)">
               <select className={INPUT_CLASSES} value={addUnitId} onChange={(e) => setAddUnitId(e.target.value)}>
                 <option value="">Select…</option>
                 {readyUnits.map((u) => (
@@ -546,8 +589,13 @@ export function BillingPage() {
                 ))}
               </select>
             </Field>
+            {/* Relabeled 2026-11-06 (item 4's fix): this only assigns a
+                unit (addUnitToBooking) — it never bills anything. The
+                client read this as the way to post the room's charge;
+                "Assign room" plus the field label above should no
+                longer read that way next to "Charge room to folio". */}
             <Button type="button" variant="secondary" onClick={() => void handleAddUnit()} disabled={roomActionBusy || !addUnitId}>
-              Add room
+              Assign room
             </Button>
           </div>
         </Section>
@@ -663,6 +711,15 @@ export function BillingPage() {
                 </li>
               ))}
             </ul>
+            {/* Found in the same sweep as item 1's fix: pullInFnbCharge
+                sets chargeError too, but its own trigger ("Add to
+                folio") lives in this section, not the Folio section
+                where chargeError otherwise renders. */}
+            {chargeError && (
+              <p role="alert" className="text-sm font-medium text-danger-600">
+                {chargeError}
+              </p>
+            )}
           </Section>
 
           <Section title="Deductions">
@@ -758,6 +815,16 @@ export function BillingPage() {
                   <input className={INPUT_CLASSES} value={preparedByName} onChange={(e) => setPreparedByName(e.target.value)} />
                 </Field>
               </div>
+              {/* Found in the same sweep as item 1's fix: handleIssue's
+                  own catch sets issueError too, but this button is the
+                  one that triggers it — the Totals section above (where
+                  issueError otherwise renders) isn't where this click
+                  happens, so an issue failure needs showing here too. */}
+              {issueError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {issueError}
+                </p>
+              )}
               <Button
                 type="button"
                 onClick={() => void handleIssue(false)}

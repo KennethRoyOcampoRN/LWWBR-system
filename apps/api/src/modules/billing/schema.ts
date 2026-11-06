@@ -29,6 +29,17 @@ export const postFolioChargeSchema = z
     description: z.string().trim().min(1).max(300),
     qty: z.number().int().positive().optional(),
     unitPrice: z.number().nonnegative().optional(),
+    // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): a
+    // walk-up booking's BookingUnit never gets a checkout date from any
+    // other source — checkInBooking never collects one, and
+    // Booking.departureDate stays null for a walk-up forever (the
+    // 2026-08-24 redesign's own deliberate choice) — so priceRoomCharge
+    // had no date to price against and 422'd on every single walk-up
+    // room, the one flow that already existed. Optional and ROOM-only
+    // in practice (priceRoomCharge ignores it once a real date is
+    // already resolvable); see that function's own comment for exactly
+    // when this is actually required.
+    checkOutDate: z.string().date().optional(),
   })
   .refine((data) => data.source !== 'ROOM' || data.unitPrice === undefined, {
     message: "Room charges are priced automatically from the unit type's rate — do not submit unitPrice.",
