@@ -14,6 +14,7 @@ import {
 } from './schema.js';
 import {
   changePaymentStatus,
+  deleteFolioCharge,
   getReceipt,
   issueReceipt,
   listAllPayments,
@@ -60,6 +61,21 @@ billingRouter.post(
     const body = voidFolioChargeSchema.parse(req.body);
     const folioCharge = await voidFolioCharge(req.params.id as string, body, { id: req.authUser!.id });
     res.status(200).json({ folioCharge });
+  }),
+);
+
+// Client's own words, caught live-testing decision 19's void action:
+// "the purpose of delete is for errors, don't make it hard to delete
+// errors." Same permission as void — folio:void already covers
+// "undo a charge," delete is just the lower-friction form of that for
+// a charge no document has referenced yet (billing/service.ts's own
+// isReferencedByAnIssuedReceipt). No request body: no reason required.
+billingRouter.delete(
+  '/folio-charges/:id',
+  requirePermission('folio:void'),
+  asyncHandler(async (req, res) => {
+    await deleteFolioCharge(req.params.id as string, { id: req.authUser!.id });
+    res.status(204).end();
   }),
 );
 

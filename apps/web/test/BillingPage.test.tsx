@@ -554,6 +554,51 @@ describe('BillingPage', () => {
   // Spec.md §13 decision 19 (2026-11-06): the client's actual scenario
   // — a double-posted room charge, undone by the cashier who made the
   // mistake, seconds later, with no manager needed.
+  // Spec.md §13 decision 21 (2026-11-06): client's own words — "the
+  // purpose of delete is for errors, don't make it hard to delete
+  // errors." A never-receipted charge shows Delete, not Void, and
+  // deleting it needs no reason.
+  it('shows Delete (not Void) for a never-receipted charge, and deletes it with a plain confirm', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let charges = [
+      { id: 'charge_1', bookingId: 'booking_1', source: 'MISC', sourceId: null, description: 'Lost key fob', qty: 1, unitPrice: 500, amount: 500, status: 'POSTED', overrides: [], hasBeenReceipted: false },
+    ];
+    let deleted = false;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: deleted ? [] : charges });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      if (url.endsWith('/folio-charges/charge_1') && init?.method === 'DELETE') {
+        deleted = true;
+        return jsonResponse(204, {});
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' }).length).toBeGreaterThan(0));
+    expect(screen.queryByRole('button', { name: 'Void' })).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(screen.getByText('No charges posted yet.')).toBeInTheDocument());
+  });
+
   it('shows an already-charged room as a toggle, and reverting it voids the charge', async () => {
     const user = userEvent.setup();
     let charges: Record<string, unknown>[] = [
@@ -593,7 +638,11 @@ describe('BillingPage', () => {
 
     await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Double-posted by mistake' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
-    expect(screen.getAllByText('Voided').length).toBeGreaterThan(0);
+    // Spec.md §13 decision 21: voided charges default to hidden in the
+    // Folio table — "Show voided charges" reveals them.
+    expect(screen.queryByText('Voided')).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('Show voided charges'));
+    await waitFor(() => expect(screen.getAllByText('Voided').length).toBeGreaterThan(0));
   });
 
   // Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void had no

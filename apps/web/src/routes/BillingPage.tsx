@@ -133,6 +133,13 @@ interface FolioChargeRow {
   amount: number;
   status: string;
   overrides: FolioChargeOverrideRow[];
+  // Spec.md §13 decision 21 (2026-11-06): true once some non-voided
+  // receipt already references this charge — the fact that decides
+  // Delete (never receipted, no reason needed) vs. Void (receipted,
+  // visible and reasoned) automatically, per the client's own "the
+  // purpose of delete is for errors, don't make it hard to delete
+  // errors."
+  hasBeenReceipted: boolean;
 }
 
 interface UnsettledFnbCharge {
@@ -204,6 +211,11 @@ export function BillingPage() {
 
   const [booking, setBooking] = useState<BookingDetail | 'loading' | 'error'>('loading');
   const [folioCharges, setFolioCharges] = useState<FolioChargeRow[]>([]);
+  // Spec.md §13 decision 21 (2026-11-06): voided charges stay in the
+  // folio's own history (that's the point of voiding over deleting),
+  // but default to hidden — a cashier working the folio shouldn't have
+  // to read past them to see what's actually owed.
+  const [showVoided, setShowVoided] = useState(false);
   const [unsettledFnb, setUnsettledFnb] = useState<UnsettledFnbCharge[]>([]);
   const [readyUnits, setReadyUnits] = useState<ReadyUnit[]>([]);
   const [preview, setPreview] = useState<PreviewResponse | 'loading' | 'error'>('loading');
@@ -627,6 +639,24 @@ export function BillingPage() {
     }
   }
 
+  // Spec.md §13 decision 21: the lower-friction sibling of void, for a
+  // charge no receipt has ever referenced — no reason prompt, since
+  // the client's own point was that an error corrected seconds later
+  // shouldn't demand an explanation. A plain confirm is still worth
+  // keeping (this has no undo in the UI, even though the audit
+  // extension still records the delete) — just not a form.
+  async function handleDeleteCharge(chargeId: string) {
+    if (!window.confirm('Delete this charge from the folio?')) return;
+    setChargeError(null);
+    try {
+      await api.delete(`/folio-charges/${chargeId}`);
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setChargeError(err instanceof ApiRequestError ? err.message : 'Could not delete this charge.');
+    }
+  }
+
   // Spec.md §13 decision 20: GET /receipts/:id — reuses the exact
   // issuedReceipt state/early-return the just-issued view already uses,
   // "Start another receipt" doubling as "back to billing" either way.
@@ -737,15 +767,25 @@ export function BillingPage() {
             <Button variant="secondary" onClick={() => startOverride(l)}>
               Override amount
             </Button>
-            {/* Spec.md §13 decision 19 (2026-11-06): same trade-off
-                decision 17 already settled for overriding an amount —
-                cashier-level, substituted approval via a required-
-                reason audit trail. Voiding is the lower-risk sibling:
-                the charge stays visible as VOIDED, never silently
-                changed. */}
-            <Button variant="secondary" onClick={() => startVoidCharge(l.id)}>
-              Void
-            </Button>
+            {/* Spec.md §13 decision 21 (2026-11-06): the client's own
+                words, caught live-testing decision 19's void action —
+                "the purpose of delete is for errors, don't make it
+                hard to delete errors." Picked automatically, per
+                charge: never on an issued receipt deletes outright (no
+                reason — the audit extension still records it); once a
+                receipt references it, voiding is the only option, same
+                trade-off decision 17 already settled for overriding an
+                amount — reasoned, and the charge stays visible as
+                VOIDED rather than silently gone. */}
+            {l.hasBeenReceipted ? (
+              <Button variant="secondary" onClick={() => startVoidCharge(l.id)}>
+                Void
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={() => void handleDeleteCharge(l.id)}>
+                Delete
+              </Button>
+            )}
           </div>
         ),
       hideOnMobile: true,
@@ -1104,7 +1144,16 @@ export function BillingPage() {
               sibling booking), so nothing typed here could ever drift
               from what gets billed. */}
           <Section title="Folio" description="Every charge posted to this booking (and any sibling room sharing its booking ID).">
-            <DataTable columns={folioColumns} rows={folioCharges} rowKey={(l) => l.id} emptyMessage="No charges posted yet." />
+            <label className="flex items-center gap-2 text-sm text-ink-secondary">
+              <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
+              Show voided charges
+            </label>
+            <DataTable
+              columns={folioColumns}
+              rows={folioCharges.filter((l) => showVoided || l.status !== 'VOIDED')}
+              rowKey={(l) => l.id}
+              emptyMessage="No charges posted yet."
+            />
             {chargeError && (
               <p role="alert" className="text-sm font-medium text-danger-600">
                 {chargeError}

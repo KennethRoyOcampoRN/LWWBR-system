@@ -8215,3 +8215,56 @@ verify/reject path through `PendingPaymentsPage.tsx`'s real UI; a
 permission-gated holder blocked from `/payments`; listing and voiding a
 past receipt from `BillingPage.tsx`; viewing one via the new "View"
 action, labelled "Receipt" rather than "Receipt issued").
+
+**Cashier tab, item 6 third correction — a live crash fixed at its
+root, and delete-vs-void for folio charges (spec.md §13 decision 21),
+2026-11-06.**
+
+**Crash.** The "View" action added last round threw
+`TypeError: Cannot read properties of undefined (reading 'logo')` —
+`IssuedReceiptView` reads `receipt.resort.logo`/`receipt.guest.name`,
+the nested shape `previewReceipt` returns, but `receiptToJson` (serving
+both `issueReceipt`'s response and `GET /receipts/:id`) used to spread
+`Receipt`'s flat snapshot columns with only `logo` hoisted to the top —
+`receipt.resort` was `undefined` on every real receipt. Every existing
+test had hand-built its fixture in the nested shape the component
+expected, which is exactly why this got through untested. Fixed at the
+root: `receiptToJson` now nests `resort`/`guest` the same way
+`previewReceipt` always did — one shape, one place it's produced, not
+two kept in sync by hand. New backend test pins the real row shape a
+Prisma query returns (every flat column present) and asserts the
+nested output, so a fixture missing a field this function reads can't
+pass by accident the way the old one did.
+
+**Delete replaces void for a never-receipted charge.** Client's own
+words, live-testing decision 19's void action on a folio with voided
+rows cluttering what was actually owed: "the purpose of delete is for
+errors, don't make it hard to delete errors." New `DELETE
+/folio-charges/:id` soft-deletes outright, no reason required, but only
+when no non-voided receipt yet references the charge — 409s pointing at
+void otherwise, checked server-side via the same fact
+`gatherReceiptLines`'s own incremental-exclusion logic already reads.
+`listFolioCharges` gained a batched `hasBeenReceipted` flag (one query
+for the whole list) that the Folio table reads to show Delete or Void
+automatically, with voided charges now hidden by default behind a
+"Show voided charges" toggle.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 723/723 passing, 3 skipped (new: the nested-shape
+regression test built from real flat Prisma columns; deleting a
+never-receipted charge with no reason; 409 pointing at void for an
+already-receipted one; the batched `hasBeenReceipted` flag). `apps/web`
+214/214 (new: Delete, not Void, shown for a never-receipted charge with
+a plain confirm; voided charges hidden by default behind the new
+toggle).
+
+**Cashier tab — redesign brief requested, not yet built.** Client's
+verdict on the current `BillingPage.tsx`: "make sure that the cashier
+is very user friendly... it's very complicated." Six equal-weight
+sections (Rooms/Folio/Deductions/Payments/Past Receipts/Issue) compete
+for attention when the actual cashier task is four steps: find the
+guest, see what they owe, take payment, print. A layout proposal was
+written up for client review before any code changes — see the
+session's own reply for the full brief (what's on screen by default,
+what's behind a click, the primary action at each stage). No frontend
+changes made this round pending that review.

@@ -12,7 +12,7 @@ const mockPrisma = {
   folioSettlement: { create: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-  receiptLine: { findMany: vi.fn() },
+  receiptLine: { findMany: vi.fn(), findFirst: vi.fn() },
   receiptBooking: { findMany: vi.fn(), create: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
@@ -93,6 +93,10 @@ beforeEach(() => {
   // specifically exercising decision 18's own balance/downpayment
   // logic sees the exact same totals it always has.
   mockPrisma.receiptLine.findMany.mockResolvedValue([]);
+  // deleteFolioCharge's own isReferencedByAnIssuedReceipt check — not
+  // on any issued receipt by default, so a test not specifically
+  // exercising the 409 can delete freely.
+  mockPrisma.receiptLine.findFirst.mockResolvedValue(null);
   mockPrisma.payment.findMany.mockResolvedValue([]);
 });
 
@@ -122,6 +126,28 @@ describe('Folio charges', () => {
     expect(mockPrisma.folioCharge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ bookingId: { in: expect.arrayContaining(['booking_1', 'booking_2']) } }) }),
     );
+  });
+
+  // Spec.md §13 decision 21 (2026-11-06): what the UI reads to pick
+  // Delete vs. Void automatically, per charge.
+  it('flags hasBeenReceipted per charge, batched rather than per-charge', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', bookingId: 'booking_1', description: 'Room', qty: 1, unitPrice: 1100, amount: 1100, overrides: [] },
+      { id: 'charge_2', bookingId: 'booking_1', description: 'Misc', qty: 1, unitPrice: 500, amount: 500, overrides: [] },
+    ]);
+    mockPrisma.receiptLine.findMany.mockResolvedValue([{ sourceChargeId: 'charge_1' }]);
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/folio-charges').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.receiptLine.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ receipt: { status: { not: 'VOIDED' } } }) }),
+    );
+    const byId = Object.fromEntries(res.body.folioCharges.map((c: { id: string; hasBeenReceipted: boolean }) => [c.id, c.hasBeenReceipted]));
+    expect(byId.charge_1).toBe(true);
+    expect(byId.charge_2).toBe(false);
   });
 
   it('posts a MISC folio charge with amount computed server-side (qty * unitPrice), not trusted from the client', async () => {
@@ -379,6 +405,55 @@ describe('Folio charges', () => {
       .set('Cookie', authCookie())
       .send({ voidReason: 'x' });
     expect(res.status).toBe(409);
+  });
+
+  // Client's own words, caught live-testing decision 19's void action:
+  // "the purpose of delete is for errors, don't make it hard to delete
+  // errors." A charge never on a non-voided receipt deletes outright —
+  // no reason required — rather than needing void's reasoned, visible-
+  // as-VOIDED treatment.
+  describe('Deleting a never-receipted folio charge', () => {
+    it('deletes a charge with no reason required, soft-deleting it (deletedAt), not voiding', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'POSTED' });
+      mockPrisma.receiptLine.findFirst.mockResolvedValue(null); // never on any receipt
+
+      const res = await request(createApp()).delete('/api/v1/folio-charges/charge_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(204);
+      expect(mockPrisma.folioCharge.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'charge_1' }, data: { deletedAt: expect.any(Date) } }),
+      );
+      // Never touches voidedById/voidedAt/voidReason — this is not a void.
+      const call = mockPrisma.folioCharge.update.mock.calls[0]![0];
+      expect(call.data).not.toHaveProperty('voidReason');
+      expect(call.data).not.toHaveProperty('status');
+    });
+
+    it('404s deleting an unknown charge', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue(null);
+      const res = await request(createApp()).delete('/api/v1/folio-charges/missing').set('Cookie', authCookie());
+      expect(res.status).toBe(404);
+    });
+
+    it('409s deleting a charge already on a non-voided receipt, pointing the caller at void instead', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'POSTED' });
+      mockPrisma.receiptLine.findFirst.mockResolvedValue({ id: 'line_1', sourceChargeId: 'charge_1' });
+
+      const res = await request(createApp()).delete('/api/v1/folio-charges/charge_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('ALREADY_RECEIPTED');
+      expect(mockPrisma.folioCharge.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses deleting without folio:void', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+      const res = await request(createApp()).delete('/api/v1/folio-charges/charge_1').set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    });
   });
 
   // Spec.md §13 decision 17 (2026-11-06): cashier-editable amounts with
@@ -1257,6 +1332,67 @@ describe('Receipt read/void', () => {
     const getRes = await request(createApp()).get('/api/v1/receipts/receipt_1').set('Cookie', authCookie());
     expect(getRes.status).toBe(200);
     expect(getRes.body.receipt.totalAmountDue).toBe(1100);
+  });
+
+  // Bug caught live, 2026-11-06: receiptToJson used to spread Receipt's
+  // flat snapshot columns (resortName, guestName, ...) with only `logo`
+  // hoisted to the top — IssuedReceiptView (BillingPage.tsx) reads
+  // receipt.resort.name/receipt.guest.name, which were undefined on
+  // every real receipt (TypeError, caught only once the client opened
+  // a past one). This pins the real row shape a Prisma query actually
+  // returns — every flat resort*/guest* column present, same as the
+  // existing test's rawReceipt deliberately omitted — specifically so a
+  // fixture missing a field this function now reads can't pass by
+  // accident the way the old test did.
+  it('nests resort and guest fields (not the flat storage columns) in both list and get', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    const rawReceipt = {
+      id: 'receipt_1',
+      status: 'ISSUED',
+      billingNumberFull: '83887-11062026-01',
+      issuedAt: new Date('2026-11-06T06:00:00.000Z'),
+      preparedByName: 'yssa',
+      grandTotal: '2200.00',
+      totalAmountDue: '1100.00',
+      outstandingBalance: '1100.00',
+      logoFileId: null,
+      resortName: 'Lucky Waku Waku Beach Resort',
+      resortAddress: '225 Caisip Blvd, Phase 3, San Diego, Lian, Batangas',
+      resortCellNo: '09668294198',
+      resortContactNo: '043-726-7198',
+      resortWebsite: 'www.luckywakuwakubeachresort.com',
+      resortFacebook: 'Lucky Waku Waku Beach Resort',
+      guestName: 'Roel Villagomez',
+      guestAddress: null,
+      guestContactNo: null,
+      guestEmail: null,
+      lines: [{ id: 'line_1', description: 'Room', qty: 1, unitPrice: 1100, amount: 1100 }],
+      deductions: [],
+    };
+    mockPrisma.receiptBooking.findMany.mockResolvedValue([{ receipt: rawReceipt }]);
+    mockPrisma.receipt.findFirst.mockResolvedValue(rawReceipt);
+
+    const listRes = await request(createApp()).get('/api/v1/bookings/booking_1/receipts').set('Cookie', authCookie());
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.receipts[0].resort).toEqual({
+      name: 'Lucky Waku Waku Beach Resort',
+      address: '225 Caisip Blvd, Phase 3, San Diego, Lian, Batangas',
+      cellNo: '09668294198',
+      contactNo: '043-726-7198',
+      website: 'www.luckywakuwakubeachresort.com',
+      facebookUrl: 'Lucky Waku Waku Beach Resort',
+      logo: null,
+    });
+    expect(listRes.body.receipts[0].guest).toEqual({ name: 'Roel Villagomez', address: null, contactNo: null, email: null });
+    // The flat storage columns themselves are gone from the response —
+    // nested is the only shape, not an addition alongside the old one.
+    expect(listRes.body.receipts[0]).not.toHaveProperty('resortName');
+    expect(listRes.body.receipts[0]).not.toHaveProperty('guestName');
+
+    const getRes = await request(createApp()).get('/api/v1/receipts/receipt_1').set('Cookie', authCookie());
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.receipt.resort.name).toBe('Lucky Waku Waku Beach Resort');
+    expect(getRes.body.receipt.guest.name).toBe('Roel Villagomez');
   });
 
   it('voids a receipt, 409s voiding an already-voided one', async () => {

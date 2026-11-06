@@ -115,9 +115,22 @@ export async function listFolioCharges(bookingId: string) {
     include: { overrides: { orderBy: { createdAt: 'asc' } } },
     orderBy: { createdAt: 'asc' },
   });
+  // Spec.md §13 decision 21 (2026-11-06): the fact the UI needs to pick
+  // Delete vs. Void automatically per row, batched here rather than
+  // isReferencedByAnIssuedReceipt per charge — this list is exactly the
+  // shape an N+1 query would otherwise creep into.
+  const receiptedChargeIds = new Set(
+    (
+      await prisma.receiptLine.findMany({
+        where: { sourceChargeId: { in: charges.map((c) => c.id) }, receipt: { status: { not: 'VOIDED' } } },
+        select: { sourceChargeId: true },
+      })
+    ).map((line) => line.sourceChargeId),
+  );
   return charges.map((charge) => ({
     ...folioChargeToJson(charge),
     overrides: charge.overrides.map(folioChargeOverrideToJson),
+    hasBeenReceipted: receiptedChargeIds.has(charge.id),
   }));
 }
 
@@ -261,6 +274,47 @@ export async function voidFolioCharge(id: string, input: VoidFolioChargeInput, a
     data: { status: 'VOIDED', voidedById: actor.id, voidedAt: new Date(), voidReason: input.voidReason },
   });
   return folioChargeToJson(charge);
+}
+
+// True once some non-voided Receipt's own ReceiptLine references this
+// charge — the exact fact that decides delete vs. void below, and the
+// same fact gatherReceiptLines's own incremental-exclusion check reads
+// (a charge on a non-voided receipt is "already billed"; one that
+// isn't has nothing yet referencing it).
+async function isReferencedByAnIssuedReceipt(chargeId: string): Promise<boolean> {
+  const line = await prisma.receiptLine.findFirst({
+    where: { sourceChargeId: chargeId, receipt: { status: { not: 'VOIDED' } } },
+  });
+  return line !== null;
+}
+
+// Client's own words, caught live-testing decision 19's void action:
+// "the purpose of delete is for errors, don't make it hard to delete
+// errors." A charge no document has ever referenced doesn't need an
+// audit trail substituting for anyone's approval — there's nothing for
+// the trail to protect, since nothing downstream could have relied on
+// it yet. Soft-delete (deletedAt), not a hard DELETE: the audit
+// extension (lib/auditExtension.ts) records every `update` generically,
+// so this still shows up there with no special-case code, exactly the
+// way every other soft-delete in this codebase already does. Once a
+// non-voided receipt exists referencing this charge, that protection
+// starts mattering — 409s and points the caller at voidFolioCharge
+// instead, which keeps the charge visible (reasoned) rather than
+// silently gone out from under an issued document.
+export async function deleteFolioCharge(id: string, _actor: BillingActor) {
+  const existing = await prisma.folioCharge.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Folio charge not found');
+  }
+  if (await isReferencedByAnIssuedReceipt(id)) {
+    throw new ApiError(
+      409,
+      'ALREADY_RECEIPTED',
+      'This charge is already on an issued receipt — void it instead of deleting it.',
+    );
+  }
+  await prisma.folioCharge.update({ where: { id }, data: { deletedAt: new Date() } });
+  return { id };
 }
 
 // Spec.md §13 decision 17 (2026-11-06): the cashier-editable-amount
@@ -684,16 +738,70 @@ type RawReceiptWithChildren = {
   totalAmountDue: unknown;
   outstandingBalance: unknown;
   logoFileId: string | null;
+  resortName: string;
+  resortAddress: string;
+  resortCellNo: string | null;
+  resortContactNo: string | null;
+  resortWebsite: string | null;
+  resortFacebook: string | null;
+  guestName: string;
+  guestAddress: string | null;
+  guestContactNo: string | null;
+  guestEmail: string | null;
   lines: { unitPrice: unknown; amount: unknown; [key: string]: unknown }[];
   deductions: { amount: unknown; [key: string]: unknown }[];
   [key: string]: unknown;
 };
 
+// Bug caught live, 2026-11-06: `IssuedReceiptView` (BillingPage.tsx) was
+// built against previewReceipt's own nested `resort`/`guest` shape and
+// never worked against an actually-issued receipt — this function used
+// to spread Receipt's flat snapshot columns (`resortName`,
+// `resortAddress`, ...) with only `logo` hoisted to the top, so
+// `receipt.resort` was undefined on every real receipt (TypeError:
+// Cannot read properties of undefined (reading 'logo')), caught only
+// once the client actually opened a past receipt rather than the
+// just-issued one a test fixture had hand-built in the preview shape.
+// Fixed here, not in the component: one serializer, one shape — the
+// flat columns are a storage detail, never a second public contract to
+// keep in sync by hand.
 async function receiptToJson(receipt: RawReceiptWithChildren) {
-  const { lines, deductions, logoFileId, grandTotal, totalAmountDue, outstandingBalance, ...rest } = receipt;
+  const {
+    lines,
+    deductions,
+    logoFileId,
+    grandTotal,
+    totalAmountDue,
+    outstandingBalance,
+    resortName,
+    resortAddress,
+    resortCellNo,
+    resortContactNo,
+    resortWebsite,
+    resortFacebook,
+    guestName,
+    guestAddress,
+    guestContactNo,
+    guestEmail,
+    ...rest
+  } = receipt;
   return {
     ...rest,
-    logo: await logoSnapshotToJson(logoFileId),
+    resort: {
+      name: resortName,
+      address: resortAddress,
+      cellNo: resortCellNo,
+      contactNo: resortContactNo,
+      website: resortWebsite,
+      facebookUrl: resortFacebook,
+      logo: await logoSnapshotToJson(logoFileId),
+    },
+    guest: {
+      name: guestName,
+      address: guestAddress,
+      contactNo: guestContactNo,
+      email: guestEmail,
+    },
     grandTotal: Number(grandTotal),
     totalAmountDue: Number(totalAmountDue),
     // Spec.md §13 decision 18: the whole-account running balance at
