@@ -10,6 +10,7 @@ const mockPrisma = {
   amenityRequest: { findMany: vi.fn() },
   auditLog: { findMany: vi.fn() },
   receipt: { findMany: vi.fn() },
+  folioChargeOverride: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -906,6 +907,7 @@ describe('GET /api/v1/reports/receipts-detail, receipts-summary, receipts-by-cas
             { type: 'DOWNPAYMENT', amount: '1100.00' },
             { type: 'DISCOUNT_SENIOR', amount: '0.00' },
           ],
+          lines: [],
         },
         {
           billingNumberFull: '83887-08242026-02',
@@ -917,6 +919,7 @@ describe('GET /api/v1/reports/receipts-detail, receipts-summary, receipts-by-cas
           issuedBy: { fullName: 'Yssa (Cashier)' },
           status: 'VOIDED',
           deductions: [],
+          lines: [],
         },
       ]);
 
@@ -941,6 +944,91 @@ describe('GET /api/v1/reports/receipts-detail, receipts-summary, receipts-by-cas
       expect(summary.totalAmountDue).toBe(1100);
     });
 
+    // Spec.md §13 decision 17 follow-up (owner review, 2026-11-06): the
+    // audit trail only substitutes for a manager approval if the person
+    // who would have approved can find it without opening every receipt
+    // — so this report, not just the Folio-table badge, must surface a
+    // line's override history.
+    it('surfaces an overridden line: original amount, current amount, reason, and who — but only overrides that existed by issuance', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          billingNumberFull: '83887-11062026-01',
+          issuedAt: new Date('2026-11-06T09:00:00+08:00'),
+          guestName: 'Roel Villagomez',
+          booking: { referenceNo: 'BK-0001' },
+          grandTotal: '2000.00',
+          totalAmountDue: '2000.00',
+          issuedBy: { fullName: 'Yssa (Cashier)' },
+          status: 'ISSUED',
+          deductions: [],
+          lines: [{ description: 'R01 room charge', amount: '2000.00', sourceChargeId: 'charge_1' }],
+        },
+      ]);
+      mockPrisma.folioChargeOverride.findMany.mockResolvedValue([
+        {
+          folioChargeId: 'charge_1',
+          previousAmount: '2200.00',
+          newAmount: '2000.00',
+          reason: "Client's loyalty discount, approved on the spot",
+          overriddenAt: new Date('2026-11-06T00:30:00.000Z'), // before issuance — applies
+          overriddenBy: { fullName: 'Yssa (Cashier)' },
+        },
+        {
+          folioChargeId: 'charge_1',
+          previousAmount: '2000.00',
+          newAmount: '1800.00',
+          reason: 'Override made after this receipt was already issued',
+          overriddenAt: new Date('2026-11-07T00:00:00.000Z'), // after issuance — must not apply
+          overriddenBy: { fullName: 'Yssa (Cashier)' },
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-detail?from=2026-11-06&to=2026-11-06')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const row = res.body.report.rows[0];
+      expect(row.overriddenLineCount).toBe(1);
+      expect(row.overrideDetail).toContain('R01 room charge');
+      expect(row.overrideDetail).toContain('was 2200');
+      expect(row.overrideDetail).toContain('now 2000');
+      expect(row.overrideDetail).toContain("Client's loyalty discount, approved on the spot");
+      expect(row.overrideDetail).toContain('Yssa (Cashier)');
+      // The later override (made after this receipt issued) never
+      // touched what this receipt actually billed.
+      expect(row.overrideDetail).not.toContain('after this receipt was already issued');
+    });
+
+    it('a line with no override history contributes nothing to overriddenLineCount/overrideDetail', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.receipt.findMany.mockResolvedValue([
+        {
+          billingNumberFull: '83887-11062026-02',
+          issuedAt: new Date('2026-11-06T09:00:00+08:00'),
+          guestName: 'Maria Cruz',
+          booking: { referenceNo: 'BK-0002' },
+          grandTotal: '1100.00',
+          totalAmountDue: '1100.00',
+          issuedBy: { fullName: 'Yssa (Cashier)' },
+          status: 'ISSUED',
+          deductions: [],
+          lines: [{ description: 'R02 room charge', amount: '1100.00', sourceChargeId: 'charge_2' }],
+        },
+      ]);
+      mockPrisma.folioChargeOverride.findMany.mockResolvedValue([]);
+
+      const res = await request(createApp())
+        .get('/api/v1/reports/receipts-detail?from=2026-11-06&to=2026-11-06')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      const row = res.body.report.rows[0];
+      expect(row.overriddenLineCount).toBe(0);
+      expect(row.overrideDetail).toBe('');
+    });
+
     it('exports receipts-detail as CSV with per-deduction-type columns', async () => {
       mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
       mockPrisma.receipt.findMany.mockResolvedValue([
@@ -954,6 +1042,7 @@ describe('GET /api/v1/reports/receipts-detail, receipts-summary, receipts-by-cas
           issuedBy: { fullName: 'Yssa (Cashier)' },
           status: 'ISSUED',
           deductions: [{ type: 'DOWNPAYMENT', amount: '1100.00' }],
+          lines: [],
         },
       ]);
 

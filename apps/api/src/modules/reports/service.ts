@@ -989,6 +989,14 @@ interface ReceiptsDetailRow {
   totalAmountDue: number;
   issuedByName: string;
   status: string;
+  // Spec.md §13 decision 17: an owner reading this report, not a
+  // cashier looking at the Folio table, is who the audit trail
+  // (FolioChargeOverride) is actually for — see this function's own
+  // comment on the row grain for why this stays one receipt per row
+  // rather than one line per row, and why the per-line detail below is
+  // joined into a single column instead of split across several.
+  overriddenLineCount: number;
+  overrideDetail: string;
 }
 
 // Build plan stage 5 (spec.md §13 decision 13, 2026-11-04). Client-
@@ -1025,12 +1033,53 @@ async function buildReceiptsDetailReport(query: ReportQuery, actor: ReportActor)
       deductions: true,
       issuedBy: { select: { fullName: true } },
       booking: { select: { referenceNo: true } },
+      lines: { select: { description: true, amount: true, sourceChargeId: true } },
     },
     orderBy: [{ issuedAt: 'asc' }],
   });
 
   function deductionTotal(receipt: (typeof receipts)[number], type: ReceiptDeductionTypeKey): number {
     return sumMoney(receipt.deductions.filter((d) => d.type === type).map((d) => Number(d.amount)));
+  }
+
+  // Spec.md §13 decision 17: the audit trail only substitutes for a
+  // manager approval if the person who would have approved can find
+  // it — a badge on the cashier's own screen doesn't reach the owner
+  // reading this report. Pull every override on any charge this
+  // window's receipts actually billed, then (per line) keep only the
+  // ones that existed by the time that specific receipt was issued —
+  // under the current full-snapshot receipt model (decision 16), the
+  // same FolioCharge can be re-billed on a later receipt too, and an
+  // override made after THIS receipt issued never touched what it
+  // actually billed.
+  const sourceChargeIds = [...new Set(receipts.flatMap((r) => r.lines.map((l) => l.sourceChargeId).filter((id): id is string => id !== null)))];
+  const overridesByChargeId = new Map<string, { previousAmount: unknown; newAmount: unknown; reason: string; overriddenAt: Date; overriddenBy: { fullName: string } }[]>();
+  if (sourceChargeIds.length > 0) {
+    const overrides = await prisma.folioChargeOverride.findMany({
+      where: { folioChargeId: { in: sourceChargeIds } },
+      include: { overriddenBy: { select: { fullName: true } } },
+      orderBy: { overriddenAt: 'asc' },
+    });
+    for (const override of overrides) {
+      const list = overridesByChargeId.get(override.folioChargeId) ?? [];
+      list.push(override);
+      overridesByChargeId.set(override.folioChargeId, list);
+    }
+  }
+
+  function overrideColumns(receipt: (typeof receipts)[number]): { overriddenLineCount: number; overrideDetail: string } {
+    const details: string[] = [];
+    for (const line of receipt.lines) {
+      if (!line.sourceChargeId) continue;
+      const applicable = (overridesByChargeId.get(line.sourceChargeId) ?? []).filter((o) => o.overriddenAt <= receipt.issuedAt);
+      if (applicable.length === 0) continue;
+      const earliest = applicable[0]!;
+      const latest = applicable[applicable.length - 1]!;
+      details.push(
+        `${line.description}: was ${Number(earliest.previousAmount)} now ${Number(line.amount)} — "${latest.reason}" (${latest.overriddenBy.fullName})`,
+      );
+    }
+    return { overriddenLineCount: details.length, overrideDetail: details.join('; ') };
   }
 
   const rows: ReceiptsDetailRow[] = receipts.map((receipt) => ({
@@ -1045,6 +1094,7 @@ async function buildReceiptsDetailReport(query: ReportQuery, actor: ReportActor)
     discountPwd: deductionTotal(receipt, 'DISCOUNT_PWD'),
     refundCorrection: deductionTotal(receipt, 'REFUND_CORRECTION'),
     totalAmountDue: Number(receipt.totalAmountDue),
+    ...overrideColumns(receipt),
     issuedByName: receipt.issuedBy.fullName,
     status: receipt.status,
   }));
@@ -1079,6 +1129,8 @@ async function buildReceiptsDetailReport(query: ReportQuery, actor: ReportActor)
       { key: 'discountPwd', label: RECEIPT_DEDUCTION_TYPE_LABELS.DISCOUNT_PWD },
       { key: 'refundCorrection', label: RECEIPT_DEDUCTION_TYPE_LABELS.REFUND_CORRECTION },
       { key: 'totalAmountDue', label: 'Total amount due' },
+      { key: 'overriddenLineCount', label: 'Overridden lines' },
+      { key: 'overrideDetail', label: 'Override detail (was / now / reason / by)' },
       { key: 'issuedByName', label: 'Issued by' },
       { key: 'status', label: 'Status' },
     ],

@@ -8006,3 +8006,31 @@ own audit row with override history surfacing correctly on a folio
 read). `apps/web` 204/204 (new: the override confirm-dialog flow end to
 end — opens, submits, shows the "Overridden" badge — and the in-place
 deduction-edit flow, including that Save is a no-op without a reason).
+
+**Cashier tab, item 5 correction — overrides didn't reach
+`receipts-detail`, 2026-11-06.** Caught in review: the cashier-level
+permission on `POST /folio-charges/:id/override` was justified entirely
+by the audit trail substituting for a manager's approval, but neither
+the Folio-table badge nor the `GET /receipts/:id` join reaches an owner
+who doesn't already know which receipt to open — and `reports/service.ts`
+(`buildReceiptsDetailReport`, the client-confirmed accounting/BIR record)
+had no reference to `FolioChargeOverride` at all. Fixed by adding two
+columns to that report's existing per-receipt row — `overriddenLineCount`
+and a joined `overrideDetail` text column (one `; `-separated entry per
+overridden line: description, pre-override amount, amount actually
+billed, reason, who) — rather than changing the report's row grain,
+which stays one row per issued receipt (load-bearing for the statutory
+per-deduction-type columns, not touched). Only overrides that existed by
+the time that specific receipt was issued are counted — the same
+`FolioCharge` can be re-billed across several receipts under decision
+16's still-current full-snapshot model, so an override made after a
+given receipt's `issuedAt` never touched what that receipt actually
+billed and is correctly excluded from its row.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 703/703 passing, 3 skipped (new: an overridden line
+surfacing original/current/reason/who in `overrideDetail`, scoped to
+only the override that existed by issuance; a line with no override
+history contributing nothing). `apps/web` unchanged at 204/204 —
+`ReportsPage.tsx` renders generically off `report.csvColumns`/`rows`,
+so the new columns needed no frontend code.
