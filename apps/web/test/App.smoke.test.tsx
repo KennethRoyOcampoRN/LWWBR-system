@@ -1186,7 +1186,7 @@ describe('App', () => {
 
       await user.click(screen.getByRole('button', { name: /Check out 1 room/ }));
 
-      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1'] }));
+      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1'], confirmOutstandingBalance: false }));
     });
 
     // Real gap found live-testing, 2026-08-24: a booking created and
@@ -1278,7 +1278,7 @@ describe('App', () => {
       await user.click(room2Checkbox);
       await user.click(screen.getByRole('button', { name: /Check out 2 rooms/ }));
 
-      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1', 'unit_2'] }));
+      await waitFor(() => expect(checkoutBody).toEqual({ unitIds: ['unit_1', 'unit_2'], confirmOutstandingBalance: false }));
     });
   });
 });

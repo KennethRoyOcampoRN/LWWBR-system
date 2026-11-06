@@ -62,6 +62,10 @@ interface PreviewResponse {
   grandTotal: number;
   totalDeductions: number;
   totalAmountDue: number;
+  // Spec.md §13 decision 18 (2026-11-06): the whole-account running
+  // balance — a layout addition the client's own sample receipt
+  // doesn't have.
+  outstandingBalance: number;
 }
 
 interface IssuedReceipt extends PreviewResponse {
@@ -140,8 +144,14 @@ interface ReadyUnit {
 // unitPrice/qty for ROOM — see billing/service.ts's own comment).
 const NON_ROOM_SOURCE_KEYS = FOLIO_CHARGE_SOURCE_KEYS.filter((k) => k !== 'ROOM');
 
+// Spec.md §13 decision 18 (2026-11-06): DOWNPAYMENT is now server-
+// derived from recorded payments, not cashier-typed — the API rejects
+// one with a 422 (receiptDeductionInputSchema), so it's dropped from
+// this form's own type choices rather than left in to fail on submit.
+const CASHIER_DEDUCTION_TYPE_KEYS = RECEIPT_DEDUCTION_TYPE_KEYS.filter((k) => k !== 'DOWNPAYMENT');
+
 const EMPTY_CHARGE_FORM = { source: NON_ROOM_SOURCE_KEYS[0] as FolioChargeSourceKey, description: '', qty: '1', unitPrice: '' };
-const EMPTY_DEDUCTION_FORM = { type: 'DOWNPAYMENT' as ReceiptDeductionTypeKey, label: 'Downpayment', amount: '' };
+const EMPTY_DEDUCTION_FORM = { type: CASHIER_DEDUCTION_TYPE_KEYS[0] as ReceiptDeductionTypeKey, label: '', amount: '' };
 
 function formatPeso(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -944,7 +954,7 @@ export function BillingPage() {
                     setDeductionForm((f) => ({ ...f, type: e.target.value as ReceiptDeductionTypeKey }))
                   }
                 >
-                  {RECEIPT_DEDUCTION_TYPE_KEYS.map((key) => (
+                  {CASHIER_DEDUCTION_TYPE_KEYS.map((key) => (
                     <option key={key} value={key}>
                       {RECEIPT_DEDUCTION_TYPE_LABELS[key]}
                     </option>
@@ -997,6 +1007,13 @@ export function BillingPage() {
               <div className="flex justify-between text-base font-semibold text-ink">
                 <span>Total Amount Due</span>
                 <span>{formatPeso(preview.totalAmountDue)}</span>
+              </div>
+              {/* Spec.md §13 decision 18: the whole-account running
+                  balance — a layout addition the client's own sample
+                  receipt doesn't have. */}
+              <div className="flex justify-between text-ink-secondary">
+                <span>Running Balance</span>
+                <span>{formatPeso(preview.outstandingBalance)}</span>
               </div>
             </div>
           </Section>
@@ -1133,6 +1150,12 @@ function IssuedReceiptView({ receipt, onStartAnother }: { receipt: IssuedReceipt
             <div className="flex justify-between border-t border-gray-300 pt-1 text-base font-semibold text-ink">
               <span>TOTAL AMOUNT DUE</span>
               <span>{formatPeso(receipt.totalAmountDue)}</span>
+            </div>
+            {/* Spec.md §13 decision 18: printed layout addition — the
+                client's own sample receipt has no such line. */}
+            <div className="flex justify-between text-ink-secondary">
+              <span>Running Balance</span>
+              <span>{formatPeso(receipt.outstandingBalance)}</span>
             </div>
           </div>
 

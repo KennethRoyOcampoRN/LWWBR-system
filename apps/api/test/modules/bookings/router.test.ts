@@ -23,6 +23,11 @@ const mockPrisma = {
   // referenceNo (that's free-text from the client now).
   referenceSequence: { upsert: vi.fn() },
   auditLog: { create: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+  // Spec.md §13 decision 18 (2026-11-06): checkOutUnits's own pre-
+  // mutation balance check reads straight off these two, via
+  // billing/service.ts's getFolioOutstandingBalance.
+  folioCharge: { findMany: vi.fn() },
+  payment: { findMany: vi.fn() },
 };
 
 vi.mock('../../../src/lib/prisma.js', () => ({ prisma: mockPrisma }));
@@ -138,6 +143,14 @@ beforeEach(() => {
   mockPrisma.checkInRecord.create.mockResolvedValue({});
   mockPrisma.checkOutRecord.create.mockResolvedValue({});
   mockPrisma.workOrder.create.mockResolvedValue({ id: 'wo_1', referenceNo: 'WO-260824-0001', photos: [] });
+  // Spec.md §13 decision 18: checkOutUnits's own pre-mutation balance
+  // check (getFolioOutstandingBalance) — no siblings, no charges, no
+  // payments by default, so a test not specifically exercising the
+  // balance warning sees a zero balance and checks out exactly as it
+  // always has. Tests asserting the warning override these explicitly.
+  mockPrisma.booking.findMany.mockResolvedValue([]);
+  mockPrisma.folioCharge.findMany.mockResolvedValue([]);
+  mockPrisma.payment.findMany.mockResolvedValue([]);
 });
 
 describe('POST /api/v1/bookings/checkin — redesign 2026-08-24 (client decision): the only guest-arrival entry point', () => {
@@ -458,6 +471,63 @@ describe('POST /api/v1/bookings/checkout — checklist-based, redesign 2026-08-2
         data: expect.objectContaining({ type: 'HOUSEKEEPING', department: 'HOUSEKEEPING', unitId: 'unit_1', priority: 'NORMAL' }),
       }),
     );
+  });
+
+  // Spec.md §13 decision 18 (2026-11-06): warn but allow, not an
+  // unconditional status flip — reversing the "stays unconditional"
+  // framing reaffirmed as recently as 2026-08-23 and decision 13.
+  it('409s with the outstanding balance when checking out would finalize a booking that still owes money', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const booking = fakeBookingWithUnits();
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', qty: 1, unitPrice: 2000 },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_1', amount: '500.00', method: 'CASH', status: 'PENDING' },
+    ]);
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkout').set('Cookie', authCookie()).send({ unitIds: ['unit_1'] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('OUTSTANDING_BALANCE');
+    expect(res.body.error.message).toContain('1500.00');
+    // No mutation happened — the check runs before any unit-status
+    // change or BookingUnit.releasedAt write.
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.bookingUnit.update).not.toHaveBeenCalled();
+    expect(mockPrisma.checkOutRecord.create).not.toHaveBeenCalled();
+  });
+
+  it('checks out anyway with confirmOutstandingBalance: true', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const booking = fakeBookingWithUnits();
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+    mockPrisma.folioCharge.findMany.mockResolvedValue([{ id: 'charge_1', qty: 1, unitPrice: 2000 }]);
+    mockPrisma.payment.findMany.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/checkout')
+      .set('Cookie', authCookie())
+      .send({ unitIds: ['unit_1'], confirmOutstandingBalance: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.finalizedBookingIds).toEqual(['booking_1']);
+  });
+
+  it('checks out without any warning when the balance is already zero', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('ADMIN_STAFF'));
+    const booking = fakeBookingWithUnits();
+    mockPrisma.bookingUnit.findMany.mockResolvedValue([bookingUnitRow('unit_1', booking)]);
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnitForTransition({ status: 'OCCUPIED' }));
+    mockPrisma.folioCharge.findMany.mockResolvedValue([{ id: 'charge_1', qty: 1, unitPrice: 2000 }]);
+    mockPrisma.payment.findMany.mockResolvedValue([{ id: 'payment_1', amount: '2000.00', method: 'CASH', status: 'PENDING' }]);
+
+    const res = await request(createApp()).post('/api/v1/bookings/checkout').set('Cookie', authCookie()).send({ unitIds: ['unit_1'] });
+
+    expect(res.status).toBe(200);
   });
 
   // Bug caught in review, 2026-11-05 (spec.md §13 decision 16): without

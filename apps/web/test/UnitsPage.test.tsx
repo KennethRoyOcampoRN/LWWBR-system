@@ -296,6 +296,93 @@ describe('UnitsPage — billing entry point', () => {
   });
 });
 
+// Spec.md §13 decision 18 (2026-11-06): warn but allow, not an
+// unconditional status flip — same confirm-and-proceed shape
+// BillingPage.tsx already uses for DUPLICATE_BILLING_NUMBER.
+describe('UnitsPage — checkout outstanding-balance warning', () => {
+  const occupiedWithBooking = {
+    id: 'unit_1', code: 'R01', name: 'Room 1', unitTypeId: 't1', type: 'ROOM', capacity: 4, floor: null,
+    status: 'OCCUPIED', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null,
+  };
+  const upcomingBooking = {
+    id: 'booking_1', referenceNo: 'EXT-100', guestName: 'Roel Villagomez', type: 'OVERNIGHT', status: 'CHECKED_IN',
+    startAt: '2026-11-04T00:00:00.000Z', endAt: null,
+  };
+  const checklistCandidate = { unitId: 'unit_1', code: 'R01', name: 'Room 1', bookingId: 'booking_1', guestName: 'Roel Villagomez' };
+
+  const checkoutUser = { ...managerUser, permissions: { ...managerUser.permissions, 'booking:checkout': 'ALL' } };
+
+  it('409s with the balance, then checks out anyway once the cashier confirms the warning', async () => {
+    const user = userEvent.setup();
+    let checkoutCallCount = 0;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: checkoutUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedWithBooking] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
+      if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [upcomingBooking] });
+      if (url.includes('/bookings/group')) return jsonResponse(200, { units: [checklistCandidate] });
+      if (url.endsWith('/bookings/checkout') && init?.method === 'POST') {
+        checkoutCallCount += 1;
+        const body = JSON.parse(init.body as string);
+        if (!body.confirmOutstandingBalance) {
+          return jsonResponse(409, {
+            error: { code: 'OUTSTANDING_BALANCE', message: 'This booking still has an outstanding balance of ₱1,500.00. Confirm to check out anyway.' },
+          });
+        }
+        return jsonResponse(200, { checkedOutUnitIds: ['unit_1'], finalizedBookingIds: ['booking_1'] });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+    await user.click(await screen.findByRole('button', { name: 'Check out' }));
+
+    const confirmButton = await screen.findByRole('button', { name: /Check out 1 room/ });
+    await user.click(confirmButton);
+
+    await waitFor(() => expect(checkoutCallCount).toBe(2));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('₱1,500.00'));
+  });
+
+  it('does not warn when the balance is already zero', async () => {
+    const user = userEvent.setup();
+    let checkoutCallCount = 0;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: checkoutUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [occupiedWithBooking] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
+      if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [upcomingBooking] });
+      if (url.includes('/bookings/group')) return jsonResponse(200, { units: [checklistCandidate] });
+      if (url.endsWith('/bookings/checkout') && init?.method === 'POST') {
+        checkoutCallCount += 1;
+        return jsonResponse(200, { checkedOutUnitIds: ['unit_1'], finalizedBookingIds: ['booking_1'] });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('R01')).toBeInTheDocument());
+    await user.click(screen.getByText('R01'));
+    await user.click(await screen.findByRole('button', { name: 'Check out' }));
+    await user.click(await screen.findByRole('button', { name: /Check out 1 room/ }));
+
+    await waitFor(() => expect(checkoutCallCount).toBe(1));
+  });
+});
+
 // Cashier-tab plan, Stage C (2026-11-05): "the unit cards must show
 // booking ID and guest name" (client's own words), distinguishing a
 // CONFIRMED (pre-arrival, room OCCUPIED but nobody there yet) booking

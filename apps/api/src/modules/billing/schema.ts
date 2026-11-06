@@ -96,12 +96,25 @@ export const changePaymentStatusSchema = z.object({
 });
 export type ChangePaymentStatusInput = z.infer<typeof changePaymentStatusSchema>;
 
-const receiptDeductionInputSchema = z.object({
-  type: z.enum(RECEIPT_DEDUCTION_TYPE_KEYS),
-  label: z.string().trim().min(1).max(200),
-  amount: z.number().positive(),
-  sourcePaymentId: z.string().min(1).optional(),
-});
+// Spec.md §13 decision 18 (2026-11-06): DOWNPAYMENT deductions are now
+// server-derived from recorded payments (billing/service.ts's own
+// deriveDownpaymentDraws) rather than cashier-typed — rejected outright,
+// not silently dropped, so a client still sending one (an old cached
+// page, a stale script) gets an explicit 422 rather than a deduction
+// that quietly never shows up. The other four types
+// (DISCOUNT_PROMO/DISCOUNT_SENIOR/DISCOUNT_PWD/REFUND_CORRECTION) stay
+// exactly as cashier-typed as decision 16 left them.
+const receiptDeductionInputSchema = z
+  .object({
+    type: z.enum(RECEIPT_DEDUCTION_TYPE_KEYS),
+    label: z.string().trim().min(1).max(200),
+    amount: z.number().positive(),
+    sourcePaymentId: z.string().min(1).optional(),
+  })
+  .refine((data) => data.type !== 'DOWNPAYMENT', {
+    message: 'DOWNPAYMENT deductions are computed automatically from recorded payments — do not submit one.',
+    path: ['type'],
+  });
 
 // Shared by both the preview and the real issuance — a preview computes
 // the exact same totals the real issue call would, from the exact same

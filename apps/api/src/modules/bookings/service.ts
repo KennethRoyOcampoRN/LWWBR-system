@@ -16,6 +16,10 @@ import { prisma } from '../../lib/prisma.js';
 // check-out are the trigger, and this avoids a second copy of the
 // version-increment / event-write / broadcast logic.
 import { applyAutomaticUnitStatusChange } from '../units/service.js';
+// Spec.md §13 decision 18 (2026-11-06): checkout's own warn-but-allow
+// balance check reads the same whole-account truth the printed receipt
+// does — one computation, not two independently-maintained ones.
+import { getFolioOutstandingBalance } from '../billing/service.js';
 import type {
   AddUnitToBookingInput,
   CheckInBookingInput,
@@ -541,6 +545,50 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
     }
   }
 
+  // Group the requested units by their own Booking row — a single
+  // checkout call can span more than one row (a group checked in across
+  // waves under the same external ID), and each row finalizes
+  // independently based on whether *its own* units are all clear. Built
+  // here, before any mutation, so both the balance check below and the
+  // actual finalization loop further down read the identical "would
+  // this booking actually finalize" answer from the same pre-mutation
+  // unit-status snapshot.
+  const requestedUnitIdsByBooking = new Map<string, Set<string>>();
+  const bookingById = new Map<string, (typeof requested)[number]['booking']>();
+  for (const bu of requested) {
+    bookingById.set(bu.booking.id, bu.booking);
+    const set = requestedUnitIdsByBooking.get(bu.booking.id) ?? new Set<string>();
+    set.add(bu.unit.id);
+    requestedUnitIdsByBooking.set(bu.booking.id, set);
+  }
+
+  // Spec.md §13 decision 18 (2026-11-06): warn but allow, not an
+  // unconditional status flip — reversing the "stays unconditional"
+  // framing reaffirmed as recently as 2026-08-23 and decision 13.
+  // Checked before any mutation (unit-status changes, BookingUnit.
+  // releasedAt below) so a 409 here never leaves a half-finished
+  // checkout behind — same confirm-and-proceed shape issueReceipt
+  // already uses for DUPLICATE_BILLING_NUMBER: the server computes and
+  // returns the balance, the caller resubmits with
+  // confirmOutstandingBalance: true only after the cashier's own
+  // confirm dialog.
+  if (!input.confirmOutstandingBalance) {
+    let totalOutstanding = 0;
+    for (const [bookingId, requestedIds] of requestedUnitIdsByBooking) {
+      const booking = bookingById.get(bookingId)!;
+      const stillOccupied = booking.units.some((bu) => !requestedIds.has(bu.unit.id) && bu.unit.status === 'OCCUPIED');
+      if (stillOccupied) continue;
+      totalOutstanding += await getFolioOutstandingBalance(booking);
+    }
+    if (totalOutstanding > 0) {
+      throw new ApiError(
+        409,
+        'OUTSTANDING_BALANCE',
+        `This booking still has an outstanding balance of ₱${totalOutstanding.toFixed(2)}. Confirm to check out anyway.`,
+      );
+    }
+  }
+
   for (const bu of requested) {
     await applyAutomaticUnitStatusChange(bu.unit.id, 'VACANT_DIRTY', actor);
   }
@@ -565,19 +613,6 @@ export async function checkOutUnits(unitIds: string[], input: CheckOutBookingInp
   const checkOutMoment = new Date();
   for (const bu of requested) {
     await prisma.bookingUnit.update({ where: { id: bu.id }, data: { releasedAt: checkOutMoment, occupiedTo: checkOutMoment } });
-  }
-
-  // Group the requested units by their own Booking row — a single
-  // checkout call can span more than one row (a group checked in across
-  // waves under the same external ID), and each row finalizes
-  // independently based on whether *its own* units are all clear.
-  const requestedUnitIdsByBooking = new Map<string, Set<string>>();
-  const bookingById = new Map<string, (typeof requested)[number]['booking']>();
-  for (const bu of requested) {
-    bookingById.set(bu.booking.id, bu.booking);
-    const set = requestedUnitIdsByBooking.get(bu.booking.id) ?? new Set<string>();
-    set.add(bu.unit.id);
-    requestedUnitIdsByBooking.set(bu.booking.id, set);
   }
 
   const finalizedBookingIds: string[] = [];

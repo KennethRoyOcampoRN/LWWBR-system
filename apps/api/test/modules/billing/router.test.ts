@@ -9,8 +9,10 @@ const mockPrisma = {
   bookingUnit: { findFirst: vi.fn(), update: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   folioChargeOverride: { create: vi.fn() },
+  folioSettlement: { create: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  receiptLine: { findMany: vi.fn() },
   receiptBooking: { findMany: vi.fn(), create: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
   referenceSequence: { upsert: vi.fn() },
@@ -84,6 +86,14 @@ beforeEach(() => {
   mockPrisma.folioCharge.findMany.mockResolvedValue([
     { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 100, status: 'POSTED' },
   ]);
+  // Spec.md §13 decision 18: gatherReceiptLines's own incremental-
+  // exclusion lookup — nothing already receipted by default, so the
+  // one posted charge above stays billable. receiptsDetail/payments
+  // default to nothing outstanding/no payments either, so a test not
+  // specifically exercising decision 18's own balance/downpayment
+  // logic sees the exact same totals it always has.
+  mockPrisma.receiptLine.findMany.mockResolvedValue([]);
+  mockPrisma.payment.findMany.mockResolvedValue([]);
 });
 
 describe('Folio charges', () => {
@@ -540,7 +550,11 @@ describe('Receipt preview', () => {
       .set('Cookie', authCookie())
       .send({
         preparedByName: 'yssa',
-        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 }],
+        // DOWNPAYMENT is no longer client-postable (spec.md §13 decision
+        // 18 — server-derived from recorded payments); DISCOUNT_PROMO
+        // stays cashier-typed exactly as before, so it still exercises
+        // "a client-typed deduction reduces the total."
+        deductions: [{ type: 'DISCOUNT_PROMO', label: 'Promo', amount: 1100 }],
         // A client-submitted lines array is inert — there is no path
         // left that reads it, so it has zero effect on the totals below.
         lines: [{ description: 'Should be ignored', qty: 99, unitPrice: 99999 }],
@@ -615,7 +629,7 @@ describe('Receipt preview', () => {
       .set('Cookie', authCookie())
       .send({
         preparedByName: 'yssa',
-        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
+        deductions: [{ type: 'DISCOUNT_PROMO', label: 'Promo', amount: 1500 }],
       });
 
     expect(res.status).toBe(422);
@@ -665,7 +679,9 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 }],
+        // DOWNPAYMENT is no longer client-postable (spec.md §13
+        // decision 18) — DISCOUNT_PROMO stays cashier-typed.
+        deductions: [{ type: 'DISCOUNT_PROMO', label: 'Promo', amount: 1100 }],
       });
 
     vi.useRealTimers();
@@ -696,8 +712,11 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
+        // DOWNPAYMENT is no longer client-postable (spec.md §13
+        // decision 18) — DISCOUNT_PROMO stays cashier-typed, and still
+        // exercises the multi-deduction summation this test is for.
         deductions: [
-          { type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1100 },
+          { type: 'DISCOUNT_PROMO', label: 'Promo', amount: 1100 },
           { type: 'DISCOUNT_SENIOR', label: 'Senior discount', amount: 100 },
         ],
       });
@@ -870,7 +889,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
       .send({
         billingNumberTyped: '83887',
         preparedByName: 'yssa',
-        deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 1500 }],
+        deductions: [{ type: 'DISCOUNT_PROMO', label: 'Promo', amount: 1500 }],
       });
 
     expect(res.status).toBe(422);
@@ -910,6 +929,206 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('TOTALS_DO_NOT_RECONCILE');
+  });
+});
+
+// Spec.md §13 decision 18 (2026-11-06): incremental receipts, the
+// CASH-is-immediate/others-need-VERIFIED payment split, server-derived
+// DOWNPAYMENT deductions, and the printed outstandingBalance.
+describe('Spec.md §13 decision 18: incremental receipts, payment settlement, running balance', () => {
+  function stubIssuance() {
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.referenceSequence.upsert.mockResolvedValue({ scope: '83887-11042026', seq: 1 });
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.receipt.create = vi.fn(
+      ({ data }: { data: Record<string, unknown> & { lines: { create: unknown[] }; deductions: { create: unknown[] } } }) =>
+        Promise.resolve({ id: 'receipt_1', status: 'ISSUED', ...data, lines: data.lines.create, deductions: data.deductions.create }),
+    );
+  }
+
+  it('excludes a charge already on a non-voided receipt from the next preview — true incremental invoicing', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room, night 1', qty: 1, unitPrice: 1100, status: 'POSTED' },
+      { id: 'charge_2', description: 'Room, night 2', qty: 1, unitPrice: 1100, status: 'POSTED' },
+    ]);
+    // charge_1 already billed on a prior, non-voided receipt.
+    mockPrisma.receiptLine.findMany.mockResolvedValue([{ sourceChargeId: 'charge_1' }]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toHaveLength(1);
+    expect(res.body.lines[0].description).toBe('Room, night 2');
+    expect(res.body.grandTotal).toBe(1100);
+  });
+
+  it('CASH counts toward the balance immediately, even while still PENDING — unverified non-cash does not', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 2000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_cash', amount: '500.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+      { id: 'payment_gcash', amount: '500.00', method: 'GCASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    // Only the 500 CASH payment is effective — the unverified GCASH
+    // payment doesn't reduce the balance or get drawn into a
+    // DOWNPAYMENT deduction.
+    expect(res.body.totalDeductions).toBe(500);
+    expect(res.body.deductions).toHaveLength(1);
+    expect(res.body.deductions[0].sourcePaymentId).toBe('payment_cash');
+    expect(res.body.deductions[0].type).toBe('DOWNPAYMENT');
+    expect(res.body.totalAmountDue).toBe(1500);
+    // outstandingBalance: 2000 charged, 500 effective (CASH only) paid.
+    expect(res.body.outstandingBalance).toBe(1500);
+  });
+
+  it('a VERIFIED non-cash payment counts toward the balance; the same payment unverified does not', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 1000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_1', amount: '1000.00', method: 'GCASH', status: 'VERIFIED', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalAmountDue).toBe(0);
+    expect(res.body.outstandingBalance).toBe(0);
+  });
+
+  it('overpayment: draws only what this receipt needs, leaving the remainder available', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 1000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_1', amount: '1500.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deductions[0].amount).toBe(1000); // only what's needed, not the full 1500
+    expect(res.body.totalAmountDue).toBe(0);
+    // The 500 remainder is a real credit — outstandingBalance still
+    // reflects the full 1500 effective payment against the 1000 charged.
+    expect(res.body.outstandingBalance).toBe(-500);
+  });
+
+  it('draws the same payment down across two receipts, each its own FolioSettlement row', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    stubIssuance();
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room, night 1', qty: 1, unitPrice: 600, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_1', amount: '1000.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const firstRes = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
+
+    expect(firstRes.status).toBe(201);
+    expect(mockPrisma.folioSettlement.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentId: 'payment_1', receiptId: 'receipt_1', amount: 600 }) }),
+    );
+
+    // Second receipt: a new charge, and the same payment now shows 400
+    // remaining (1000 - the 600 the first receipt already settled).
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room, night 1', qty: 1, unitPrice: 600, status: 'POSTED' },
+      { id: 'charge_2', description: 'Room, night 2', qty: 1, unitPrice: 600, status: 'POSTED' },
+    ]);
+    mockPrisma.receiptLine.findMany.mockResolvedValue([{ sourceChargeId: 'charge_1' }]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      {
+        id: 'payment_1',
+        amount: '1000.00',
+        method: 'CASH',
+        status: 'PENDING',
+        submittedAt: new Date('2026-11-06T00:00:00Z'),
+        settlements: [{ amount: '600.00' }],
+      },
+    ]);
+
+    const secondRes = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
+
+    expect(secondRes.status).toBe(201);
+    expect(secondRes.body.receipt.lines).toHaveLength(1);
+    expect(secondRes.body.receipt.lines[0].description).toBe('Room, night 2');
+    expect(mockPrisma.folioSettlement.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentId: 'payment_1', amount: 400 }) }),
+    );
+    expect(secondRes.body.receipt.totalAmountDue).toBe(200); // 600 charge - 400 remaining on the payment
+  });
+
+  it('rejects a client-typed DOWNPAYMENT deduction with 422', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa', deductions: [{ type: 'DOWNPAYMENT', label: 'Downpayment', amount: 500 }] });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('persists and returns outstandingBalance on the issued receipt', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    stubIssuance();
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 2000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_1', amount: '500.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.receipt.outstandingBalance).toBe(1500);
+    expect(mockPrisma.receipt.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ outstandingBalance: 1500 }) }),
+    );
   });
 });
 

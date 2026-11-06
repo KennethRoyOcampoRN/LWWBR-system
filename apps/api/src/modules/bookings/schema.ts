@@ -69,6 +69,13 @@ export const checkOutBookingSchema = z.object({
   unitIds: z.array(z.string().min(1)).min(1).max(20),
   damagesNoted: z.string().trim().max(2000).optional(),
   depositRefunded: z.boolean().optional().default(false),
+  // Spec.md §13 decision 18 (2026-11-06): warn but allow, not an
+  // unconditional status flip — same confirm-and-proceed shape as
+  // issueReceipt's own confirmDuplicateBillingNumber. The server
+  // computes and returns the outstanding balance in a 409; this is set
+  // only after the cashier confirms that warning dialog, never as a
+  // default.
+  confirmOutstandingBalance: z.boolean().optional().default(false),
 });
 export type CheckOutBookingInput = z.infer<typeof checkOutBookingSchema>;
 

@@ -59,6 +59,7 @@ const emptyPreview = {
   grandTotal: 0,
   totalDeductions: 0,
   totalAmountDue: 0,
+  outstandingBalance: 0,
 };
 
 const previewWithRoomCharge = {
@@ -66,6 +67,7 @@ const previewWithRoomCharge = {
   lines: [{ description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200 }],
   grandTotal: 2200,
   totalAmountDue: 2200,
+  outstandingBalance: 2200,
 };
 
 const issuedReceipt = {
@@ -81,6 +83,7 @@ const issuedReceipt = {
   grandTotal: 2200,
   totalDeductions: 0,
   totalAmountDue: 2200,
+  outstandingBalance: 2200,
 };
 
 describe('BillingPage', () => {
@@ -140,6 +143,9 @@ describe('BillingPage', () => {
     await waitFor(() => expect(postedRoomCharge).toBe(true));
     await waitFor(() => expect(previewCallCount).toBe(2));
     await waitFor(() => expect(screen.getAllByText('₱2,200.00').length).toBeGreaterThan(0));
+    // Spec.md §13 decision 18: the running-balance line is a layout
+    // addition to both the pre-issuance preview and the printed receipt.
+    expect(screen.getAllByText('Running Balance').length).toBeGreaterThan(0);
 
     // Issue.
     await user.type(screen.getByLabelText('Billing No.'), '83887');
@@ -150,6 +156,7 @@ describe('BillingPage', () => {
     expect(screen.getByText('83887-11042026-01')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'ACKNOWLEDGEMENT RECEIPT' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Print' })).toBeInTheDocument();
+    expect(screen.getByText('Running Balance')).toBeInTheDocument();
   });
 
   // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): a 422

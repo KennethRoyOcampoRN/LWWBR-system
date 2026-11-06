@@ -8034,3 +8034,81 @@ only the override that existed by issuance; a line with no override
 history contributing nothing). `apps/web` unchanged at 204/204 —
 `ReportsPage.tsx` renders generically off `report.csvColumns`/`rows`,
 so the new columns needed no frontend code.
+
+**Cashier tab, item 6 — incremental receipts, payment-method-based
+settlement timing, and a checkout balance warning (spec.md §13 decision
+18), 2026-11-06.** Client-approved plan, second of the "5, then 6, then
+rate rules" build order. Three parts, built together since they share
+the same whole-account truth.
+
+**(1) True incremental invoicing**, reversing decision 16's "every
+receipt is a full snapshot of the whole folio" from five days earlier.
+`gatherReceiptLines` now excludes any `FolioCharge` already referenced
+by a non-voided `Receipt`'s own `ReceiptLine` — same filter-the-already-
+claimed-ids-in-JS shape `listUnsettledChargeToRoomOrders` already uses
+for an already-pulled-in F&B order, not a literal SQL NOT EXISTS. A
+charge posted after a receipt issues appears on the *next* receipt only;
+voiding a receipt makes its charges available again automatically,
+since they then match no non-voided `ReceiptLine` — no special-case
+code needed for that reversal.
+
+**(2) Payment timing split by `PaymentMethod`, not role or verification
+status.** `payment:verify` is manager-level only (System Admin/Owner/
+Resort Manager/Admin Head) — a cashier can submit a payment but never
+verify one, so gating a payment's effect on the balance behind
+`VERIFIED` would leave a guest who paid cash at the counter still
+showing as owing it. Client's call: `CASH` counts immediately, on
+record — it's the primary record, no proof to check; `GCASH`/`BANK`/
+`CARD`/`OTHER` stay in the existing submit-then-verify flow and only
+count once `VERIFIED`. A `REJECTED` payment never counts, cash or not.
+**Residual risk, written into the spec entry rather than assumed: a
+self-recorded cash payment has no second pair of eyes** — the control
+that would normally catch it (shift cash-count reconciliation) is still
+unbuilt per decision 7. The client has accepted this trade.
+
+`DOWNPAYMENT` deductions are now server-derived
+(`deriveDownpaymentDraws`), never cashier-typed — the API 422s a
+client-typed one outright (`receiptDeductionInputSchema`), and the
+frontend's own deduction-type dropdown drops it from the list rather
+than let it fail on submit. Draws apply the *unclaimed* portion of each
+effective payment (full amount minus whatever earlier receipts'
+`FolioSettlement` rows already attributed to it) FIFO by `submittedAt`,
+capped at this receipt's own total after its client-typed deductions —
+overpayment leaves the remainder unclaimed for the next receipt, never
+force-applied or refunded automatically. New `FolioSettlement.receiptId`
+records which receipt a given draw belongs to, letting the same payment
+draw down across several receipts; it is never read to compute the
+whole-account balance in part (3) below, which stays independent of how
+settlements have sliced a payment up on paper.
+
+**(3) Checkout warns on an outstanding balance instead of flipping
+status unconditionally** — reversing the "stays unconditional" framing
+reaffirmed as recently as 2026-08-23 and decision 13. `checkOutUnits`
+computes the whole-account balance (every `POSTED` charge across every
+`Booking` row sharing the referenceNo, minus every effective payment
+under part (2)'s split — `getFolioOutstandingBalance`, exported from
+`billing/service.ts` and imported into `bookings/service.ts`, the second
+cross-module import in the codebase) for each `Booking` row the call
+would actually finalize, checked *before* any mutation so a 409 never
+leaves a half-finished checkout behind. A positive balance without
+`confirmOutstandingBalance: true` 409s with the amount — same confirm-
+and-proceed shape `issueReceipt` already uses for
+`DUPLICATE_BILLING_NUMBER`; `UnitsPage.tsx`'s own checkout confirm
+button now mirrors `BillingPage.tsx`'s duplicate-billing-number
+`window.confirm` flow exactly. New `Receipt.outstandingBalance` persists
+the same whole-account computation at issuance and prints it as a
+"Running Balance" line on both the pre-issuance preview and the printed
+receipt — **a layout change**, flagged because the client's own sample
+receipt has no such line.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 713/713 passing, 3 skipped (new: incremental
+exclusion of an already-receipted charge; CASH effective while PENDING
+vs. non-cash requiring VERIFIED; overpayment leaving a remainder;
+drawing one payment down across two receipts, each its own
+`FolioSettlement` row; rejecting a client-typed DOWNPAYMENT; persisting
+`outstandingBalance`; the checkout 409/confirm/already-zero-balance
+trio). `apps/web` 206/206 (new: the Running Balance line asserted in
+both the preview and the printed receipt; the checkout 409-then-confirm
+flow and the no-warning-when-zero case, end to end through
+`UnitsPage.tsx`'s real checklist UI).

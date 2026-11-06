@@ -1,6 +1,11 @@
 import { TZDate } from '@date-fns/tz';
 import { Prisma } from '@prisma/client';
-import { BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY, type ReceiptDeductionTypeKey } from '@lwwbr/shared';
+import {
+  BOOKING_STATUSES_EXCLUDED_FROM_AVAILABILITY,
+  PAYMENT_METHOD_LABELS,
+  type PaymentMethodKey,
+  type ReceiptDeductionTypeKey,
+} from '@lwwbr/shared';
 import { getStorageAdapter } from '../../adapters/storage/index.js';
 import { ApiError } from '../../lib/apiError.js';
 import { roundMoney, sumMoney } from '../../lib/money.js';
@@ -393,31 +398,53 @@ interface ComputedReceiptTotals {
 // price differently than issuance: every non-voided FolioCharge across
 // every Booking row sharing the entry booking's referenceNo
 // (gatherBookingIdsForBilling — the same grouping the F&B pull-in
-// already uses), full stop. Nothing closes the folio at issuance, so
-// this always returns the complete current set, not just what's new
-// since the last receipt — a later charge just appears on the next
-// receipt's own full total, which is what makes each issued Receipt a
-// true snapshot of the folio's state at that moment rather than an
-// incremental invoice. `amount` is recomputed from qty*unitPrice here
-// rather than trusted from the already-persisted FolioCharge.amount, same
+// already uses). `amount` is recomputed from qty*unitPrice here rather
+// than trusted from the already-persisted FolioCharge.amount, same
 // never-trust-a-stored-total posture as everything else in this file.
-async function gatherReceiptLines(entryBooking: { id: string; referenceNo: string }): Promise<ComputedReceiptLine[]> {
-  const bookingIds = await gatherBookingIdsForBilling(entryBooking);
+//
+// Spec.md §13 decision 18 (2026-11-06): reverses decision 16's "every
+// receipt is a full snapshot of the whole folio" — a charge already
+// referenced by a non-voided Receipt's own ReceiptLine is now excluded,
+// the same filter-the-already-claimed-ids-in-JS shape
+// listUnsettledChargeToRoomOrders (fnb/service.ts) already uses to
+// exclude an already-pulled-in F&B order, rather than a literal SQL
+// NOT EXISTS. A charge posted after a receipt is issued appears on the
+// *next* receipt only, never re-billed on every one after it; voiding a
+// receipt makes its charges available again automatically, since they
+// then no longer match any non-voided ReceiptLine — no special-case
+// code needed for that reversal.
+async function gatherReceiptLines(bookingIds: string[]): Promise<ComputedReceiptLine[]> {
   const charges = await prisma.folioCharge.findMany({
     where: { bookingId: { in: bookingIds }, status: 'POSTED', deletedAt: null },
     orderBy: { postedAt: 'asc' },
   });
-  return charges.map((charge) => {
-    const qty = charge.qty;
-    const unitPrice = Number(charge.unitPrice);
-    return {
-      description: charge.description,
-      qty,
-      unitPrice,
-      amount: roundMoney(qty * unitPrice),
-      sourceChargeId: charge.id,
-    };
-  });
+  if (charges.length === 0) return [];
+
+  const alreadyReceiptedChargeIds = new Set(
+    (
+      await prisma.receiptLine.findMany({
+        where: {
+          sourceChargeId: { in: charges.map((c) => c.id) },
+          receipt: { status: { not: 'VOIDED' } },
+        },
+        select: { sourceChargeId: true },
+      })
+    ).map((line) => line.sourceChargeId),
+  );
+
+  return charges
+    .filter((charge) => !alreadyReceiptedChargeIds.has(charge.id))
+    .map((charge) => {
+      const qty = charge.qty;
+      const unitPrice = Number(charge.unitPrice);
+      return {
+        description: charge.description,
+        qty,
+        unitPrice,
+        amount: roundMoney(qty * unitPrice),
+        sourceChargeId: charge.id,
+      };
+    });
 }
 
 // The one place a receipt's totals are computed — grandTotal and
@@ -425,10 +452,93 @@ async function gatherReceiptLines(entryBooking: { id: string; referenceNo: strin
 // persisted with totals that don't reconcile with its own lines: there
 // is no code path that accepts a client-submitted total, or a
 // client-submitted line, at all — `lines` comes from gatherReceiptLines
-// above, never from `input`. `amount` per deduction is the submitted
-// amount rounded to the cent, never trusted as-is beyond that rounding.
-function computeReceiptTotals(lines: ComputedReceiptLine[], input: ReceiptDraftInput): ComputedReceiptTotals {
-  const deductions: ComputedReceiptDeduction[] = input.deductions.map((deduction) => ({
+// above, never from `input`. `deductions` is already fully built by
+// deriveReceiptDeductions below (client-typed plus server-derived
+// DOWNPAYMENT draws) by the time this runs — purely a sum, no further
+// validation, since deriveReceiptDeductions already guarded against a
+// negative total on the client-typed portion before ever computing a
+// draw.
+function computeReceiptTotals(lines: ComputedReceiptLine[], deductions: ComputedReceiptDeduction[]): ComputedReceiptTotals {
+  const grandTotal = sumMoney(lines.map((line) => line.amount));
+  const totalDeductions = sumMoney(deductions.map((deduction) => deduction.amount));
+  const totalAmountDue = roundMoney(grandTotal - totalDeductions);
+  return { lines, deductions, grandTotal, totalDeductions, totalAmountDue };
+}
+
+// Spec.md §13 decision 18 (2026-11-06): CASH counts immediately — it is
+// the primary record, no proof to check; GCASH/BANK/CARD/OTHER only
+// count once a manager has VERIFIED them (payment:verify is held only
+// by System Admin/Owner/Resort Manager/Admin Head — a cashier who
+// submitted a non-cash payment can't self-verify it). A REJECTED
+// payment never counts, cash or not — rejecting one is how a mistaken
+// cash entry gets corrected.
+function isPaymentEffective(payment: { method: string; status: string }): boolean {
+  if (payment.status === 'REJECTED') return false;
+  return payment.method === 'CASH' || payment.status === 'VERIFIED';
+}
+
+interface AvailablePayment {
+  id: string;
+  remaining: number;
+  submittedAt: Date;
+  method: PaymentMethodKey;
+}
+
+// What's left of each effective payment that no earlier receipt's
+// FolioSettlement has already claimed — FIFO by submittedAt, so an
+// older payment is drawn down before a newer one.
+async function listAvailableEffectivePayments(bookingIds: string[]): Promise<AvailablePayment[]> {
+  const payments = await prisma.payment.findMany({
+    where: { bookingId: { in: bookingIds }, deletedAt: null, status: { not: 'REJECTED' } },
+    include: { settlements: { where: { deletedAt: null }, select: { amount: true } } },
+    orderBy: { submittedAt: 'asc' },
+  });
+  return payments
+    .filter((p) => isPaymentEffective(p))
+    .map((p) => {
+      const settled = sumMoney(p.settlements.map((s) => Number(s.amount)));
+      return { id: p.id, remaining: roundMoney(Number(p.amount) - settled), submittedAt: p.submittedAt, method: p.method as PaymentMethodKey };
+    })
+    .filter((p) => p.remaining > 0);
+}
+
+interface DownpaymentDraw {
+  paymentId: string;
+  amount: number;
+  method: PaymentMethodKey;
+}
+
+// Pure — no DB access — so preview and issuance can call it identically
+// against whatever `listAvailableEffectivePayments` already fetched.
+// Draws only up to `amountNeeded`; never force-applies more of a
+// payment than a receipt actually needs, which is what leaves an
+// overpayment's remainder unclaimed and available to the next receipt.
+function deriveDownpaymentDraws(available: AvailablePayment[], amountNeeded: number): DownpaymentDraw[] {
+  const draws: DownpaymentDraw[] = [];
+  let remainingNeed = amountNeeded;
+  for (const payment of available) {
+    if (remainingNeed <= 0) break;
+    const draw = roundMoney(Math.min(payment.remaining, remainingNeed));
+    if (draw <= 0) continue;
+    draws.push({ paymentId: payment.id, amount: draw, method: payment.method });
+    remainingNeed = roundMoney(remainingNeed - draw);
+  }
+  return draws;
+}
+
+// Spec.md §13 decision 18: DOWNPAYMENT deductions are server-derived,
+// never cashier-typed (receiptDeductionInputSchema already rejects one
+// in `input.deductions`). Client-typed deductions are validated against
+// the grand total first — same DEDUCTIONS_EXCEED_GRAND_TOTAL guard
+// decision 16 built, just moved here — before any payment is drawn
+// down, so a mistyped discount can never be masked by also drawing on a
+// payment.
+async function deriveReceiptDeductions(
+  bookingIds: string[],
+  lines: ComputedReceiptLine[],
+  input: ReceiptDraftInput,
+): Promise<{ deductions: ComputedReceiptDeduction[]; draws: DownpaymentDraw[] }> {
+  const clientDeductions: ComputedReceiptDeduction[] = input.deductions.map((deduction) => ({
     type: deduction.type,
     label: deduction.label,
     amount: roundMoney(deduction.amount),
@@ -436,39 +546,57 @@ function computeReceiptTotals(lines: ComputedReceiptLine[], input: ReceiptDraftI
   }));
 
   const grandTotal = sumMoney(lines.map((line) => line.amount));
-  const totalDeductions = sumMoney(deductions.map((deduction) => deduction.amount));
-  const totalAmountDue = roundMoney(grandTotal - totalDeductions);
+  const clientDeductionTotal = sumMoney(clientDeductions.map((deduction) => deduction.amount));
+  const interimDue = roundMoney(grandTotal - clientDeductionTotal);
 
-  // totalAmountDue is derived by construction — grandTotal minus
-  // totalDeductions, computed right above, with no other code path able
-  // to set either value — so there's no independent "does this
-  // reconcile" fact to assert here; a check written against the same
-  // expression that produced the value can only ever repeat it. The
-  // real reconciliation guard that can actually fail lives in
-  // issueReceipt, after the created rows come back from Postgres: it
-  // recomputes from what was actually persisted (post-Decimal-column
-  // round trip), not from these pre-insert numbers.
-  //
-  // What this function does guard, explicitly: deductions must not
-  // exceed the grand total. Nothing capped totalDeductions against
-  // grandTotal above, so a mistyped downpayment could otherwise yield a
-  // receipt with a negative Total Amount Due — client decision,
-  // 2026-11-04: reject outright rather than silently persist a negative
-  // amount due. A genuine refund-due case (deductions exceeding what
-  // was charged) is a materially different document from an
-  // acknowledgement receipt — it would need its own printed label and
-  // rendering, not a negative number in the same Total Amount Due field
-  // this receipt type prints — so it's out of scope here, not silently
-  // allowed through.
-  if (totalAmountDue < 0) {
+  // See computeReceiptTotals's own history: a genuine refund-due case
+  // (deductions exceeding what was charged) is a materially different
+  // document from an acknowledgement receipt, so it's rejected outright
+  // rather than silently persisting a negative amount due.
+  if (interimDue < 0) {
     throw new ApiError(
       422,
       'DEDUCTIONS_EXCEED_GRAND_TOTAL',
-      `Deductions total ₱${totalDeductions.toFixed(2)}, which exceeds the grand total of ₱${grandTotal.toFixed(2)} by ₱${Math.abs(totalAmountDue).toFixed(2)}. Adjust the deduction amount(s) before issuing.`,
+      `Deductions total ₱${clientDeductionTotal.toFixed(2)}, which exceeds the grand total of ₱${grandTotal.toFixed(2)} by ₱${Math.abs(interimDue).toFixed(2)}. Adjust the deduction amount(s) before issuing.`,
     );
   }
 
-  return { lines, deductions, grandTotal, totalDeductions, totalAmountDue };
+  const available = await listAvailableEffectivePayments(bookingIds);
+  const draws = deriveDownpaymentDraws(available, interimDue);
+  const downpaymentDeductions: ComputedReceiptDeduction[] = draws.map((draw) => ({
+    type: 'DOWNPAYMENT',
+    label: `Payment received (${PAYMENT_METHOD_LABELS[draw.method]})`,
+    amount: draw.amount,
+    sourcePaymentId: draw.paymentId,
+  }));
+
+  return { deductions: [...clientDeductions, ...downpaymentDeductions], draws };
+}
+
+// Spec.md §13 decision 18: the whole-account truth, independent of how
+// FolioSettlement has attributed any payment to any particular receipt
+// — every POSTED FolioCharge across the whole referenceNo group, minus
+// every effective Payment under the CASH-is-immediate/others-need-
+// VERIFIED split. Used both for the printed receipt's own
+// outstandingBalance snapshot and for checkOutUnits's pre-mutation
+// balance warning (bookings/service.ts).
+async function computeFolioBalance(bookingIds: string[]): Promise<number> {
+  const [charges, payments] = await Promise.all([
+    prisma.folioCharge.findMany({ where: { bookingId: { in: bookingIds }, status: 'POSTED', deletedAt: null } }),
+    prisma.payment.findMany({ where: { bookingId: { in: bookingIds }, deletedAt: null, status: { not: 'REJECTED' } } }),
+  ]);
+  const totalCharges = sumMoney(charges.map((c) => roundMoney(c.qty * Number(c.unitPrice))));
+  const totalEffectivePayments = sumMoney(payments.filter((p) => isPaymentEffective(p)).map((p) => Number(p.amount)));
+  return roundMoney(totalCharges - totalEffectivePayments);
+}
+
+// Takes the Booking row itself, not just its id — every caller
+// (checkOutUnits included) already has one in hand from its own query,
+// and re-fetching it here would be a redundant round trip this
+// function has no reason to make.
+export async function getFolioOutstandingBalance(entryBooking: { id: string; referenceNo: string }): Promise<number> {
+  const bookingIds = await gatherBookingIdsForBilling(entryBooking);
+  return computeFolioBalance(bookingIds);
 }
 
 async function logoSnapshotToJson(logoFileId: string | null) {
@@ -486,8 +614,11 @@ async function logoSnapshotToJson(logoFileId: string | null) {
 export async function previewReceipt(bookingId: string, input: ReceiptDraftInput) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();
-  const lines = await gatherReceiptLines(booking);
-  const totals = computeReceiptTotals(lines, input);
+  const bookingIds = await gatherBookingIdsForBilling(booking);
+  const lines = await gatherReceiptLines(bookingIds);
+  const { deductions } = await deriveReceiptDeductions(bookingIds, lines, input);
+  const totals = computeReceiptTotals(lines, deductions);
+  const outstandingBalance = await computeFolioBalance(bookingIds);
 
   return {
     resort: {
@@ -510,12 +641,14 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
     grandTotal: totals.grandTotal,
     totalDeductions: totals.totalDeductions,
     totalAmountDue: totals.totalAmountDue,
+    outstandingBalance,
   };
 }
 
 type RawReceiptWithChildren = {
   grandTotal: unknown;
   totalAmountDue: unknown;
+  outstandingBalance: unknown;
   logoFileId: string | null;
   lines: { unitPrice: unknown; amount: unknown; [key: string]: unknown }[];
   deductions: { amount: unknown; [key: string]: unknown }[];
@@ -523,12 +656,15 @@ type RawReceiptWithChildren = {
 };
 
 async function receiptToJson(receipt: RawReceiptWithChildren) {
-  const { lines, deductions, logoFileId, grandTotal, totalAmountDue, ...rest } = receipt;
+  const { lines, deductions, logoFileId, grandTotal, totalAmountDue, outstandingBalance, ...rest } = receipt;
   return {
     ...rest,
     logo: await logoSnapshotToJson(logoFileId),
     grandTotal: Number(grandTotal),
     totalAmountDue: Number(totalAmountDue),
+    // Spec.md §13 decision 18: the whole-account running balance at
+    // issuance — a layout addition to the printed receipt.
+    outstandingBalance: Number(outstandingBalance),
     lines: lines.map((line) => ({ ...line, unitPrice: Number(line.unitPrice), amount: Number(line.amount) })),
     deductions: deductions.map((deduction) => ({ ...deduction, amount: Number(deduction.amount) })),
   };
@@ -627,11 +763,14 @@ async function isDuplicateBillingNumber(scope: string, externalBookingRef: strin
 export async function issueReceipt(bookingId: string, input: IssueReceiptInput, actor: BillingActor) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();
-  const lines = await gatherReceiptLines(booking);
+  const bookingIds = await gatherBookingIdsForBilling(booking);
+  const lines = await gatherReceiptLines(bookingIds);
   if (lines.length === 0) {
     throw new ApiError(422, 'NO_CHARGES', 'This folio has no posted charges yet — nothing to issue a receipt for.');
   }
-  const totals = computeReceiptTotals(lines, input);
+  const { deductions, draws } = await deriveReceiptDeductions(bookingIds, lines, input);
+  const totals = computeReceiptTotals(lines, deductions);
+  const outstandingBalance = await computeFolioBalance(bookingIds);
   const scope = billingNumberScope(input.billingNumberTyped);
 
   // Prefer validation over warning (spec.md §13.4, client decision,
@@ -694,6 +833,7 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
             nightsOfStay: input.nightsOfStay ?? null,
             grandTotal: totals.grandTotal,
             totalAmountDue: totals.totalAmountDue,
+            outstandingBalance,
             issuedById: actor.id,
             issuedAt: new Date(),
             preparedByName: input.preparedByName,
@@ -702,6 +842,24 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
           },
           include: RECEIPT_INCLUDE,
         });
+        // Spec.md §13 decision 18: one FolioSettlement per payment this
+        // receipt actually drew on — what lets the same Payment draw
+        // down incrementally across several receipts. Created in the
+        // same transaction as the Receipt itself, keyed to its own id,
+        // so a retry on a billing-number collision can't leave a draw
+        // committed against a Receipt that never actually got created.
+        for (const draw of draws) {
+          await tx.folioSettlement.create({
+            data: {
+              bookingId,
+              paymentId: draw.paymentId,
+              receiptId: created.id,
+              amount: draw.amount,
+              settledById: actor.id,
+              settledAt: new Date(),
+            },
+          });
+        }
         // One ReceiptBooking row for the entry-point booking — this
         // stage doesn't yet gather and bill a sibling booking's own
         // room lines (that's Stage D, combined with rate rules' own

@@ -330,16 +330,31 @@ function UnitDetailDrawer({
     setCheckOutError(null);
   }
 
-  async function confirmCheckOut() {
+  // Spec.md §13 decision 18 (2026-11-06): warn but allow, not an
+  // unconditional status flip. Same confirm-and-proceed shape
+  // BillingPage.tsx already uses for DUPLICATE_BILLING_NUMBER — the
+  // server computes and returns the outstanding balance in a 409, the
+  // UI only asks the cashier to confirm it, never computes its own.
+  async function confirmCheckOut(confirmOutstandingBalance = false) {
     setCheckOutSubmitting(true);
     setCheckOutError(null);
     try {
-      await api.post('/bookings/checkout', { unitIds: checkOutSelectedUnitIds });
+      await api.post('/bookings/checkout', { unitIds: checkOutSelectedUnitIds, confirmOutstandingBalance });
       setCheckOutChecklistBookingId(null);
       setCheckOutSelectedUnitIds([]);
       await fetchUpcomingBookings();
     } catch (err) {
-      setCheckOutError(err instanceof ApiRequestError ? err.message : 'Could not check out these rooms.');
+      if (err instanceof ApiRequestError && err.code === 'OUTSTANDING_BALANCE') {
+        const proceed = window.confirm(`${err.message}\n\nClick OK to check out anyway.`);
+        if (proceed) {
+          setCheckOutSubmitting(false);
+          await confirmCheckOut(true);
+          return;
+        }
+        setCheckOutError(null);
+      } else {
+        setCheckOutError(err instanceof ApiRequestError ? err.message : 'Could not check out these rooms.');
+      }
     } finally {
       setCheckOutSubmitting(false);
     }
