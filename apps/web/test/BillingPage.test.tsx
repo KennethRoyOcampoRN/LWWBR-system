@@ -135,6 +135,10 @@ describe('BillingPage', () => {
     await waitFor(() => expect(screen.getAllByText('Roel Villagomez').length).toBeGreaterThan(0));
     expect(previewCallCount).toBe(1);
 
+    // Spec.md §13 decision 22: room actions live behind "Manage rooms"
+    // now, not always on screen.
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
+
     // Post the room charge — no unitPrice/qty field exists for this
     // action at all, since the server prices it automatically. Posting
     // auto-recomputes the preview (no separate "Update preview" click
@@ -142,12 +146,14 @@ describe('BillingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
     await waitFor(() => expect(postedRoomCharge).toBe(true));
     await waitFor(() => expect(previewCallCount).toBe(2));
+
+    // Issue — the breakdown and issue form are behind "Print Receipt".
+    await user.click(screen.getByRole('button', { name: 'Print Receipt' }));
     await waitFor(() => expect(screen.getAllByText('₱2,200.00').length).toBeGreaterThan(0));
     // Spec.md §13 decision 18: the running-balance line is a layout
     // addition to both the pre-issuance preview and the printed receipt.
     expect(screen.getAllByText('Running Balance').length).toBeGreaterThan(0);
 
-    // Issue.
     await user.type(screen.getByLabelText('Billing No.'), '83887');
     await user.type(screen.getByLabelText('Prepared by'), 'yssa');
     await user.click(screen.getByRole('button', { name: 'Issue receipt' }));
@@ -188,12 +194,14 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
 
     const errorText = await screen.findByText('Supply a checkout date to price this room.');
-    // The error renders inside the Rooms section (where "Move" lives),
-    // not the Folio section (where "Post charge" lives).
+    // The error renders inside the Manage rooms section (where "Move"
+    // lives), not the Charges section (where "Post charge" lives).
     const roomsSection = screen.getByText('Move').closest('section');
     expect(roomsSection).toContainElement(errorText);
   });
@@ -239,6 +247,8 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
     await waitFor(() => expect(screen.getByLabelText('Checkout date (walk-up — not on file)')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeDisabled();
 
@@ -287,6 +297,7 @@ describe('BillingPage', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getAllByText('Roel Villagomez').length).toBeGreaterThan(0));
+    await user.click(screen.getByRole('button', { name: 'Print Receipt' }));
     await user.type(screen.getByLabelText('Billing No.'), '83887');
     await user.type(screen.getByLabelText('Prepared by'), 'yssa');
     await user.click(screen.getByRole('button', { name: 'Issue receipt' }));
@@ -417,32 +428,31 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    // Spec.md §13 decision 22: the Deductions form folds into "Add
+    // discount" now, rather than always rendering.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add discount' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add discount' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add deduction' })).toBeInTheDocument());
     // Add a deduction through the ordinary form first — there is no
     // server-side draft-deduction entity, only this page's own local
     // state, so the edit flow under test needs a row to act on.
     await user.type(screen.getByLabelText('Label'), 'Downpayment');
-    // "Amount" is now ambiguous with the Payments section's own record-
-    // payment form (decision 19) — the Deductions form's field is the
-    // second one in DOM order (Payments renders above Deductions).
-    await user.type(screen.getAllByLabelText('Amount')[1]!, '500');
+    await user.type(screen.getByLabelText('Amount'), '500');
     await user.click(screen.getByRole('button', { name: 'Add deduction' }));
 
     await waitFor(() => expect(screen.getAllByText(/-₱500\.00/).length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]!);
 
-    // "Amount"/"Label" are now ambiguous with the Payments section's own
-    // record-payment form (decision 19) and the still-visible "Add
-    // deduction" form below — in DOM order that's [Payments, edit
-    // dialog, Add-deduction form], so the edit dialog's own field is
-    // the second one.
-    const amountField = (await screen.findAllByLabelText('Amount'))[1]!;
+    // "Amount"/"Label" are now ambiguous with the still-visible "Add
+    // deduction" form below — in DOM order that's [edit dialog,
+    // Add-deduction form], so the edit dialog's own field is first.
+    const amountField = (await screen.findAllByLabelText('Amount'))[0]!;
     await user.clear(amountField);
     await user.type(amountField, '600');
     // Save is a no-op without a reason — the confirm-dialog-with-
     // required-reason UX decision 17 asked for.
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
-    expect((await screen.findAllByLabelText('Amount'))[1]).toBeInTheDocument(); // dialog still open, nothing committed
+    expect((await screen.findAllByLabelText('Amount'))[0]).toBeInTheDocument(); // dialog still open, nothing committed
 
     await user.type(screen.getByLabelText('Reason'), 'Guest requested a larger downpayment');
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
@@ -519,26 +529,30 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    // Spec.md §13 decision 22: Take Payment is now its own panel,
+    // opened from the hero's primary action.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Take Payment' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Take Payment' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Record payment' })).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('Outstanding balance: ₱2,200.00')).toBeInTheDocument());
 
-    // Record cash. "Amount" is ambiguous with the Deductions section's
-    // own field further down the page — Payments renders first.
-    await user.type(screen.getAllByLabelText('Amount')[0]!, '500');
+    // Record cash. "Amount" is unambiguous now — the Deductions form
+    // only renders behind "Add discount", not open here.
+    await user.type(screen.getByLabelText('Amount'), '500');
     await user.click(screen.getByRole('button', { name: 'Record payment' }));
 
     await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 500, method: 'CASH' }));
-    // DataTable renders both a desktop table and a mobile card list
-    // (only CSS toggles which is visible — see DataTable.tsx's own
-    // comment), so matching text appears twice in jsdom.
-    await waitFor(() => expect(screen.getAllByText('Effective immediately (cash)').length).toBeGreaterThan(0));
     await waitFor(() => expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument());
-    // The derived deduction appears without being typed, marked automatic.
+    // The derived deduction appears without being typed, marked
+    // automatic — surfaced behind "Add discount" (spec.md §13 decision 22).
+    await user.click(screen.getByRole('button', { name: 'Add discount' }));
     await waitFor(() => expect(screen.getByText('Payment received (Cash)')).toBeInTheDocument());
     expect(screen.getByText('Automatic — from a recorded payment, not editable')).toBeInTheDocument();
 
     // Record GCash — shows up, but neither moves the balance nor
     // derives a deduction, since it isn't CASH and isn't VERIFIED.
+    // "Amount" is ambiguous again now that "Add discount" is also open
+    // — the Take Payment panel's own field is first in DOM order.
     postedPaymentBody = null;
     await user.selectOptions(screen.getByLabelText('Method'), 'GCASH');
     await user.clear(screen.getAllByLabelText('Amount')[0]!);
@@ -546,9 +560,14 @@ describe('BillingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Record payment' }));
 
     await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 1000, method: 'GCASH' }));
-    await waitFor(() => expect(screen.getAllByText('Awaiting verification — not yet applied').length).toBeGreaterThan(0));
     // Balance and deduction are unchanged from the cash-only state above.
     expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument();
+
+    // Payment history (reference material, behind its own link) shows
+    // both: cash effective immediately, GCash awaiting verification.
+    await user.click(screen.getByRole('button', { name: 'Payment history' }));
+    await waitFor(() => expect(screen.getAllByText('Effective immediately (cash)').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Awaiting verification — not yet applied').length).toBeGreaterThan(0));
   });
 
   // Spec.md §13 decision 19 (2026-11-06): the client's actual scenario
@@ -629,6 +648,8 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
     await waitFor(() => expect(screen.getByText(/Charged to folio/)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Charge room to folio' })).not.toBeInTheDocument();
 
@@ -681,6 +702,9 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    // Spec.md §13 decision 22: Past receipts is behind its own link now.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Past receipts' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Past receipts' }));
     await waitFor(() => expect(screen.getAllByText('83887-11042026-01').length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'Void' })[0]!);
     await user.type(screen.getByLabelText('Reason'), 'Issued with the wrong billing number');
@@ -720,6 +744,8 @@ describe('BillingPage', () => {
 
     render(<App />);
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Past receipts' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Past receipts' }));
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'View' })[0]!);
 
@@ -727,6 +753,9 @@ describe('BillingPage', () => {
     expect(screen.queryByRole('heading', { name: 'Receipt issued' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back to billing' })).toBeInTheDocument();
 
+    // showPastReceipts is still true from before — the panel stays
+    // open across the view/back round trip since the component never
+    // unmounts, only its early-return branch changes.
     await user.click(screen.getByRole('button', { name: 'Back to billing' }));
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
   });

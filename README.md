@@ -8258,13 +8258,47 @@ already-receipted one; the batched `hasBeenReceipted` flag). `apps/web`
 a plain confirm; voided charges hidden by default behind the new
 toggle).
 
-**Cashier tab — redesign brief requested, not yet built.** Client's
-verdict on the current `BillingPage.tsx`: "make sure that the cashier
-is very user friendly... it's very complicated." Six equal-weight
-sections (Rooms/Folio/Deductions/Payments/Past Receipts/Issue) compete
-for attention when the actual cashier task is four steps: find the
-guest, see what they owe, take payment, print. A layout proposal was
-written up for client review before any code changes — see the
-session's own reply for the full brief (what's on screen by default,
-what's behind a click, the primary action at each stage). No frontend
-changes made this round pending that review.
+**Cashier tab — the redesign brief, approved with three client
+corrections and built (spec.md §13 decision 22), 2026-11-06.** Client's
+verdict on the prior `BillingPage.tsx`: "make sure that the cashier is
+very user friendly... it's very complicated." Six equal-weight sections
+(Rooms/Folio/Deductions/Payments/Past Receipts/Issue) competed for
+attention when the actual cashier task is four steps: find the guest,
+see what they owe, take payment, print. Presentational/structural only
+— no handler, endpoint, or business-logic change.
+
+New hero `Card`: guest name + room(s) immediately readable (second only
+to the amount due, per the client's own correction — a wrong-guest
+receipt is the hardest mistake to undo), the whole-account
+`outstandingBalance` as the one dominant number, and two primary
+actions, **Take Payment** and **Print Receipt**, both always available
+whenever there's an unreceipted charge. Printing is deliberately never
+gated on a zero balance — the client's second correction: their own
+sample receipt (Grand Total ₱2,200, Downpayment −₱1,100, Total Amount
+Due ₱1,100) is printed *with* a balance outstanding, their routine
+case, not an edge case a "balance = 0 → print" rule would have blocked.
+
+"Folio" renamed to **"Charges"** throughout, shown openly as the
+itemized list a cashier actually reads; per-line exceptions (Override,
+the already-automatic Delete-vs-Void from decision 21) move behind the
+row's own "⋮" menu — a desktop convention the client confirmed is fine
+for their front-desk setup (third correction), but the mobile card view
+keeps the two actions as plain buttons instead, so phones aren't
+regressed. Six sections that used to render unconditionally — Rooms,
+the charge-post form + F&B pull-in, Deductions, the Guest contact/stay
+fields, the Payments table, Past Receipts — fold behind quiet text
+links ("Manage rooms", "Add charge", "Add discount", "Guest details",
+"Payment history", "Past receipts"), opened one at a time. Nothing
+dropped, only moved: every field and action from before still exists.
+
+Per the client's own ask, the payment-record and issue forms became
+real `<form>` elements so Enter submits the form currently focused in,
+rather than requiring a button click.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 723/723 unaffected (no backend change this round).
+`apps/web` 214/214 (the existing BillingPage suite updated to open each
+disclosure before interacting with what's behind it — e.g. "Manage
+rooms" before "Charge room to folio", "Take Payment" before "Record
+payment", "Print Receipt" before "Issue receipt" — with no change to
+what any test actually asserts about the underlying behavior).
