@@ -25,7 +25,8 @@ const NAV_ITEMS: {
     | 'stock:read'
     | 'shift:read'
     | 'resort:configure'
-    | 'receipt:issue';
+    | 'receipt:issue'
+    | 'payment:verify';
 }[] = [
   { to: '/', label: 'Command Center' },
   { to: '/units', label: 'Units', permission: 'unit:read' },
@@ -81,6 +82,12 @@ const NAV_ITEMS: {
   // permissions.ts's own comment for why this is its own key, seeded
   // to System Admin and Resort Manager only.
   { to: '/resort-settings', label: 'Resort Settings', permission: 'resort:configure' },
+  // Spec.md §13 decision 20 (2026-11-06): the verification queue for
+  // GCash/bank/card/other payments — payment:verify is held only by
+  // System Admin, Owner, Resort Manager and Admin Head, none of whom
+  // necessarily has a reason to open any one booking's billing page, so
+  // this needs its own nav entry rather than being buried there.
+  { to: '/payments', label: 'Payment Verification', permission: 'payment:verify' },
   // Self-service account settings, not a permission-scoped resource —
   // GET /auth/sessions is already scoped server-side to the caller's own
   // rows, so every authenticated user gets this regardless of role.

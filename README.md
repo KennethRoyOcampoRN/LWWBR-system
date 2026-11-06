@@ -8165,3 +8165,53 @@ cash, confirm the balance drops immediately and the derived deduction
 appears unrequested; record GCash, confirm neither happens until
 verified; an already-charged room rendering as a toggle, and reverting
 it voiding the underlying charge).
+
+**Cashier tab, item 6 second correction — payment verification, receipt
+void, and the receipt-view gap it surfaced (spec.md §13 decision 20),
+2026-11-06.** The client rated the first of the two gaps blocking:
+`payment:verify` is manager-level only, and four of the five
+`PaymentMethod` values (`GCASH`/`BANK`/`CARD`/`OTHER`) could never be
+verified with no caller for `PATCH /payments/:id/status` — meaning
+every non-cash payment was permanently stuck, unable to ever reduce a
+booking's balance.
+
+Fixed with a new property-wide surface: `GET /payments`
+(`listAllPayments`, query-filterable by status, gated on
+`payment:verify` itself) backs a new standalone page,
+`PendingPaymentsPage.tsx` at `/payments`, nav-gated the same way — lists
+everything awaiting verification (booking, method, amount, reference
+number, who/when, status) with Verify and Reject (required reason)
+actions. Deliberately a new route, not a revival of the `/payment-
+verification` path decision 12 removed — that one pointed at a
+different model (`RemittancePage.tsx`) under a different decision.
+
+Second gap: `POST /receipts/:id/void` already existed and was already
+`folio:void`-gated (which `CASHIER` holds per decision 19) — the only
+thing missing was anywhere in `BillingPage.tsx` to call it from. New
+"Past Receipts" section lists every receipt issued for the booking with
+a Void action. Matters more post-decision-18: voiding now releases a
+receipt's charges back to the folio for re-billing automatically, via
+the same incremental-exclusion check — no new logic needed for that
+part.
+
+Applying the same reachability scan to this fix turned up a third gap
+in the same shape: `GET /receipts/:id` had no caller either, so the new
+Past Receipts table could list a receipt but never show or reprint the
+full document. Added a "View" action reusing the exact printable layout
+the just-issued flow already renders, distinguished by a `viewedPast`
+flag so the heading reads "Receipt" rather than "Receipt issued" for one
+that wasn't just issued.
+
+Scope note: this confirms every endpoint in the billing module
+specifically (14 routes, checked one by one) is now reachable — not a
+full reachability audit of the other ~20 modules in the codebase, which
+wasn't what this round asked for.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 717/717 passing, 3 skipped (new: `GET /payments`
+filtered and property-wide, with no `bookingId` in its own query;
+refused without `payment:verify`). `apps/web` 213/213 (new: the full
+verify/reject path through `PendingPaymentsPage.tsx`'s real UI; a
+permission-gated holder blocked from `/payments`; listing and voiding a
+past receipt from `BillingPage.tsx`; viewing one via the new "View"
+action, labelled "Receipt" rather than "Receipt issued").

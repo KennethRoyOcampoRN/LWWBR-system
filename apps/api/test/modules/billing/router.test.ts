@@ -511,6 +511,45 @@ describe('Folio charges', () => {
 });
 
 describe('Payments', () => {
+  // Spec.md §13 decision 20 (2026-11-06): the property-wide verification
+  // queue — payment:verify is manager-level, not scoped to one booking,
+  // so this must be a top-level list, not nested under a bookingId.
+  describe('GET /payments — the verification queue', () => {
+    it('lists payments property-wide, filtered by status, with booking/submittedBy joined', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.payment.findMany.mockResolvedValue([
+        {
+          id: 'payment_1',
+          amount: '1000.00',
+          method: 'GCASH',
+          status: 'PENDING',
+          submittedAt: new Date('2026-11-06T01:00:00.000Z'),
+          submittedBy: { fullName: 'Yssa (Cashier)' },
+          verifiedBy: null,
+          booking: { referenceNo: '83887', guestName: 'Roel Villagomez' },
+        },
+      ]);
+
+      const res = await request(createApp()).get('/api/v1/payments?status=PENDING').set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      expect(res.body.payments).toHaveLength(1);
+      expect(res.body.payments[0].booking.guestName).toBe('Roel Villagomez');
+      expect(mockPrisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ status: 'PENDING' }) }),
+      );
+      // Property-wide — no bookingId filter at all, unlike the nested
+      // GET /bookings/:bookingId/payments route.
+      expect(mockPrisma.payment.findMany.mock.calls[0]![0].where).not.toHaveProperty('bookingId');
+    });
+
+    it('refuses the queue without payment:verify', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp()).get('/api/v1/payments').set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    });
+  });
+
   // Spec.md §13 decision 19 (2026-11-06): listPayments gathers across
   // every Booking row sharing the referenceNo, same grouping every
   // other list in this module already uses — otherwise a payment

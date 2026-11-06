@@ -16,6 +16,7 @@ import { getResortIdentityForSnapshot } from '../settings/service.js';
 import type {
   ChangePaymentStatusInput,
   IssueReceiptInput,
+  ListPaymentsQuery,
   OverrideFolioChargeInput,
   PostFolioChargeInput,
   ReceiptDraftInput,
@@ -325,6 +326,27 @@ export async function listPayments(bookingId: string) {
     where: { bookingId: { in: bookingIds }, deletedAt: null },
     include: { submittedBy: { select: { fullName: true } }, verifiedBy: { select: { fullName: true } } },
     orderBy: { createdAt: 'asc' },
+  });
+  return payments.map(paymentToJson);
+}
+
+// Spec.md §13 decision 20 (2026-11-06): the verification queue —
+// property-wide, not scoped to a booking, since the point is reviewing
+// submitted proof across every booking at once, not opening one
+// billing page at a time. A pending non-cash payment is otherwise stuck
+// forever: payment:verify is held only by System Admin/Owner/Resort
+// Manager/Admin Head, none of whom necessarily have a reason to open
+// any one booking's billing page, so the queue is the only reachable
+// surface for the action that actually exists to serve it.
+export async function listAllPayments(query: ListPaymentsQuery) {
+  const payments = await prisma.payment.findMany({
+    where: { deletedAt: null, ...(query.status ? { status: query.status } : {}) },
+    include: {
+      submittedBy: { select: { fullName: true } },
+      verifiedBy: { select: { fullName: true } },
+      booking: { select: { referenceNo: true, guestName: true } },
+    },
+    orderBy: { submittedAt: 'asc' },
   });
   return payments.map(paymentToJson);
 }

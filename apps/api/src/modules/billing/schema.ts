@@ -1,4 +1,4 @@
-import { FOLIO_CHARGE_SOURCE_KEYS, PAYMENT_KIND_KEYS, PAYMENT_METHOD_KEYS, RECEIPT_DEDUCTION_TYPE_KEYS } from '@lwwbr/shared';
+import { FOLIO_CHARGE_SOURCE_KEYS, PAYMENT_KIND_KEYS, PAYMENT_METHOD_KEYS, PAYMENT_STATUS_KEYS, RECEIPT_DEDUCTION_TYPE_KEYS } from '@lwwbr/shared';
 import { z } from 'zod';
 
 // Build plan stage 3 (spec.md §13 decision 13, 2026-11-04): folio
@@ -95,6 +95,16 @@ export const changePaymentStatusSchema = z.object({
   rejectionReason: z.string().trim().max(500).optional(),
 });
 export type ChangePaymentStatusInput = z.infer<typeof changePaymentStatusSchema>;
+
+// Spec.md §13 decision 20 (2026-11-06): the property-wide verification
+// queue — GET /payments, not scoped to one booking. Same optional-
+// status-filter shape as remittances' own listRemittanceRequestsQuerySchema;
+// the UI defaults to PENDING (the actual queue), but the filter stays
+// open-ended rather than hardcoding that server-side.
+export const listPaymentsQuerySchema = z.object({
+  status: z.enum(PAYMENT_STATUS_KEYS).optional(),
+});
+export type ListPaymentsQuery = z.infer<typeof listPaymentsQuerySchema>;
 
 // Spec.md §13 decision 18 (2026-11-06): DOWNPAYMENT deductions are now
 // server-derived from recorded payments (billing/service.ts's own

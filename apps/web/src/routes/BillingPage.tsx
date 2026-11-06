@@ -246,6 +246,14 @@ export function BillingPage() {
   const [paymentForm, setPaymentForm] = useState(EMPTY_PAYMENT_FORM);
   const [postingPayment, setPostingPayment] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  // Spec.md §13 decision 20: past receipts for this booking, and the
+  // void action — same confirm-dialog-with-required-reason shape as
+  // every other void/revert in this file.
+  const [receipts, setReceipts] = useState<IssuedReceipt[]>([]);
+  const [voidingReceiptId, setVoidingReceiptId] = useState<string | null>(null);
+  const [receiptVoidReason, setReceiptVoidReason] = useState('');
+  const [receiptVoidError, setReceiptVoidError] = useState<string | null>(null);
+  const [voidingReceipt, setVoidingReceipt] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [resolveReason, setResolveReason] = useState('');
   const [showReasonFor, setShowReasonFor] = useState<'CANCELLED' | 'NO_SHOW' | null>(null);
@@ -271,6 +279,10 @@ export function BillingPage() {
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [issuedReceipt, setIssuedReceipt] = useState<IssuedReceipt | null>(null);
+  // Spec.md §13 decision 20: true only when issuedReceipt was loaded via
+  // the Past Receipts table's "View" action, never when it's the result
+  // of actually issuing one — see IssuedReceiptView's own comment.
+  const [viewedPastReceipt, setViewedPastReceipt] = useState(false);
 
   function draftBody() {
     return {
@@ -328,6 +340,17 @@ export function BillingPage() {
       .catch(() => setPayments([]));
   }
 
+  // Spec.md §13 decision 20: refetched alongside the folio — voiding a
+  // receipt releases its charges back to be re-billed (decision 18's
+  // incremental exclusion), so the two always need to refresh together.
+  function refetchReceipts() {
+    if (!bookingId) return;
+    api
+      .get<{ receipts: IssuedReceipt[] }>(`/bookings/${bookingId}/receipts`)
+      .then((res) => setReceipts(res.receipts))
+      .catch(() => setReceipts([]));
+  }
+
   function refetchBooking() {
     if (!bookingId) return;
     api
@@ -340,6 +363,7 @@ export function BillingPage() {
     refetchBooking();
     refetchFolio();
     refetchPayments();
+    refetchReceipts();
     void runPreview();
     api
       .get<{ units: ReadyUnit[] }>('/units')
@@ -603,6 +627,41 @@ export function BillingPage() {
     }
   }
 
+  // Spec.md §13 decision 20: GET /receipts/:id — reuses the exact
+  // issuedReceipt state/early-return the just-issued view already uses,
+  // "Start another receipt" doubling as "back to billing" either way.
+  async function viewReceipt(id: string) {
+    setReceiptVoidError(null);
+    try {
+      const res = await api.get<{ receipt: IssuedReceipt }>(`/receipts/${id}`);
+      setIssuedReceipt(res.receipt);
+      setViewedPastReceipt(true);
+    } catch (err) {
+      setReceiptVoidError(err instanceof ApiRequestError ? err.message : 'Could not load this receipt.');
+    }
+  }
+
+  // Spec.md §13 decision 20: voiding a receipt releases its charges
+  // back to the folio for re-billing (decision 18's incremental
+  // exclusion reads straight off a non-voided ReceiptLine, so nothing
+  // special-case is needed here beyond refetching both lists).
+  async function handleVoidReceipt() {
+    if (!voidingReceiptId || !receiptVoidReason.trim()) return;
+    setVoidingReceipt(true);
+    setReceiptVoidError(null);
+    try {
+      await api.post(`/receipts/${voidingReceiptId}/void`, { voidReason: receiptVoidReason.trim() });
+      setVoidingReceiptId(null);
+      refetchReceipts();
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setReceiptVoidError(err instanceof ApiRequestError ? err.message : 'Could not void this receipt.');
+    } finally {
+      setVoidingReceipt(false);
+    }
+  }
+
   async function handleIssue(confirmDuplicateBillingNumber = false) {
     if (!bookingId) return;
     setIssueError(null);
@@ -633,9 +692,11 @@ export function BillingPage() {
 
   function startAnotherReceipt() {
     setIssuedReceipt(null);
+    setViewedPastReceipt(false);
     setDeductions([]);
     setBillingNumberTyped('');
     refetchFolio();
+    refetchReceipts();
     void runPreview();
   }
 
@@ -696,6 +757,44 @@ export function BillingPage() {
   // immediate/others-need-verified split visible — without it the only
   // way to learn why a GCash payment didn't move the balance would be
   // to already know the rule.
+  // Spec.md §13 decision 20: the past-receipts table — Void is the only
+  // action, and only for a receipt not already VOIDED.
+  const receiptColumns: DataTableColumn<IssuedReceipt>[] = [
+    { key: 'billingNumberFull', header: 'Billing No.', render: (r) => r.billingNumberFull },
+    { key: 'issuedAt', header: 'Issued', render: (r) => new Date(r.issuedAt).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) },
+    { key: 'totalAmountDue', header: 'Total Amount Due', render: (r) => formatPeso(r.totalAmountDue) },
+    { key: 'status', header: 'Status', render: (r) => r.status },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (r) => (
+        <div className="flex gap-2">
+          {/* Spec.md §13 decision 20: GET /receipts/:id had no caller
+              either — the Past Receipts table below only ever showed
+              summary columns, with no way to see or reprint the full
+              document once issued. Reuses the exact printable view the
+              just-issued receipt already renders. */}
+          <Button variant="secondary" onClick={() => void viewReceipt(r.id)}>
+            View
+          </Button>
+          {r.status !== 'VOIDED' && (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setVoidingReceiptId(r.id);
+                setReceiptVoidReason('');
+                setReceiptVoidError(null);
+              }}
+            >
+              Void
+            </Button>
+          )}
+        </div>
+      ),
+      hideOnMobile: true,
+    },
+  ];
+
   const paymentColumns: DataTableColumn<PaymentRow>[] = [
     { key: 'method', header: 'Method', render: (p) => PAYMENT_METHOD_LABELS[p.method] },
     { key: 'amount', header: 'Amount', render: (p) => formatPeso(p.amount) },
@@ -741,7 +840,7 @@ export function BillingPage() {
   ];
 
   if (issuedReceipt) {
-    return <IssuedReceiptView receipt={issuedReceipt} onStartAnother={startAnotherReceipt} />;
+    return <IssuedReceiptView receipt={issuedReceipt} onStartAnother={startAnotherReceipt} viewedPast={viewedPastReceipt} />;
   }
 
   const activeUnits = booking !== 'loading' && booking !== 'error' ? booking.units.filter((u) => !u.releasedAt) : [];
@@ -1416,6 +1515,34 @@ export function BillingPage() {
               </Button>
             </div>
           </Card>
+
+          {/* Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void
+              existed with no caller anywhere in the frontend — a receipt
+              issued in error was permanent. Matters more now that
+              receipts are incremental (decision 18): voiding is what
+              releases a receipt's charges back to be re-billed, so a
+              mistaken receipt doesn't strand them. */}
+          <Section title="Past receipts">
+            <DataTable columns={receiptColumns} rows={receipts} rowKey={(r) => r.id} emptyMessage="No receipts issued yet." />
+            {receiptVoidError && (
+              <p role="alert" className="text-sm font-medium text-danger-600">
+                {receiptVoidError}
+              </p>
+            )}
+            {voidingReceiptId && (
+              <div className="flex flex-wrap items-end gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <Field label="Reason" hint="Required — this is what the audit trail records.">
+                  <input className={INPUT_CLASSES} value={receiptVoidReason} onChange={(e) => setReceiptVoidReason(e.target.value)} />
+                </Field>
+                <Button type="button" onClick={() => void handleVoidReceipt()} disabled={voidingReceipt || !receiptVoidReason.trim()}>
+                  {voidingReceipt ? 'Voiding…' : 'Confirm void'}
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => setVoidingReceiptId(null)}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </Section>
         </>
       )}
     </div>
@@ -1428,17 +1555,30 @@ export function BillingPage() {
 // only for this stage — no PDF dependency, per the approved build plan
 // (§4: "ship browser-print-only in stage 1 [of printing]; add
 // server-side PDF generation later only if actually needed").
-function IssuedReceiptView({ receipt, onStartAnother }: { receipt: IssuedReceipt; onStartAnother: () => void }) {
+// Spec.md §13 decision 20 (2026-11-06): `viewedPast` distinguishes this
+// from the just-issued flow so "Receipt issued" doesn't misdescribe a
+// receipt that was merely reopened via the Past Receipts table's own
+// "View" action (GET /receipts/:id) — same component, same printable
+// layout either way, just the header text.
+function IssuedReceiptView({
+  receipt,
+  onStartAnother,
+  viewedPast = false,
+}: {
+  receipt: IssuedReceipt;
+  onStartAnother: () => void;
+  viewedPast?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <PageHeader title="Receipt issued" description={receipt.billingNumberFull} />
+        <PageHeader title={viewedPast ? 'Receipt' : 'Receipt issued'} description={receipt.billingNumberFull} />
         <div className="flex gap-3">
           <Button type="button" onClick={() => window.print()}>
             Print
           </Button>
           <Button type="button" variant="secondary" onClick={onStartAnother}>
-            Bill another receipt
+            {viewedPast ? 'Back to billing' : 'Bill another receipt'}
           </Button>
         </div>
       </div>

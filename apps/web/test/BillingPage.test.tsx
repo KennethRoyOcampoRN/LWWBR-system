@@ -596,6 +596,92 @@ describe('BillingPage', () => {
     expect(screen.getAllByText('Voided').length).toBeGreaterThan(0);
   });
 
+  // Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void had no
+  // caller anywhere in the frontend — a receipt issued in error was
+  // permanent, and under decision 18's incremental model, voiding is
+  // what releases its charges back for re-billing.
+  it('lists past receipts and voids one, requiring a reason', async () => {
+    const user = userEvent.setup();
+    let receiptStatus = 'ISSUED';
+    let voidedBody: Record<string, unknown> | null = null;
+    const pastReceipt = { ...issuedReceipt };
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { receipts: [{ ...pastReceipt, status: receiptStatus }] });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      if (url.endsWith('/receipts/receipt_1/void') && init?.method === 'POST') {
+        voidedBody = JSON.parse(init.body as string);
+        receiptStatus = 'VOIDED';
+        return jsonResponse(200, { receipt: { ...pastReceipt, status: 'VOIDED' } });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByText('83887-11042026-01').length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Void' })[0]!);
+    await user.type(screen.getByLabelText('Reason'), 'Issued with the wrong billing number');
+    await user.click(screen.getByRole('button', { name: 'Confirm void' }));
+
+    await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Issued with the wrong billing number' }));
+    await waitFor(() => expect(screen.getAllByText('VOIDED').length).toBeGreaterThan(0));
+    expect(screen.queryByRole('button', { name: 'Void' })).not.toBeInTheDocument();
+  });
+
+  // Spec.md §13 decision 20 (2026-11-06): GET /receipts/:id had no
+  // caller either — the Past Receipts table only ever showed summary
+  // columns, with no way to see or reprint the full issued document.
+  it('views a past receipt via the Past Receipts table, labelled "Receipt" not "Receipt issued"', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { receipts: [issuedReceipt] });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      if (url.endsWith('/receipts/receipt_1') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { receipt: issuedReceipt });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'View' })[0]!);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Receipt' })).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { name: 'Receipt issued' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to billing' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Back to billing' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
+  });
+
   it('a non-receipt:issue holder does not see the page', async () => {
     const otherUser = { ...cashierUser, roles: ['HOUSEKEEPING_STAFF'], permissions: { 'unit:read': 'ALL' } };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

@@ -4,6 +4,7 @@ import { requirePermission } from '../auth/requirePermission.js';
 import {
   changePaymentStatusSchema,
   issueReceiptSchema,
+  listPaymentsQuerySchema,
   overrideFolioChargeSchema,
   postFolioChargeSchema,
   receiptDraftSchema,
@@ -15,6 +16,7 @@ import {
   changePaymentStatus,
   getReceipt,
   issueReceipt,
+  listAllPayments,
   listFolioCharges,
   listPayments,
   listReceiptsForBooking,
@@ -90,6 +92,20 @@ billingRouter.post(
     const body = submitPaymentSchema.parse(req.body);
     const payment = await submitPayment(req.params.bookingId as string, body, { id: req.authUser!.id });
     res.status(201).json({ payment });
+  }),
+);
+
+// Spec.md §13 decision 20 (2026-11-06): the verification queue's own
+// read side — property-wide, gated on payment:verify itself rather than
+// payment:read, since this is specifically for the four roles who can
+// act on what it shows (System Admin/Owner/Resort Manager/Admin Head),
+// not a general payments list.
+billingRouter.get(
+  '/payments',
+  requirePermission('payment:verify'),
+  asyncHandler(async (req, res) => {
+    const query = listPaymentsQuerySchema.parse(req.query);
+    res.status(200).json({ payments: await listAllPayments(query) });
   }),
 );
 

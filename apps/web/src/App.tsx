@@ -9,6 +9,7 @@ import { ChangePasswordPage } from './routes/ChangePasswordPage.js';
 import { DashboardPage } from './routes/DashboardPage.js';
 import { FnbPage } from './routes/FnbPage.js';
 import { LoginPage } from './routes/LoginPage.js';
+import { PendingPaymentsPage } from './routes/PendingPaymentsPage.js';
 import { RequireAuth } from './routes/RequireAuth.js';
 import { RequirePasswordChange } from './routes/RequirePasswordChange.js';
 import { RequirePermission } from './routes/RequirePermission.js';
@@ -148,15 +149,29 @@ export function App() {
                     }
                   />
                   {/* Client decision, 2026-11-03 (spec.md §13, same
-                      dormant-not-deleted shape as decision 9): Payment
-                      Verification (/payment-verification) and
-                      Quotations (/quotations) routes removed outright,
-                      not left reachable by direct URL — not needed for
-                      the initial rollout, and a half-hidden route with
-                      no nav entry is worse than no route at all. The
-                      page components (RemittancePage.tsx,
-                      QuotationsPage.tsx) and the entire remittance and
-                      quotation backend stay untouched, dormant. */}
+                      dormant-not-deleted shape as decision 9): the old
+                      /payment-verification route (RemittancePage.tsx,
+                      remittance:*) and /quotations were removed
+                      outright, not left reachable by direct URL — not
+                      needed for the initial rollout. Both stay
+                      untouched, dormant. The /payments route below is
+                      unrelated: a new decision-20 surface for a
+                      different model (Payment/payment:verify, the
+                      billing system decision 13 built), not a revival
+                      of the route removed here. */}
+                  {/* Spec.md §13 decision 20 (2026-11-06): the
+                      verification queue — GCash/bank/card/other
+                      payments awaiting payment:verify, otherwise
+                      permanently stuck unverified since nothing else
+                      in the app could reach this action. */}
+                  <Route
+                    path="/payments"
+                    element={
+                      <RequirePermission permission="payment:verify">
+                        <PendingPaymentsPage />
+                      </RequirePermission>
+                    }
+                  />
                   <Route path="/sessions" element={<SessionsPage />} />
                 </Route>
               </Route>
