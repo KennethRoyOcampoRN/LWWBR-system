@@ -8,6 +8,7 @@ const mockPrisma = {
   booking: { findFirst: vi.fn(), findMany: vi.fn() },
   bookingUnit: { findFirst: vi.fn(), update: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  folioChargeOverride: { create: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receiptBooking: { findMany: vi.fn(), create: vi.fn() },
@@ -100,8 +101,8 @@ describe('Folio charges', () => {
     // ID — booking_1 (the entry point) and booking_2 (a sibling).
     mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_2' }]);
     mockPrisma.folioCharge.findMany.mockResolvedValue([
-      { id: 'charge_1', bookingId: 'booking_1', description: 'Room 1', qty: 1, unitPrice: 1100, amount: 1100 },
-      { id: 'charge_2', bookingId: 'booking_2', description: 'Room 2', qty: 1, unitPrice: 1100, amount: 1100 },
+      { id: 'charge_1', bookingId: 'booking_1', description: 'Room 1', qty: 1, unitPrice: 1100, amount: 1100, overrides: [] },
+      { id: 'charge_2', bookingId: 'booking_2', description: 'Room 2', qty: 1, unitPrice: 1100, amount: 1100, overrides: [] },
     ]);
 
     const res = await request(createApp()).get('/api/v1/bookings/booking_1/folio-charges').set('Cookie', authCookie());
@@ -347,6 +348,134 @@ describe('Folio charges', () => {
       .set('Cookie', authCookie())
       .send({ voidReason: 'x' });
     expect(res.status).toBe(409);
+  });
+
+  // Spec.md §13 decision 17 (2026-11-06): cashier-editable amounts with
+  // an audit trail. folio:charge (cashier-level), not folio:void's
+  // manager-level grant — the audit trail is what substitutes for a
+  // manager approval here.
+  describe('Overriding a folio charge amount', () => {
+    it('overrides unitPrice, recomputes amount from qty, and records the audit row', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue({
+        id: 'charge_1',
+        status: 'POSTED',
+        qty: 2,
+        unitPrice: 1500,
+        amount: 3000,
+      });
+      mockPrisma.folioCharge.update.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', status: 'POSTED', qty: 2, ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/folio-charges/charge_1/override')
+        .set('Cookie', authCookie())
+        .send({ newUnitPrice: 1200, reason: "Client's loyalty discount, approved on the spot" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.folioCharge.unitPrice).toBe(1200);
+      expect(res.body.folioCharge.amount).toBe(2400); // qty(2) * newUnitPrice(1200)
+      expect(mockPrisma.folioChargeOverride.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          folioChargeId: 'charge_1',
+          previousUnitPrice: 1500,
+          previousAmount: 3000,
+          newUnitPrice: 1200,
+          newAmount: 2400,
+          reason: "Client's loyalty discount, approved on the spot",
+          overriddenById: 'user_1',
+        }),
+      });
+      expect(mockPrisma.folioCharge.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'charge_1' }, data: { unitPrice: 1200, amount: 2400 } }),
+      );
+    });
+
+    it('rejects an override with no reason', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/folio-charges/charge_1/override')
+        .set('Cookie', authCookie())
+        .send({ newUnitPrice: 1200, reason: '' });
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioChargeOverride.create).not.toHaveBeenCalled();
+    });
+
+    it('404s overriding an unknown charge', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue(null);
+      const res = await request(createApp())
+        .post('/api/v1/folio-charges/missing/override')
+        .set('Cookie', authCookie())
+        .send({ newUnitPrice: 1200, reason: 'x' });
+      expect(res.status).toBe(404);
+    });
+
+    it('409s overriding an already-voided charge', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'VOIDED' });
+      const res = await request(createApp())
+        .post('/api/v1/folio-charges/charge_1/override')
+        .set('Cookie', authCookie())
+        .send({ newUnitPrice: 1200, reason: 'x' });
+      expect(res.status).toBe(409);
+      expect(mockPrisma.folioChargeOverride.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses an override without folio:charge', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+      const res = await request(createApp())
+        .post('/api/v1/folio-charges/charge_1/override')
+        .set('Cookie', authCookie())
+        .send({ newUnitPrice: 1200, reason: 'x' });
+      expect(res.status).toBe(403);
+    });
+
+    it('allows multiple sequential overrides, each its own audit row, and surfaces history on a folio read', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.folioCharge.findMany.mockResolvedValue([
+        {
+          id: 'charge_1',
+          description: 'Room',
+          qty: 1,
+          unitPrice: 1200,
+          amount: 1200,
+          status: 'POSTED',
+          overrides: [
+            {
+              id: 'override_1',
+              previousUnitPrice: 1500,
+              previousAmount: 1500,
+              newUnitPrice: 1300,
+              newAmount: 1300,
+              reason: 'first override',
+              overriddenAt: new Date('2026-11-06T01:00:00.000Z'),
+            },
+            {
+              id: 'override_2',
+              previousUnitPrice: 1300,
+              previousAmount: 1300,
+              newUnitPrice: 1200,
+              newAmount: 1200,
+              reason: 'second override',
+              overriddenAt: new Date('2026-11-06T02:00:00.000Z'),
+            },
+          ],
+        },
+      ]);
+
+      const res = await request(createApp())
+        .get('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie());
+
+      expect(res.status).toBe(200);
+      expect(res.body.folioCharges[0].overrides).toHaveLength(2);
+      // Earliest override row's previousAmount is the displayed "original".
+      expect(res.body.folioCharges[0].overrides[0].previousAmount).toBe(1500);
+      expect(res.body.folioCharges[0].overrides[1].reason).toBe('second override');
+    });
   });
 });
 

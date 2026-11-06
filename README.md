@@ -7947,3 +7947,62 @@ place for the new `occupiedTo` write). `apps/web` 202/202 (new: the
 error-routing fix pinned directly, and the walk-up checkout-date field
 exercised end to end — appears, disables the charge button until
 filled, sends it in the request body).
+
+**Cashier tab, item 5 — cashier-editable charge amounts with an audit
+trail (spec.md §13 decision 17), 2026-11-06.** Client-approved plan,
+first of the "5, then 6, then rate rules" build order. A partial
+reversal of decision 16's "a `source: ROOM` charge is priced server-side
+only": automatic pricing stays the default for every charge, but any
+amount except the receipt total is now cashier-editable afterward, with
+a required reason and a full audit trail substituting for a manager
+approval step — gated on `folio:charge` (cashier-level), not a
+manager-level permission, by the client's own account of how the
+feature is actually used (live, with the guest at the counter).
+
+New, append-only `FolioChargeOverride` model: one row per override
+event, capturing `previousUnitPrice`/`previousAmount` (the charge's
+values immediately before *this* override), `newUnitPrice`/`newAmount`,
+a required non-empty `reason`, and who/when. The override targets
+`unitPrice`, not `amount` directly — `amount` stays `qty * unitPrice`
+exactly as decision 16 built `postFolioChargeSchema` around, so the two
+invariants never drift apart. The charge's own `unitPrice`/`amount`
+columns are updated in place (inside a transaction with the audit-row
+insert, so the two writes can't separate on a crash) rather than kept
+frozen alongside some separately-tracked "effective" total — which is
+what lets the receipt total keep recalculating for free:
+`computeReceiptTotals`, `gatherReceiptLines`, and
+`assertReceiptReconciles` needed zero code changes, since they already
+only read a charge's current numbers. Multiple overrides on the same
+charge are allowed, each its own row; the "original" amount a cashier
+sees is the earliest override row's `previousAmount`. New endpoint:
+`POST /folio-charges/:id/override` (404 unknown charge, 409 already
+`VOIDED`). `listFolioCharges` now includes each charge's own override
+history, which `BillingPage.tsx`'s Folio table renders as an
+"Overridden (was ₱X)" badge next to the line, plus an "Override amount"
+action opening a confirm-dialog-with-required-reason inline form (same
+shape as the page's existing resolve-reason dialog). Because
+`ReceiptLine` already snapshots its own `unitPrice`/`amount`
+independently at issuance and never re-reads `FolioCharge` (decision
+13's immutable-snapshot model), overriding a charge after it has
+appeared on an issued receipt changes nothing about that receipt — only
+a later one.
+
+Deductions deliberately do NOT get this parallel override/audit table —
+a deduction was always cashier-typed with no system-computed baseline to
+deviate from, so "original vs. overridden" means nothing for one. The
+draft-deduction table in `BillingPage.tsx` instead gained in-place
+editing (an "Edit" action opening the same confirm-dialog-with-required-
+reason UX, replacing the previous remove-and-re-add-only flow) for
+interaction consistency only — no persisted audit structure behind it,
+since this is purely local page state, never sent to the server until a
+receipt is actually issued.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 701/701 passing, 3 skipped (new: a successful
+override recomputing `amount` from `qty * newUnitPrice`, rejecting an
+empty reason, 404/409 for an unknown/voided charge, 403 without
+`folio:charge`, and multiple sequential overrides each producing their
+own audit row with override history surfacing correctly on a folio
+read). `apps/web` 204/204 (new: the override confirm-dialog flow end to
+end — opens, submits, shows the "Overridden" badge — and the in-place
+deduction-edit flow, including that Save is a no-op without a reason).

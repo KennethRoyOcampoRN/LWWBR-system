@@ -66,53 +66,54 @@ model User {
 
   roles                 UserRole[]
   sessions              Session[]
-  auditLogs             AuditLog[]          @relation("AuditActor")
-  createdBookings       Booking[]           @relation("BookingCreatedBy")
-  checkIns              CheckInRecord[]     @relation("CheckedInBy")
-  checkOuts             CheckOutRecord[]    @relation("CheckedOutBy")
-  postedCharges         FolioCharge[]       @relation("ChargePostedBy")
-  voidedCharges         FolioCharge[]       @relation("ChargeVoidedBy")
-  settlements           FolioSettlement[]   @relation("SettledBy")
-  submittedPayments     Payment[]           @relation("PaymentSubmittedBy")
-  verifiedPayments      Payment[]           @relation("PaymentVerifiedBy")
-  createdWorkOrders     WorkOrder[]         @relation("WorkOrderCreatedBy")
-  assignedWorkOrders    WorkOrder[]         @relation("WorkOrderAssignedTo")
-  assignedByWorkOrders  WorkOrder[]         @relation("WorkOrderAssignedBy")
-  verifiedWorkOrders    WorkOrder[]         @relation("WorkOrderVerifiedBy")
+  auditLogs             AuditLog[]            @relation("AuditActor")
+  createdBookings       Booking[]             @relation("BookingCreatedBy")
+  checkIns              CheckInRecord[]       @relation("CheckedInBy")
+  checkOuts             CheckOutRecord[]      @relation("CheckedOutBy")
+  postedCharges         FolioCharge[]         @relation("ChargePostedBy")
+  voidedCharges         FolioCharge[]         @relation("ChargeVoidedBy")
+  overriddenCharges     FolioChargeOverride[] @relation("FolioChargeOverriddenBy")
+  settlements           FolioSettlement[]     @relation("SettledBy")
+  submittedPayments     Payment[]             @relation("PaymentSubmittedBy")
+  verifiedPayments      Payment[]             @relation("PaymentVerifiedBy")
+  createdWorkOrders     WorkOrder[]           @relation("WorkOrderCreatedBy")
+  assignedWorkOrders    WorkOrder[]           @relation("WorkOrderAssignedTo")
+  assignedByWorkOrders  WorkOrder[]           @relation("WorkOrderAssignedBy")
+  verifiedWorkOrders    WorkOrder[]           @relation("WorkOrderVerifiedBy")
   workOrderNotes        WorkOrderNote[]
   workOrderPhotos       WorkOrderPhoto[]
-  requestedAmenities    AmenityRequest[]    @relation("AmenityRequestedBy")
-  approvedAmenities     AmenityRequest[]    @relation("AmenityApprovedBy")
-  issuedAmenities       AmenityRequest[]    @relation("AmenityIssuedBy")
-  returnedAmenities     AmenityRequest[]    @relation("AmenityReturnedBy")
-  createdFnbOrders      FnbOrder[]          @relation("FnbCreatedBy")
-  acknowledgedFnbOrders FnbOrder[]          @relation("FnbAcknowledgedBy")
-  cancelledFnbOrders    FnbOrder[]          @relation("FnbCancelledBy")
-  stockRequests         StockRequest[]      @relation("StockRequestedBy")
-  decidedStockRequests  StockRequest[]      @relation("StockDecidedBy")
+  requestedAmenities    AmenityRequest[]      @relation("AmenityRequestedBy")
+  approvedAmenities     AmenityRequest[]      @relation("AmenityApprovedBy")
+  issuedAmenities       AmenityRequest[]      @relation("AmenityIssuedBy")
+  returnedAmenities     AmenityRequest[]      @relation("AmenityReturnedBy")
+  createdFnbOrders      FnbOrder[]            @relation("FnbCreatedBy")
+  acknowledgedFnbOrders FnbOrder[]            @relation("FnbAcknowledgedBy")
+  cancelledFnbOrders    FnbOrder[]            @relation("FnbCancelledBy")
+  stockRequests         StockRequest[]        @relation("StockRequestedBy")
+  decidedStockRequests  StockRequest[]        @relation("StockDecidedBy")
   stockMovements        StockMovement[]
   shifts                Shift[]
-  restDayRequests       RestDayRequest[]    @relation("RestDayRequestedBy")
-  decidedRestDays       RestDayRequest[]    @relation("RestDayDecidedBy")
+  restDayRequests       RestDayRequest[]      @relation("RestDayRequestedBy")
+  decidedRestDays       RestDayRequest[]      @relation("RestDayDecidedBy")
   timeLogs              TimeLog[]
-  reviewedTimeLogs      TimeLog[]           @relation("TimeLogReviewedBy")
-  cashCounts            CashCount[]         @relation("CashCountedBy")
-  verifiedCashCounts    CashCount[]         @relation("CashVerifiedBy")
-  expenses              Expense[]           @relation("ExpenseRecordedBy")
-  approvedExpenses      Expense[]           @relation("ExpenseApprovedBy")
-  reportedIncidents     Incident[]          @relation("IncidentReportedBy")
-  involvedIncidents     Incident[]          @relation("IncidentInvolvedUser")
-  createdRemittances    RemittanceRequest[] @relation("RemittanceRequestCreatedBy")
-  verifiedRemittances   RemittanceRequest[] @relation("RemittanceRequestVerifiedBy")
-  createdQuotations     QuotationRequest[]  @relation("QuotationRequestCreatedBy")
-  updatedQuotations     QuotationRequest[]  @relation("QuotationRequestUpdatedBy")
+  reviewedTimeLogs      TimeLog[]             @relation("TimeLogReviewedBy")
+  cashCounts            CashCount[]           @relation("CashCountedBy")
+  verifiedCashCounts    CashCount[]           @relation("CashVerifiedBy")
+  expenses              Expense[]             @relation("ExpenseRecordedBy")
+  approvedExpenses      Expense[]             @relation("ExpenseApprovedBy")
+  reportedIncidents     Incident[]            @relation("IncidentReportedBy")
+  involvedIncidents     Incident[]            @relation("IncidentInvolvedUser")
+  createdRemittances    RemittanceRequest[]   @relation("RemittanceRequestCreatedBy")
+  verifiedRemittances   RemittanceRequest[]   @relation("RemittanceRequestVerifiedBy")
+  createdQuotations     QuotationRequest[]    @relation("QuotationRequestCreatedBy")
+  updatedQuotations     QuotationRequest[]    @relation("QuotationRequestUpdatedBy")
   inspections           Inspection[]
   notifications         Notification[]
   uploadedFiles         FileObject[]
   updatedSettings       Setting[]
   unitStatusEvents      UnitStatusEvent[]
-  issuedReceipts        Receipt[]           @relation("ReceiptIssuedBy")
-  voidedReceipts        Receipt[]           @relation("ReceiptVoidedBy")
+  issuedReceipts        Receipt[]             @relation("ReceiptIssuedBy")
+  voidedReceipts        Receipt[]             @relation("ReceiptVoidedBy")
 
   @@index([department])
 }
@@ -580,12 +581,54 @@ model FolioCharge {
   updatedAt   DateTime          @updatedAt
   deletedAt   DateTime?
 
-  booking      Booking       @relation(fields: [bookingId], references: [id])
-  postedBy     User          @relation("ChargePostedBy", fields: [postedById], references: [id])
-  voidedBy     User?         @relation("ChargeVoidedBy", fields: [voidedById], references: [id])
+  booking      Booking               @relation(fields: [bookingId], references: [id])
+  postedBy     User                  @relation("ChargePostedBy", fields: [postedById], references: [id])
+  voidedBy     User?                 @relation("ChargeVoidedBy", fields: [voidedById], references: [id])
   receiptLines ReceiptLine[]
+  overrides    FolioChargeOverride[]
 
   @@index([bookingId, status])
+}
+
+// Spec.md §13 decision 17 (2026-11-06): "any amount except the total
+// becomes cashier-editable, with a confirmation step" — a partial
+// reversal of decision 16's "the server always computes room prices."
+// Automatic pricing stays the default and the source of truth for what
+// a charge should cost; an override is a deviation from a known
+// figure, never a replacement for having one, which is why this is its
+// own append-only table rather than FolioCharge.unitPrice simply being
+// overwritten with no trace. One row per override event — a charge can
+// be overridden more than once, each its own audit row; the "original"
+// figure a UI shows is the earliest row's own previousAmount (or, if a
+// charge was never overridden, FolioCharge's own posted value — this
+// table being empty for a charge just means it is still at whatever it
+// was posted at). previousUnitPrice/previousAmount are what the charge
+// read immediately before this specific override — not necessarily the
+// very first value ever, if this is the second-or-later override on
+// the same charge — so the full chain is reconstructable from this
+// table alone without FolioCharge itself needing to remember anything
+// beyond its own current numbers. reason is required and non-empty at
+// the schema level (postFolioChargeOverrideSchema) — the audit trail is
+// what substitutes for requiring manager approval on an on-the-spot
+// rate (client's own call: a 13-room resort can't make this cashier-
+// level action wait on a manager), so an override with no stated reason
+// defeats the entire point of keeping one.
+model FolioChargeOverride {
+  id                String   @id @default(cuid())
+  folioChargeId     String
+  previousUnitPrice Decimal  @db.Decimal(12, 2)
+  previousAmount    Decimal  @db.Decimal(12, 2)
+  newUnitPrice      Decimal  @db.Decimal(12, 2)
+  newAmount         Decimal  @db.Decimal(12, 2)
+  reason            String
+  overriddenById    String
+  overriddenAt      DateTime
+  createdAt         DateTime @default(now())
+
+  folioCharge  FolioCharge @relation(fields: [folioChargeId], references: [id])
+  overriddenBy User        @relation("FolioChargeOverriddenBy", fields: [overriddenById], references: [id])
+
+  @@index([folioChargeId])
 }
 
 model FolioSettlement {

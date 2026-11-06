@@ -324,6 +324,120 @@ describe('BillingPage', () => {
     await waitFor(() => expect(resolveBody).toEqual({ toStatus: 'CHECKED_IN' }));
   });
 
+  // Spec.md §13 decision 17 (2026-11-06): cashier-editable amounts with
+  // a required-reason confirm dialog, surfaced as an "Overridden" badge.
+  it('overrides a folio charge amount via the confirm dialog, and shows the overridden badge', async () => {
+    const user = userEvent.setup();
+    let overridden = false;
+    let overrideBody: Record<string, unknown> | null = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [
+            {
+              id: 'charge_1',
+              bookingId: 'booking_1',
+              source: 'ROOM',
+              description: 'R01 room charge',
+              qty: 2,
+              unitPrice: 1100,
+              amount: 2200,
+              status: 'POSTED',
+              overrides: overridden
+                ? [{ id: 'override_1', previousUnitPrice: 1100, previousAmount: 2200, newUnitPrice: 1000, newAmount: 2000, reason: 'Loyalty discount', overriddenAt: '2026-11-06T01:00:00.000Z' }]
+                : [],
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/folio-charges/charge_1/override') && init?.method === 'POST') {
+        overrideBody = JSON.parse(init.body as string);
+        overridden = true;
+        return jsonResponse(200, { folioCharge: { id: 'charge_1', unitPrice: 1000, amount: 2000 } });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, previewWithRoomCharge);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Override amount' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Override amount' }));
+
+    const reasonField = await screen.findByLabelText('Reason');
+    await user.type(reasonField, 'Loyalty discount');
+    const newPriceField = screen.getByLabelText('New price');
+    await user.clear(newPriceField);
+    await user.type(newPriceField, '1000');
+    await user.click(screen.getByRole('button', { name: 'Confirm override' }));
+
+    await waitFor(() => expect(overrideBody).toMatchObject({ newUnitPrice: 1000, reason: 'Loyalty discount' }));
+    // Desktop table and mobile card both render (only CSS toggles which
+    // is visible in a real browser — see DataTable.tsx's own comment).
+    await waitFor(() => expect(screen.getAllByText(/Overridden \(was ₱2,200\.00\)/).length).toBeGreaterThan(0));
+  });
+
+  // Spec.md §13 decision 17: a draft deduction is edited in place behind
+  // a confirm-dialog-with-required-reason UX, no persisted audit table.
+  it('edits a draft deduction in place, requiring a reason', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, emptyPreview);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add deduction' })).toBeInTheDocument());
+    // Add a deduction through the ordinary form first — there is no
+    // server-side draft-deduction entity, only this page's own local
+    // state, so the edit flow under test needs a row to act on.
+    await user.type(screen.getByLabelText('Label'), 'Downpayment');
+    await user.type(screen.getByLabelText('Amount'), '500');
+    await user.click(screen.getByRole('button', { name: 'Add deduction' }));
+
+    await waitFor(() => expect(screen.getAllByText(/-₱500\.00/).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]!);
+
+    // "Amount"/"Label" are now ambiguous with the still-visible "Add
+    // deduction" form below — the edit dialog's own fields are first in
+    // DOM order (see where the edit form was inserted in BillingPage.tsx).
+    const amountField = (await screen.findAllByLabelText('Amount'))[0]!;
+    await user.clear(amountField);
+    await user.type(amountField, '600');
+    // Save is a no-op without a reason — the confirm-dialog-with-
+    // required-reason UX decision 17 asked for.
+    await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
+    expect((await screen.findAllByLabelText('Amount'))[0]).toBeInTheDocument(); // dialog still open, nothing committed
+
+    await user.type(screen.getByLabelText('Reason'), 'Guest requested a larger downpayment');
+    await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
+
+    await waitFor(() => expect(screen.getAllByText(/-₱600\.00/).length).toBeGreaterThan(0));
+  });
+
   it('a non-receipt:issue holder does not see the page', async () => {
     const otherUser = { ...cashierUser, roles: ['HOUSEKEEPING_STAFF'], permissions: { 'unit:read': 'ALL' } };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

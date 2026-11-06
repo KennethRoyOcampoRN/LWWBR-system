@@ -11,6 +11,7 @@ import { getResortIdentityForSnapshot } from '../settings/service.js';
 import type {
   ChangePaymentStatusInput,
   IssueReceiptInput,
+  OverrideFolioChargeInput,
   PostFolioChargeInput,
   ReceiptDraftInput,
   SubmitPaymentInput,
@@ -73,6 +74,19 @@ function folioChargeToJson<T extends { unitPrice: unknown; amount: unknown }>(ch
   return { ...charge, unitPrice: Number(charge.unitPrice), amount: Number(charge.amount) };
 }
 
+// Spec.md §13 decision 17 (2026-11-06).
+function folioChargeOverrideToJson<
+  T extends { previousUnitPrice: unknown; previousAmount: unknown; newUnitPrice: unknown; newAmount: unknown },
+>(override: T) {
+  return {
+    ...override,
+    previousUnitPrice: Number(override.previousUnitPrice),
+    previousAmount: Number(override.previousAmount),
+    newUnitPrice: Number(override.newUnitPrice),
+    newAmount: Number(override.newAmount),
+  };
+}
+
 // Corrected 2026-11-05, same review that caught the issueReceipt/
 // previewReceipt sibling-gathering requirement: this used to scope to
 // the single entry-point bookingId only, while gatherReceiptLines (what
@@ -89,9 +103,16 @@ export async function listFolioCharges(bookingId: string) {
   const bookingIds = await gatherBookingIdsForBilling(booking);
   const charges = await prisma.folioCharge.findMany({
     where: { bookingId: { in: bookingIds }, deletedAt: null },
+    // Spec.md §13 decision 17: override history rides along on every
+    // read of the folio — it's what drives the "overridden" badge and
+    // the original/new/reason/who/when the cashier UI shows per line.
+    include: { overrides: { orderBy: { createdAt: 'asc' } } },
     orderBy: { createdAt: 'asc' },
   });
-  return charges.map(folioChargeToJson);
+  return charges.map((charge) => ({
+    ...folioChargeToJson(charge),
+    overrides: charge.overrides.map(folioChargeOverrideToJson),
+  }));
 }
 
 const MS_PER_NIGHT = 24 * 60 * 60 * 1000;
@@ -232,6 +253,45 @@ export async function voidFolioCharge(id: string, input: VoidFolioChargeInput, a
   const charge = await prisma.folioCharge.update({
     where: { id },
     data: { status: 'VOIDED', voidedById: actor.id, voidedAt: new Date(), voidReason: input.voidReason },
+  });
+  return folioChargeToJson(charge);
+}
+
+// Spec.md §13 decision 17 (2026-11-06): the cashier-editable-amount
+// override. Targets unitPrice, not amount directly — amount is always
+// qty*unitPrice, the same invariant postFolioChargeSchema (decision 16)
+// already builds around, so the two never get a chance to drift apart.
+// Writes the audit row and the charge's new figures in one transaction —
+// an override whose audit row didn't survive a crash would be
+// indistinguishable from a silently-edited charge, which defeats the
+// entire reason this is cashier-level instead of manager-gated.
+export async function overrideFolioCharge(id: string, input: OverrideFolioChargeInput, actor: BillingActor) {
+  const existing = await prisma.folioCharge.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Folio charge not found');
+  }
+  if (existing.status === 'VOIDED') {
+    throw new ApiError(409, 'ALREADY_VOIDED', 'A voided charge cannot be overridden.');
+  }
+  const newAmount = roundMoney(existing.qty * input.newUnitPrice);
+  const now = new Date();
+  const charge = await prisma.$transaction(async (tx) => {
+    await tx.folioChargeOverride.create({
+      data: {
+        folioChargeId: id,
+        previousUnitPrice: existing.unitPrice,
+        previousAmount: existing.amount,
+        newUnitPrice: input.newUnitPrice,
+        newAmount,
+        reason: input.reason,
+        overriddenById: actor.id,
+        overriddenAt: now,
+      },
+    });
+    return tx.folioCharge.update({
+      where: { id },
+      data: { unitPrice: input.newUnitPrice, amount: newAmount },
+    });
   });
   return folioChargeToJson(charge);
 }

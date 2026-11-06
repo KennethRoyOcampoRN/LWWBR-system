@@ -64,6 +64,20 @@ export const voidFolioChargeSchema = z.object({
 });
 export type VoidFolioChargeInput = z.infer<typeof voidFolioChargeSchema>;
 
+// Spec.md §13 decision 17 (2026-11-06): "any amount except the total
+// becomes cashier-editable, with a confirmation step" — overrides
+// unitPrice, not amount directly, so amount stays qty*unitPrice (the
+// same invariant decision 16 built postFolioChargeSchema around) rather
+// than letting the two drift apart. reason is required and non-empty —
+// the audit trail (FolioChargeOverride) is what substitutes for
+// requiring manager approval on an on-the-spot rate, so an override
+// with no stated reason would defeat the entire point of keeping one.
+export const overrideFolioChargeSchema = z.object({
+  newUnitPrice: z.number().nonnegative(),
+  reason: z.string().trim().min(1).max(500),
+});
+export type OverrideFolioChargeInput = z.infer<typeof overrideFolioChargeSchema>;
+
 export const submitPaymentSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(PAYMENT_METHOD_KEYS),

@@ -4,6 +4,7 @@ import { requirePermission } from '../auth/requirePermission.js';
 import {
   changePaymentStatusSchema,
   issueReceiptSchema,
+  overrideFolioChargeSchema,
   postFolioChargeSchema,
   receiptDraftSchema,
   submitPaymentSchema,
@@ -18,6 +19,7 @@ import {
   listPayments,
   listReceiptsForBooking,
   listUnsettledFnbCharges,
+  overrideFolioCharge,
   postFolioCharge,
   previewReceipt,
   submitPayment,
@@ -55,6 +57,20 @@ billingRouter.post(
   asyncHandler(async (req, res) => {
     const body = voidFolioChargeSchema.parse(req.body);
     const folioCharge = await voidFolioCharge(req.params.id as string, body, { id: req.authUser!.id });
+    res.status(200).json({ folioCharge });
+  }),
+);
+
+// Spec.md §13 decision 17 (2026-11-06): folio:charge, not a manager-level
+// permission — same reasoning as posting a charge in the first place:
+// an on-the-spot rate is done live with the guest present, and the audit
+// trail (FolioChargeOverride) is what substitutes for approval here.
+billingRouter.post(
+  '/folio-charges/:id/override',
+  requirePermission('folio:charge'),
+  asyncHandler(async (req, res) => {
+    const body = overrideFolioChargeSchema.parse(req.body);
+    const folioCharge = await overrideFolioCharge(req.params.id as string, body, { id: req.authUser!.id });
     res.status(200).json({ folioCharge });
   }),
 );

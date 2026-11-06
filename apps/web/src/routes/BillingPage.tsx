@@ -92,6 +92,19 @@ interface BookingDetail {
   units: BookingUnitRow[];
 }
 
+// Spec.md §13 decision 17 (2026-11-06): one audit row per override event
+// on a FolioCharge. The earliest row's previousAmount is the "original"
+// shown in the UI; see overriddenBadge below.
+interface FolioChargeOverrideRow {
+  id: string;
+  previousUnitPrice: number;
+  previousAmount: number;
+  newUnitPrice: number;
+  newAmount: number;
+  reason: string;
+  overriddenAt: string;
+}
+
 interface FolioChargeRow {
   id: string;
   bookingId: string;
@@ -101,6 +114,7 @@ interface FolioChargeRow {
   unitPrice: number;
   amount: number;
   status: string;
+  overrides: FolioChargeOverrideRow[];
 }
 
 interface UnsettledFnbCharge {
@@ -159,6 +173,21 @@ export function BillingPage() {
   const [chargeForm, setChargeForm] = useState(EMPTY_CHARGE_FORM);
   const [postingCharge, setPostingCharge] = useState(false);
   const [chargeError, setChargeError] = useState<string | null>(null);
+  // Spec.md §13 decision 17: cashier-editable amounts. Keyed by charge
+  // id so only one row's override form is open at a time, same shape as
+  // showReasonFor's own single-open-form pattern below.
+  const [overridingChargeId, setOverridingChargeId] = useState<string | null>(null);
+  const [overrideUnitPrice, setOverrideUnitPrice] = useState('');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [overriding, setOverriding] = useState(false);
+  // Spec.md §13 decision 17: a draft deduction is edited in place behind
+  // the same confirm-dialog-with-required-reason UX as a charge override,
+  // for UI consistency only — no audit table backs this (see spec entry).
+  const [editingDeductionIndex, setEditingDeductionIndex] = useState<number | null>(null);
+  const [editDeductionLabel, setEditDeductionLabel] = useState('');
+  const [editDeductionAmount, setEditDeductionAmount] = useState('');
+  const [editDeductionReason, setEditDeductionReason] = useState('');
   const [resolving, setResolving] = useState(false);
   const [resolveReason, setResolveReason] = useState('');
   const [showReasonFor, setShowReasonFor] = useState<'CANCELLED' | 'NO_SHOW' | null>(null);
@@ -371,6 +400,62 @@ export function BillingPage() {
     setDeductions((ds) => ds.filter((_, i) => i !== index));
   }
 
+  function startEditDeduction(index: number) {
+    const d = deductions[index];
+    if (!d) return;
+    setEditingDeductionIndex(index);
+    setEditDeductionLabel(d.label);
+    setEditDeductionAmount(String(d.amount));
+    setEditDeductionReason('');
+  }
+
+  function cancelEditDeduction() {
+    setEditingDeductionIndex(null);
+  }
+
+  function commitEditDeduction() {
+    if (editingDeductionIndex === null) return;
+    const amount = Number(editDeductionAmount);
+    if (!editDeductionLabel.trim() || !(amount > 0) || !editDeductionReason.trim()) return;
+    setDeductions((ds) =>
+      ds.map((d, i) => (i === editingDeductionIndex ? { ...d, label: editDeductionLabel.trim(), amount } : d)),
+    );
+    setEditingDeductionIndex(null);
+  }
+
+  function startOverride(charge: FolioChargeRow) {
+    setOverridingChargeId(charge.id);
+    setOverrideUnitPrice(String(charge.unitPrice));
+    setOverrideReason('');
+    setOverrideError(null);
+  }
+
+  function cancelOverride() {
+    setOverridingChargeId(null);
+    setOverrideError(null);
+  }
+
+  async function handleOverride() {
+    if (!overridingChargeId) return;
+    const newUnitPrice = Number(overrideUnitPrice);
+    if (!(newUnitPrice >= 0) || !overrideReason.trim()) return;
+    setOverriding(true);
+    setOverrideError(null);
+    try {
+      await api.post(`/folio-charges/${overridingChargeId}/override`, {
+        newUnitPrice,
+        reason: overrideReason.trim(),
+      });
+      setOverridingChargeId(null);
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setOverrideError(err instanceof ApiRequestError ? err.message : 'Could not override this charge.');
+    } finally {
+      setOverriding(false);
+    }
+  }
+
   async function handleIssue(confirmDuplicateBillingNumber = false) {
     if (!bookingId) return;
     setIssueError(null);
@@ -408,11 +493,38 @@ export function BillingPage() {
   }
 
   const folioColumns: DataTableColumn<FolioChargeRow>[] = [
-    { key: 'description', header: 'Items', render: (l) => l.description },
+    {
+      key: 'description',
+      header: 'Items',
+      render: (l) => (
+        <>
+          {l.description}
+          {/* Spec.md §13 decision 17: the earliest override row's
+              previousAmount is "original" — a line with no override
+              rows was never touched, so no badge renders. */}
+          {(l.overrides ?? []).length > 0 && (
+            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+              Overridden (was {formatPeso(l.overrides[0]!.previousAmount)})
+            </span>
+          )}
+        </>
+      ),
+    },
     { key: 'source', header: 'Source', render: (l) => FOLIO_CHARGE_SOURCE_LABELS[l.source] },
     { key: 'unitPrice', header: 'Price', render: (l) => formatPeso(l.unitPrice) },
     { key: 'qty', header: 'Quantity/Days', render: (l) => l.qty },
     { key: 'amount', header: 'Total', render: (l) => formatPeso(l.amount) },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (l) =>
+        l.status === 'VOIDED' ? null : (
+          <Button variant="secondary" onClick={() => startOverride(l)}>
+            Override amount
+          </Button>
+        ),
+      hideOnMobile: true,
+    },
   ];
 
   const deductionColumns: DataTableColumn<ComputedDeduction & { index: number }>[] = [
@@ -423,9 +535,14 @@ export function BillingPage() {
       key: 'actions',
       header: 'Actions',
       render: (d) => (
-        <Button variant="secondary" onClick={() => removeDeduction(d.index)}>
-          Remove
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => startEditDeduction(d.index)}>
+            Edit
+          </Button>
+          <Button variant="secondary" onClick={() => removeDeduction(d.index)}>
+            Remove
+          </Button>
+        </div>
       ),
       hideOnMobile: true,
     },
@@ -646,6 +763,45 @@ export function BillingPage() {
                 {chargeError}
               </p>
             )}
+            {/* Spec.md §13 decision 17: the confirm-dialog-with-
+                required-reason UX for a cashier-editable amount. The
+                audit trail (FolioChargeOverride) is what substitutes
+                for a manager approval here, so a reason is required. */}
+            {overridingChargeId && (
+              <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <p className="text-sm font-medium text-ink">
+                  Overriding {folioCharges.find((c) => c.id === overridingChargeId)?.description}
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <Field label="New price">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className={INPUT_CLASSES}
+                      value={overrideUnitPrice}
+                      onChange={(e) => setOverrideUnitPrice(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Reason" hint="Required — this is what the audit trail records.">
+                    <input className={INPUT_CLASSES} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <Button type="button" onClick={() => void handleOverride()} disabled={overriding}>
+                      {overriding ? 'Saving…' : 'Confirm override'}
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={cancelOverride}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+                {overrideError && (
+                  <p role="alert" className="text-sm font-medium text-danger-600">
+                    {overrideError}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
               <Field label="Source">
                 <select
@@ -729,11 +885,56 @@ export function BillingPage() {
               rowKey={(d) => String(d.index)}
               emptyMessage="No deductions."
               renderMobileActions={(d) => (
-                <Button variant="secondary" onClick={() => removeDeduction(d.index)}>
-                  Remove
-                </Button>
+                <>
+                  <Button variant="secondary" onClick={() => startEditDeduction(d.index)}>
+                    Edit
+                  </Button>
+                  <Button variant="secondary" onClick={() => removeDeduction(d.index)}>
+                    Remove
+                  </Button>
+                </>
               )}
             />
+            {/* Spec.md §13 decision 17: in-place editing of a draft
+                deduction behind the same confirm-dialog-with-required-
+                reason UX as a charge override, for UI consistency only
+                — no FolioChargeOverride-style audit table backs this,
+                since a deduction was always cashier-typed with no
+                system-computed baseline to deviate from. */}
+            {editingDeductionIndex !== null && (
+              <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                  <Field label="Label">
+                    <input className={INPUT_CLASSES} value={editDeductionLabel} onChange={(e) => setEditDeductionLabel(e.target.value)} />
+                  </Field>
+                  <Field label="Amount">
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      className={INPUT_CLASSES}
+                      value={editDeductionAmount}
+                      onChange={(e) => setEditDeductionAmount(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Reason" hint="Required.">
+                    <input
+                      className={INPUT_CLASSES}
+                      value={editDeductionReason}
+                      onChange={(e) => setEditDeductionReason(e.target.value)}
+                    />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <Button type="button" onClick={commitEditDeduction}>
+                      Save
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={cancelEditDeduction}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <Field label="Type">
                 <select
