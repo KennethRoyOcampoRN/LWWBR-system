@@ -309,9 +309,21 @@ function paymentToJson<T extends { amount: unknown }>(payment: T) {
   return { ...payment, amount: Number(payment.amount) };
 }
 
+// Spec.md §13 decision 19 (2026-11-06): gathered across every Booking
+// row sharing the referenceNo — same `gatherBookingIdsForBilling`
+// grouping every other list in this module already uses — rather than
+// the single entry-point bookingId alone. A payment recorded while a
+// sibling room's billing page was open would otherwise be invisible
+// here, the same wrong-attribution gap decision 16 already fixed for
+// `listFolioCharges`. `submittedBy`/`verifiedBy` are joined for their
+// `fullName` — the UI shows who recorded/verified a payment, not just
+// a raw user id.
 export async function listPayments(bookingId: string) {
+  const booking = await requireBooking(bookingId);
+  const bookingIds = await gatherBookingIdsForBilling(booking);
   const payments = await prisma.payment.findMany({
-    where: { bookingId, deletedAt: null },
+    where: { bookingId: { in: bookingIds }, deletedAt: null },
+    include: { submittedBy: { select: { fullName: true } }, verifiedBy: { select: { fullName: true } } },
     orderBy: { createdAt: 'asc' },
   });
   return payments.map(paymentToJson);

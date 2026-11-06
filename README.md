@@ -8112,3 +8112,56 @@ trio). `apps/web` 206/206 (new: the Running Balance line asserted in
 both the preview and the printed receipt; the checkout 409-then-confirm
 flow and the no-warning-when-zero case, end to end through
 `UnitsPage.tsx`'s real checklist UI).
+
+**Cashier tab, item 6 correction — the Payments UI, the derived-
+deduction readout, cashier-level `folio:void`, and the posted-room
+toggle (spec.md §13 decision 19), 2026-11-06.** Caught on the client's
+first live test: item 6's own backend (CASH-immediate, settlement
+draw-down, the derived `DOWNPAYMENT` deduction, `outstandingBalance`)
+had no caller anywhere in `apps/web` — there was no Payments section at
+all, so the balance never moved and the client went looking for where
+to enter cash and found nothing.
+
+Added to `BillingPage.tsx`: a Payments section (record form — amount,
+method, kind, optional reference number; a list of what's recorded —
+method, amount, when, who, status; and a "Balance effect" column
+distinguishing cash, effective immediately, from GCash/bank/card,
+awaiting verification with no effect yet — the distinction the client
+said was invisible). `listPayments` (`billing/service.ts`) gained the
+same cross-booking gather every other list in the module already has,
+plus a `submittedBy`/`verifiedBy` join for the UI's "who" column. The
+derived `DOWNPAYMENT` deduction — correctly absent from the cashier's
+own dropdown per decision 18 — now renders as a read-only line in the
+Deductions section, labelled "Automatic — from a recorded payment, not
+editable," sourced from `previewReceipt`'s own computation, never the
+local draft array.
+
+Second finding: `POST /folio-charges/:id/void` had no caller either,
+and was manager-only (`folio:void`). `CASHIER` now holds it too — same
+trade-off decision 17 already settled for overriding an amount, and
+arguably safer, since a voided charge stays visible rather than
+silently changing value. Exposed as a "Void" action in the Folio table
+(confirm-dialog-with-required-reason). Third, pulled forward from the
+rate-rules stage: "Charge room to folio" is now a toggle — a room with
+an active `ROOM` charge (matched by `sourceId` against the `BookingUnit`
+id) shows "Charged to folio (₱X)" and a "Revert" action instead of the
+charge button, so the obvious posted state is what stops a double-post
+rather than only the void action cleaning one up after.
+
+General reachability scan requested alongside this round: pre-arrival
+creation, room-move, add-room, the F&B pull-in, the decision-17
+override, and the decision-18 checkout warning are all confirmed wired
+to real UI triggers. Two more gaps found and left unfixed (nothing in
+this round asked for them, flagged for a future one): `POST
+/receipts/:id/void` and `PATCH /payments/:id/status` (payment verify/
+reject) have no frontend caller anywhere — the second means a non-cash
+payment currently has no way to ever actually get verified.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 715/715 passing, 3 skipped (new: a CASHIER voiding
+their own double-posted charge; `listPayments` gathering across sibling
+bookings with the name join). `apps/web` 208/208 (new, full path: record
+cash, confirm the balance drops immediately and the derived deduction
+appears unrequested; record GCash, confirm neither happens until
+verified; an already-charged room rendering as a toggle, and reverting
+it voiding the underlying charge).

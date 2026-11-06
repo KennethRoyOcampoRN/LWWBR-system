@@ -330,8 +330,9 @@ describe('Folio charges', () => {
   });
 
   it('voids a folio charge, rejecting a void with no reason', async () => {
-    // folio:void is a manager-level grant — CASHIER holds folio:charge/
-    // folio:read/folio:settle but not folio:void (see rolePermissions.ts).
+    // Spec.md §13 decision 19 (2026-11-06): folio:void moved to
+    // cashier-level too — a RESORT_MANAGER holder still has it, same as
+    // every other manager role.
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'POSTED', unitPrice: 100, amount: 100 });
     mockPrisma.folioCharge.update.mockResolvedValue({ id: 'charge_1', status: 'VOIDED', unitPrice: 100, amount: 100 });
@@ -346,6 +347,26 @@ describe('Folio charges', () => {
       .post('/api/v1/folio-charges/charge_1/void')
       .set('Cookie', authCookie())
       .send({ voidReason: 'Posted to the wrong booking' });
+    expect(res.status).toBe(200);
+    expect(res.body.folioCharge.status).toBe('VOIDED');
+  });
+
+  // Spec.md §13 decision 19 (2026-11-06): the client's actual scenario
+  // — a double-posted room charge, caught seconds later with the guest
+  // still at the counter. folio:void is now cashier-level, the same
+  // trade-off decision 17 already settled for overriding an amount —
+  // the audit trail (voidReason, voidedById, voidedAt) substitutes for
+  // a manager's approval.
+  it('lets a CASHIER void their own double-posted room charge', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_2', status: 'POSTED', unitPrice: 2200, amount: 2200 });
+    mockPrisma.folioCharge.update.mockResolvedValue({ id: 'charge_2', status: 'VOIDED', unitPrice: 2200, amount: 2200 });
+
+    const res = await request(createApp())
+      .post('/api/v1/folio-charges/charge_2/void')
+      .set('Cookie', authCookie())
+      .send({ voidReason: 'Double-posted — guest only has one room' });
+
     expect(res.status).toBe(200);
     expect(res.body.folioCharge.status).toBe('VOIDED');
   });
@@ -490,6 +511,47 @@ describe('Folio charges', () => {
 });
 
 describe('Payments', () => {
+  // Spec.md §13 decision 19 (2026-11-06): listPayments gathers across
+  // every Booking row sharing the referenceNo, same grouping every
+  // other list in this module already uses — otherwise a payment
+  // recorded while a sibling room's billing page was open would be
+  // invisible here. submittedBy/verifiedBy are joined for the UI's
+  // "who" column, not left as a raw user id.
+  it('gathers payments across every Booking row sharing the referenceNo, with submittedBy joined', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_2' }]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      {
+        id: 'payment_1',
+        bookingId: 'booking_1',
+        amount: '500.00',
+        method: 'CASH',
+        status: 'PENDING',
+        submittedAt: new Date('2026-11-06T01:00:00.000Z'),
+        submittedBy: { fullName: 'Yssa (Cashier)' },
+      },
+      {
+        id: 'payment_2',
+        bookingId: 'booking_2',
+        amount: '1000.00',
+        method: 'GCASH',
+        status: 'PENDING',
+        submittedAt: new Date('2026-11-06T02:00:00.000Z'),
+        submittedBy: { fullName: 'Yssa (Cashier)' },
+      },
+    ]);
+
+    const res = await request(createApp()).get('/api/v1/bookings/booking_1/payments').set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(2);
+    expect(res.body.payments[0].submittedBy.fullName).toBe('Yssa (Cashier)');
+    expect(mockPrisma.payment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ bookingId: { in: expect.arrayContaining(['booking_1', 'booking_2']) } }) }),
+    );
+  });
+
   it('submits a payment and verifies it, then reverts to PENDING', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     mockPrisma.booking.findFirst.mockResolvedValue(booking);

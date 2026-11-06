@@ -392,6 +392,13 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'folio:charge': 'ALL',
     'folio:read': 'ALL',
     'folio:settle': 'ALL',
+    // Spec.md §13 decision 19 (2026-11-06): same trade-off decision 17
+    // already settled for overriding an amount — a cashier correcting
+    // their own slip (most commonly a double-posted room charge) can't
+    // wait on a manager with the guest standing at the counter, and
+    // voiding is the lower-risk sibling of overriding: the charge stays
+    // visible as VOIDED with its reason, never silently changed.
+    'folio:void': 'ALL',
     'incident:create': 'ALL',
     'payment:read': 'ALL',
     'payment:submit': 'ALL',

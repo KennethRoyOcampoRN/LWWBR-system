@@ -2,10 +2,18 @@ import {
   FOLIO_CHARGE_SOURCE_KEYS,
   FOLIO_CHARGE_SOURCE_LABELS,
   isBookableUnitKind,
+  PAYMENT_KIND_KEYS,
+  PAYMENT_KIND_LABELS,
+  PAYMENT_METHOD_KEYS,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_STATUS_LABELS,
   RECEIPT_DEDUCTION_TYPE_KEYS,
   RECEIPT_DEDUCTION_TYPE_LABELS,
   type BookingStatusKey,
   type FolioChargeSourceKey,
+  type PaymentKindKey,
+  type PaymentMethodKey,
+  type PaymentStatusKey,
   type ReceiptDeductionTypeKey,
 } from '@lwwbr/shared';
 import { useEffect, useState } from 'react';
@@ -113,6 +121,12 @@ interface FolioChargeRow {
   id: string;
   bookingId: string;
   source: FolioChargeSourceKey;
+  // For ROOM, the BookingUnit id this charge was priced against — same
+  // field postFolioChargeSchema's own sourceId already carries. Added
+  // 2026-11-06 (client's 2nd round) so the Rooms section can tell
+  // "already posted" from "not yet charged" per room, rather than
+  // leaving double-posting to the cashier's own memory.
+  sourceId: string | null;
   description: string;
   qty: number;
   unitPrice: number;
@@ -128,6 +142,20 @@ interface UnsettledFnbCharge {
   unit: { id: string; code: string; name: string };
   subtotal: number;
   createdAt: string;
+}
+
+// Spec.md §13 decision 19 (2026-11-06): what the Payments section
+// lists. submittedBy is joined server-side for its fullName — the
+// cashier sees who recorded it, not a raw user id.
+interface PaymentRow {
+  id: string;
+  amount: number;
+  method: PaymentMethodKey;
+  kind: PaymentKindKey;
+  referenceNo: string | null;
+  status: PaymentStatusKey;
+  submittedAt: string;
+  submittedBy: { fullName: string };
 }
 
 interface ReadyUnit {
@@ -152,6 +180,7 @@ const CASHIER_DEDUCTION_TYPE_KEYS = RECEIPT_DEDUCTION_TYPE_KEYS.filter((k) => k 
 
 const EMPTY_CHARGE_FORM = { source: NON_ROOM_SOURCE_KEYS[0] as FolioChargeSourceKey, description: '', qty: '1', unitPrice: '' };
 const EMPTY_DEDUCTION_FORM = { type: CASHIER_DEDUCTION_TYPE_KEYS[0] as ReceiptDeductionTypeKey, label: '', amount: '' };
+const EMPTY_PAYMENT_FORM = { amount: '', method: 'CASH' as PaymentMethodKey, kind: 'DOWNPAYMENT' as PaymentKindKey, referenceNo: '' };
 
 function formatPeso(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -198,6 +227,25 @@ export function BillingPage() {
   const [editDeductionLabel, setEditDeductionLabel] = useState('');
   const [editDeductionAmount, setEditDeductionAmount] = useState('');
   const [editDeductionReason, setEditDeductionReason] = useState('');
+  // Spec.md §13 decision 19 (2026-11-06): voiding a charge from the
+  // Folio table (any source) — same confirm-dialog-with-required-
+  // reason shape as an override, just one text field instead of two.
+  const [voidingChargeId, setVoidingChargeId] = useState<string | null>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [voidError, setVoidError] = useState<string | null>(null);
+  const [voiding, setVoiding] = useState(false);
+  // The Rooms section's own revert action reuses this same confirm
+  // shape, keyed separately so a room-row revert and a Folio-table void
+  // can't fight over the one open dialog.
+  const [revertingBookingUnitId, setRevertingBookingUnitId] = useState<string | null>(null);
+  const [revertReason, setRevertReason] = useState('');
+  // Spec.md §13 decision 19: the Payments section — record a payment,
+  // list what's already recorded, and distinguish CASH (effective
+  // immediately) from everything else (awaits payment:verify).
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [paymentForm, setPaymentForm] = useState(EMPTY_PAYMENT_FORM);
+  const [postingPayment, setPostingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
   const [resolveReason, setResolveReason] = useState('');
   const [showReasonFor, setShowReasonFor] = useState<'CANCELLED' | 'NO_SHOW' | null>(null);
@@ -269,6 +317,17 @@ export function BillingPage() {
       .catch(() => setUnsettledFnb([]));
   }
 
+  // Spec.md §13 decision 19: refetched alongside the folio — a payment
+  // recorded here is what moves the balance and surfaces as a derived
+  // DOWNPAYMENT deduction, so the two always need to refresh together.
+  function refetchPayments() {
+    if (!bookingId) return;
+    api
+      .get<{ payments: PaymentRow[] }>(`/bookings/${bookingId}/payments`)
+      .then((res) => setPayments(res.payments))
+      .catch(() => setPayments([]));
+  }
+
   function refetchBooking() {
     if (!bookingId) return;
     api
@@ -280,6 +339,7 @@ export function BillingPage() {
   useEffect(() => {
     refetchBooking();
     refetchFolio();
+    refetchPayments();
     void runPreview();
     api
       .get<{ units: ReadyUnit[] }>('/units')
@@ -311,6 +371,38 @@ export function BillingPage() {
       setChargeError(err instanceof ApiRequestError ? err.message : 'Could not post this charge.');
     } finally {
       setPostingCharge(false);
+    }
+  }
+
+  // Spec.md §13 decision 19 (2026-11-06): this is what makes decision
+  // 18's entire backend half reachable — recording a payment here is
+  // the only way the balance ever moves, a DOWNPAYMENT deduction is
+  // ever derived, or Receipt.outstandingBalance is ever anything but
+  // the full amount. void runPreview() afterward so a CASH payment's
+  // effect on the balance/derived deduction shows immediately, exactly
+  // the "effective on record" decision 18 itself describes — a non-
+  // cash payment still shows up in the list below, just marked as
+  // awaiting verification rather than moving anything yet.
+  async function handleSubmitPayment() {
+    if (!bookingId) return;
+    const amount = Number(paymentForm.amount);
+    if (!(amount > 0)) return;
+    setPostingPayment(true);
+    setPaymentError(null);
+    try {
+      await api.post(`/bookings/${bookingId}/payments`, {
+        amount,
+        method: paymentForm.method,
+        kind: paymentForm.kind,
+        referenceNo: paymentForm.referenceNo.trim() || undefined,
+      });
+      setPaymentForm(EMPTY_PAYMENT_FORM);
+      refetchPayments();
+      void runPreview();
+    } catch (err) {
+      setPaymentError(err instanceof ApiRequestError ? err.message : 'Could not record this payment.');
+    } finally {
+      setPostingPayment(false);
     }
   }
 
@@ -346,6 +438,24 @@ export function BillingPage() {
       void runPreview();
     } catch (err) {
       setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not post the room charge.');
+    }
+  }
+
+  // Spec.md §13 decision 19 (2026-11-06): the undo for a double-posted
+  // room charge — "Post room charge" becomes a toggle (postedRoomCharge
+  // below decides which face renders), and this is its revert side.
+  // Same confirm-dialog-with-required-reason UX as decision 17's
+  // override, for the same reason: the audit trail (voidReason, who,
+  // when — already on FolioCharge) is what substitutes for a manager's
+  // approval here.
+  async function revertRoomCharge(chargeId: string, reason: string) {
+    setRoomActionError(null);
+    try {
+      await api.post(`/folio-charges/${chargeId}/void`, { voidReason: reason });
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not revert this room charge.');
     }
   }
 
@@ -466,6 +576,33 @@ export function BillingPage() {
     }
   }
 
+  function startVoidCharge(chargeId: string) {
+    setVoidingChargeId(chargeId);
+    setVoidReason('');
+    setVoidError(null);
+  }
+
+  function cancelVoidCharge() {
+    setVoidingChargeId(null);
+    setVoidError(null);
+  }
+
+  async function handleVoidCharge() {
+    if (!voidingChargeId || !voidReason.trim()) return;
+    setVoiding(true);
+    setVoidError(null);
+    try {
+      await api.post(`/folio-charges/${voidingChargeId}/void`, { voidReason: voidReason.trim() });
+      setVoidingChargeId(null);
+      refetchFolio();
+      void runPreview();
+    } catch (err) {
+      setVoidError(err instanceof ApiRequestError ? err.message : 'Could not void this charge.');
+    } finally {
+      setVoiding(false);
+    }
+  }
+
   async function handleIssue(confirmDuplicateBillingNumber = false) {
     if (!bookingId) return;
     setIssueError(null);
@@ -517,6 +654,12 @@ export function BillingPage() {
               Overridden (was {formatPeso(l.overrides[0]!.previousAmount)})
             </span>
           )}
+          {/* Spec.md §13 decision 19: a voided line stays visible with
+              this badge rather than disappearing — the whole point of
+              voiding over silently removing it. */}
+          {l.status === 'VOIDED' && (
+            <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">Voided</span>
+          )}
         </>
       ),
     },
@@ -529,11 +672,50 @@ export function BillingPage() {
       header: 'Actions',
       render: (l) =>
         l.status === 'VOIDED' ? null : (
-          <Button variant="secondary" onClick={() => startOverride(l)}>
-            Override amount
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => startOverride(l)}>
+              Override amount
+            </Button>
+            {/* Spec.md §13 decision 19 (2026-11-06): same trade-off
+                decision 17 already settled for overriding an amount —
+                cashier-level, substituted approval via a required-
+                reason audit trail. Voiding is the lower-risk sibling:
+                the charge stays visible as VOIDED, never silently
+                changed. */}
+            <Button variant="secondary" onClick={() => startVoidCharge(l.id)}>
+              Void
+            </Button>
+          </div>
         ),
       hideOnMobile: true,
+    },
+  ];
+
+  // Spec.md §13 decision 19 (2026-11-06): the Payments section's own
+  // table. "Balance effect" is what makes decision 18's CASH-is-
+  // immediate/others-need-verified split visible — without it the only
+  // way to learn why a GCash payment didn't move the balance would be
+  // to already know the rule.
+  const paymentColumns: DataTableColumn<PaymentRow>[] = [
+    { key: 'method', header: 'Method', render: (p) => PAYMENT_METHOD_LABELS[p.method] },
+    { key: 'amount', header: 'Amount', render: (p) => formatPeso(p.amount) },
+    { key: 'kind', header: 'Kind', render: (p) => PAYMENT_KIND_LABELS[p.kind] },
+    { key: 'submittedAt', header: 'When', render: (p) => new Date(p.submittedAt).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) },
+    { key: 'submittedBy', header: 'Recorded by', render: (p) => p.submittedBy.fullName },
+    { key: 'status', header: 'Status', render: (p) => PAYMENT_STATUS_LABELS[p.status] },
+    {
+      key: 'effect',
+      header: 'Balance effect',
+      render: (p) =>
+        p.method === 'CASH' ? (
+          <span className="font-medium text-success-600">Effective immediately (cash)</span>
+        ) : p.status === 'VERIFIED' ? (
+          <span className="font-medium text-success-600">Effective (verified)</span>
+        ) : p.status === 'REJECTED' ? (
+          <span className="text-danger-600">Rejected — no effect</span>
+        ) : (
+          <span className="text-amber-700">Awaiting verification — not yet applied</span>
+        ),
     },
   ];
 
@@ -563,6 +745,12 @@ export function BillingPage() {
   }
 
   const activeUnits = booking !== 'loading' && booking !== 'error' ? booking.units.filter((u) => !u.releasedAt) : [];
+  // Spec.md §13 decision 19: the Payments section's own outstanding-
+  // balance readout and the Deductions section's automatic-downpayment
+  // readout both need the loaded preview, same narrowing idiom as
+  // activeUnits above rather than re-narrowing `preview` inline at each
+  // JSX site.
+  const previewData = preview !== 'loading' && preview !== 'error' ? preview : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -640,6 +828,17 @@ export function BillingPage() {
               // already set at booking time) never shows this field.
               const needsCheckOutDate = !bu.occupiedTo;
               const description = `${bu.unit.unitTypeName} (${bu.unit.code})`;
+              // Spec.md §13 decision 19 (2026-11-06): pulled forward
+              // from the rate-rules stage — the client hit a double-
+              // posted room charge live, and this is what stops it from
+              // happening again rather than only cleaning it up after.
+              // sourceId on a ROOM charge is this same BookingUnit's own
+              // id (postFolioChargeSchema's own comment), so this is an
+              // exact match, not a guess by description text.
+              const postedCharge = folioCharges.find(
+                (c) => c.source === 'ROOM' && c.sourceId === bu.id && c.status !== 'VOIDED',
+              );
+              const isReverting = revertingBookingUnitId === bu.id;
               return (
                 <li key={bu.id} className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -647,29 +846,47 @@ export function BillingPage() {
                       {bu.unit.code} — {bu.unit.name}
                     </span>
                     <div className="flex flex-wrap items-end gap-2">
-                      {needsCheckOutDate && (
-                        <Field label="Checkout date (walk-up — not on file)">
-                          <input
-                            type="date"
-                            className={INPUT_CLASSES}
-                            value={roomCheckOutDates[bu.id] ?? ''}
-                            onChange={(e) => setRoomCheckOutDates((d) => ({ ...d, [bu.id]: e.target.value }))}
-                          />
-                        </Field>
+                      {postedCharge ? (
+                        <>
+                          {/* The toggle's "already charged" face — obvious
+                              enough that a cashier doesn't press "Charge
+                              room to folio" a second time in the first
+                              place; Revert is the safety net for when
+                              they already have. */}
+                          <span className="rounded-full bg-success-50 px-2 py-1 text-xs font-medium text-success-600">
+                            Charged to folio ({formatPeso(postedCharge.amount)})
+                          </span>
+                          <Button type="button" variant="secondary" onClick={() => setRevertingBookingUnitId(isReverting ? null : bu.id)}>
+                            Revert
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          {needsCheckOutDate && (
+                            <Field label="Checkout date (walk-up — not on file)">
+                              <input
+                                type="date"
+                                className={INPUT_CLASSES}
+                                value={roomCheckOutDates[bu.id] ?? ''}
+                                onChange={(e) => setRoomCheckOutDates((d) => ({ ...d, [bu.id]: e.target.value }))}
+                              />
+                            </Field>
+                          )}
+                          {/* Relabeled 2026-11-06 (item 4's fix): the
+                              client read "Add room" (which only assigns a
+                              unit, addUnitToBooking below) as the way to
+                              add this room's own cost — "Charge room to
+                              folio" is the action that actually bills it. */}
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => void postRoomCharge(bu.id, description, roomCheckOutDates[bu.id] || undefined)}
+                            disabled={needsCheckOutDate && !roomCheckOutDates[bu.id]}
+                          >
+                            Charge room to folio
+                          </Button>
+                        </>
                       )}
-                      {/* Relabeled 2026-11-06 (item 4's fix): the client
-                          read "Add room" (which only assigns a unit,
-                          addUnitToBooking below) as the way to add this
-                          room's own cost — "Charge room to folio" is
-                          the action that actually bills it. */}
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => void postRoomCharge(bu.id, description, roomCheckOutDates[bu.id] || undefined)}
-                        disabled={needsCheckOutDate && !roomCheckOutDates[bu.id]}
-                      >
-                        Charge room to folio
-                      </Button>
                       <Button
                         type="button"
                         variant="secondary"
@@ -679,6 +896,27 @@ export function BillingPage() {
                       </Button>
                     </div>
                   </div>
+                  {isReverting && postedCharge && (
+                    <div className="flex flex-wrap items-end gap-3 rounded border border-amber-300 bg-amber-50 p-2">
+                      <Field label="Reason" hint="Required — this is what the audit trail records.">
+                        <input className={INPUT_CLASSES} value={revertReason} onChange={(e) => setRevertReason(e.target.value)} />
+                      </Field>
+                      <Button
+                        type="button"
+                        onClick={async () => {
+                          await revertRoomCharge(postedCharge.id, revertReason.trim());
+                          setRevertingBookingUnitId(null);
+                          setRevertReason('');
+                        }}
+                        disabled={!revertReason.trim()}
+                      >
+                        Confirm revert
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={() => setRevertingBookingUnitId(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
                   {movingFromUnitId === bu.id && (
                     <div className="flex flex-wrap items-end gap-3">
                       <Field label="Move to (Ready only)">
@@ -812,6 +1050,32 @@ export function BillingPage() {
                 )}
               </div>
             )}
+            {/* Spec.md §13 decision 19: voiding from the Folio table —
+                same confirm-dialog-with-required-reason shape as the
+                override above. */}
+            {voidingChargeId && (
+              <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <p className="text-sm font-medium text-ink">Voiding {folioCharges.find((c) => c.id === voidingChargeId)?.description}</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <Field label="Reason" hint="Required — this is what the audit trail records.">
+                    <input className={INPUT_CLASSES} value={voidReason} onChange={(e) => setVoidReason(e.target.value)} />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <Button type="button" onClick={() => void handleVoidCharge()} disabled={voiding || !voidReason.trim()}>
+                      {voiding ? 'Voiding…' : 'Confirm void'}
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={cancelVoidCharge}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+                {voidError && (
+                  <p role="alert" className="text-sm font-medium text-danger-600">
+                    {voidError}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
               <Field label="Source">
                 <select
@@ -888,6 +1152,79 @@ export function BillingPage() {
             )}
           </Section>
 
+          {/* Spec.md §13 decision 19 (2026-11-06): without this section
+              decision 18's entire backend (CASH-immediate, settlement
+              draw-down, the derived DOWNPAYMENT deduction,
+              outstandingBalance) was unreachable — there was nowhere
+              for a cashier to actually record a payment. */}
+          <Section
+            title="Payments"
+            description="Record a payment against this booking. Cash counts toward the balance immediately; GCash, bank transfer and card wait for a manager to verify them."
+          >
+            <DataTable columns={paymentColumns} rows={payments} rowKey={(p) => p.id} emptyMessage="No payments recorded yet." />
+            {paymentError && (
+              <p role="alert" className="text-sm font-medium text-danger-600">
+                {paymentError}
+              </p>
+            )}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+              <Field label="Amount">
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  className={INPUT_CLASSES}
+                  value={paymentForm.amount}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, amount: e.target.value }))}
+                />
+              </Field>
+              <Field label="Method">
+                <select
+                  className={INPUT_CLASSES}
+                  value={paymentForm.method}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, method: e.target.value as PaymentMethodKey }))}
+                >
+                  {PAYMENT_METHOD_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {PAYMENT_METHOD_LABELS[key]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Kind">
+                <select
+                  className={INPUT_CLASSES}
+                  value={paymentForm.kind}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, kind: e.target.value as PaymentKindKey }))}
+                >
+                  {PAYMENT_KIND_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {PAYMENT_KIND_LABELS[key]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Reference No. (optional)">
+                <input
+                  className={INPUT_CLASSES}
+                  value={paymentForm.referenceNo}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, referenceNo: e.target.value }))}
+                />
+              </Field>
+              <div className="flex items-end">
+                <Button type="button" onClick={() => void handleSubmitPayment()} disabled={postingPayment}>
+                  {postingPayment ? 'Recording…' : 'Record payment'}
+                </Button>
+              </div>
+            </div>
+            {/* The number the cashier is actually working toward —
+                shown here too, not just in Totals further down, since
+                that's the whole point of recording a payment. */}
+            {previewData && (
+              <p className="text-sm font-medium text-ink">Outstanding balance: {formatPeso(previewData.outstandingBalance)}</p>
+            )}
+          </Section>
+
           <Section title="Deductions">
             <DataTable
               columns={deductionColumns}
@@ -905,6 +1242,33 @@ export function BillingPage() {
                 </>
               )}
             />
+            {/* Spec.md §13 decision 19 (2026-11-06): client's own catch
+                — decision 18 made DOWNPAYMENT server-derived and
+                dropped it from the dropdown above (correctly), but a
+                derived deduction still needs to be visible somewhere,
+                or a cashier who can't see a recorded payment's effect
+                will try to type one and hit the 422 cold. Read off
+                preview.deductions (the same server computation that
+                prices the receipt), not the local draft array — this
+                is never something commitDeduction/removeDeduction can
+                touch. */}
+            {previewData && previewData.deductions.some((d) => d.type === 'DOWNPAYMENT') && (
+              <ul className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                {previewData.deductions
+                  .filter((d) => d.type === 'DOWNPAYMENT')
+                  .map((d, i) => (
+                    <li key={i} className="flex items-center justify-between gap-2">
+                      <span>
+                        {d.label}
+                        <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">
+                          Automatic — from a recorded payment, not editable
+                        </span>
+                      </span>
+                      <span>-{formatPeso(d.amount)}</span>
+                    </li>
+                  ))}
+              </ul>
+            )}
             {/* Spec.md §13 decision 17: in-place editing of a draft
                 deduction behind the same confirm-dialog-with-required-
                 reason UX as a charge override, for UI consistency only

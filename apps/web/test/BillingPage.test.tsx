@@ -54,8 +54,8 @@ const emptyPreview = {
     logo: null,
   },
   guest: { name: 'Roel Villagomez', address: null, contactNo: null, email: null },
-  lines: [],
-  deductions: [],
+  lines: [] as { description: string; qty: number; unitPrice: number; amount: number }[],
+  deductions: [] as { type: string; label: string; amount: number; sourcePaymentId?: string }[],
   grandTotal: 0,
   totalDeductions: 0,
   totalAmountDue: 0,
@@ -422,27 +422,178 @@ describe('BillingPage', () => {
     // server-side draft-deduction entity, only this page's own local
     // state, so the edit flow under test needs a row to act on.
     await user.type(screen.getByLabelText('Label'), 'Downpayment');
-    await user.type(screen.getByLabelText('Amount'), '500');
+    // "Amount" is now ambiguous with the Payments section's own record-
+    // payment form (decision 19) — the Deductions form's field is the
+    // second one in DOM order (Payments renders above Deductions).
+    await user.type(screen.getAllByLabelText('Amount')[1]!, '500');
     await user.click(screen.getByRole('button', { name: 'Add deduction' }));
 
     await waitFor(() => expect(screen.getAllByText(/-₱500\.00/).length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]!);
 
-    // "Amount"/"Label" are now ambiguous with the still-visible "Add
-    // deduction" form below — the edit dialog's own fields are first in
-    // DOM order (see where the edit form was inserted in BillingPage.tsx).
-    const amountField = (await screen.findAllByLabelText('Amount'))[0]!;
+    // "Amount"/"Label" are now ambiguous with the Payments section's own
+    // record-payment form (decision 19) and the still-visible "Add
+    // deduction" form below — in DOM order that's [Payments, edit
+    // dialog, Add-deduction form], so the edit dialog's own field is
+    // the second one.
+    const amountField = (await screen.findAllByLabelText('Amount'))[1]!;
     await user.clear(amountField);
     await user.type(amountField, '600');
     // Save is a no-op without a reason — the confirm-dialog-with-
     // required-reason UX decision 17 asked for.
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
-    expect((await screen.findAllByLabelText('Amount'))[0]).toBeInTheDocument(); // dialog still open, nothing committed
+    expect((await screen.findAllByLabelText('Amount'))[1]).toBeInTheDocument(); // dialog still open, nothing committed
 
     await user.type(screen.getByLabelText('Reason'), 'Guest requested a larger downpayment');
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
 
     await waitFor(() => expect(screen.getAllByText(/-₱600\.00/).length).toBeGreaterThan(0));
+  });
+
+  // Spec.md §13 decision 19 (2026-11-06): the client went looking for
+  // where to enter cash and found nothing — decision 18's entire
+  // backend (CASH-immediate, the derived DOWNPAYMENT deduction,
+  // outstandingBalance) was unreachable without this section. Full
+  // path: record cash, confirm the balance drops immediately and the
+  // deduction appears unrequested; record GCash, confirm it does
+  // neither until verified.
+  it('records a cash payment (effective immediately, derived deduction, balance drops) vs. a GCash payment (awaits verification, no effect)', async () => {
+    const user = userEvent.setup();
+    let payments: Record<string, unknown>[] = [];
+    let preview = previewWithRoomCharge;
+    let postedPaymentBody: Record<string, unknown> | null = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [
+            { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [] },
+          ],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { payments });
+      }
+      if (url.endsWith('/bookings/booking_1/payments') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        postedPaymentBody = body;
+        const method = body.method as string;
+        payments = [
+          ...payments,
+          {
+            id: `payment_${payments.length + 1}`,
+            amount: body.amount,
+            method,
+            kind: body.kind,
+            referenceNo: body.referenceNo ?? null,
+            status: 'PENDING',
+            submittedAt: '2026-11-06T01:00:00.000Z',
+            submittedBy: { fullName: 'Cashier (Demo)' },
+          },
+        ];
+        // Only a CASH payment moves the balance/derives a deduction —
+        // a GCash one stays PENDING with no effect until verified.
+        if (method === 'CASH') {
+          preview = {
+            ...previewWithRoomCharge,
+            deductions: [{ type: 'DOWNPAYMENT', label: 'Payment received (Cash)', amount: 500, sourcePaymentId: 'payment_1' }],
+            totalDeductions: 500,
+            totalAmountDue: 1700,
+            outstandingBalance: 1700,
+          };
+        }
+        return jsonResponse(201, { payment: payments[payments.length - 1] });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, preview);
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Record payment' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Outstanding balance: ₱2,200.00')).toBeInTheDocument());
+
+    // Record cash. "Amount" is ambiguous with the Deductions section's
+    // own field further down the page — Payments renders first.
+    await user.type(screen.getAllByLabelText('Amount')[0]!, '500');
+    await user.click(screen.getByRole('button', { name: 'Record payment' }));
+
+    await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 500, method: 'CASH' }));
+    // DataTable renders both a desktop table and a mobile card list
+    // (only CSS toggles which is visible — see DataTable.tsx's own
+    // comment), so matching text appears twice in jsdom.
+    await waitFor(() => expect(screen.getAllByText('Effective immediately (cash)').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument());
+    // The derived deduction appears without being typed, marked automatic.
+    await waitFor(() => expect(screen.getByText('Payment received (Cash)')).toBeInTheDocument());
+    expect(screen.getByText('Automatic — from a recorded payment, not editable')).toBeInTheDocument();
+
+    // Record GCash — shows up, but neither moves the balance nor
+    // derives a deduction, since it isn't CASH and isn't VERIFIED.
+    postedPaymentBody = null;
+    await user.selectOptions(screen.getByLabelText('Method'), 'GCASH');
+    await user.clear(screen.getAllByLabelText('Amount')[0]!);
+    await user.type(screen.getAllByLabelText('Amount')[0]!, '1000');
+    await user.click(screen.getByRole('button', { name: 'Record payment' }));
+
+    await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 1000, method: 'GCASH' }));
+    await waitFor(() => expect(screen.getAllByText('Awaiting verification — not yet applied').length).toBeGreaterThan(0));
+    // Balance and deduction are unchanged from the cash-only state above.
+    expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument();
+  });
+
+  // Spec.md §13 decision 19 (2026-11-06): the client's actual scenario
+  // — a double-posted room charge, undone by the cashier who made the
+  // mistake, seconds later, with no manager needed.
+  it('shows an already-charged room as a toggle, and reverting it voids the charge', async () => {
+    const user = userEvent.setup();
+    let charges: Record<string, unknown>[] = [
+      { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [] },
+    ];
+    let voidedBody: Record<string, unknown> | null = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: charges });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, previewWithRoomCharge);
+      if (url.endsWith('/folio-charges/charge_1/void') && init?.method === 'POST') {
+        voidedBody = JSON.parse(init.body as string);
+        charges = [{ ...charges[0]!, status: 'VOIDED' }];
+        return jsonResponse(200, { folioCharge: charges[0] });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Charged to folio/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Charge room to folio' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Revert' }));
+    await user.type(screen.getByLabelText('Reason'), 'Double-posted by mistake');
+    await user.click(screen.getByRole('button', { name: 'Confirm revert' }));
+
+    await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Double-posted by mistake' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
+    expect(screen.getAllByText('Voided').length).toBeGreaterThan(0);
   });
 
   it('a non-receipt:issue holder does not see the page', async () => {
