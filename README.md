@@ -8380,3 +8380,53 @@ reconciliation test above). `apps/web` 215/215 (fixtures updated to
 supply the four fields the component now reads instead of deriving).
 Re-screenshotted at 1600px against the real response shape to confirm
 no visual change — this was a data-source fix, not a layout change.
+
+**Cashier tab — third redesign, around the client's own hand-drawn
+layout: unpaid items are the working area, paid items live on the
+receipt that covered them (spec.md §13 decision 25), 2026-11-14.**
+Dissolves the "two totals look contradictory" complaint at its root —
+a receipted charge now leaves the working list structurally the
+instant a receipt covers it, instead of staying in the same list
+behind a "Receipted" badge.
+
+Three regions. (1) Header row, two boxes: guest/rooms/booking and the
+whole-account Amount Due (kept — not rescoped, overriding this
+session's own earlier proposal — the client's sample receipt is
+issued *with* a balance outstanding, so the account-wide figure has
+to keep meaning something after a receipt exists) with its
+decision-23/24 bridge beneath it, beside Take Payment, unconditional.
+(2) A full-width button bar: Add charge / Add discount / Manage rooms
+/ Guest details / Payment history — Print Receipt and Past Receipts
+are gone as buttons. (3) Two working columns: "Current charges"
+(left, wider) — only `!hasBeenReceipted` rows, headed explicitly as
+scoped to just this draft receipt, with its own total and the billing
+number it would issue as, displayed, never typed; and the receipts
+stack (right, narrower) — every issued receipt, newest first, always
+on screen, each card self-contained (its own lines, totals, View,
+Void). A charge voided after being receipted (only reachable now via
+Manage Rooms' "Revert") marks just that one line on its card, not the
+receipt.
+
+Four mechanical fixes folded in: billing number is now display-only
+(computed server-side from `booking.referenceNo`, peeked via a new
+`previewReceipt` field without reserving it — clarifying, not
+reversing, decision 16: the typed number was always required to equal
+the booking's own external ID, so there was nothing left to
+transcribe); Prepared-by pre-fills from the signed-in user, still
+editable; cashier-level payment deletion (`DELETE /payments/:id`,
+gated like submitting one, 409s if a `FolioSettlement` already drew on
+it); Payment history drops its Status column (Balance effect already
+covers it) in favor of a Delete action.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 730/730 (new: `billingNumberPreview`
+peek — with and without a same-day `ReferenceSequence` row;
+`DELETE /payments/:id` — deletes, 404s, 409s `ALREADY_SETTLED`,
+refuses without `payment:submit`; the mismatch-421 test replaced with
+one confirming a stray `billingNumberTyped` is now ignored entirely).
+`apps/web` 217/217 (full layout rewrite; new tests for payment
+deletion and a voided receipt-card line). Screenshotted at 1600px with
+an issued-but-unpaid receipt plus a new unreceipted charge — the
+state where the two totals (whole-account vs. this-receipt) differ
+most, and each reads as a clearly distinct thing rather than a
+contradiction.

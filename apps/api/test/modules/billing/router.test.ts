@@ -9,13 +9,13 @@ const mockPrisma = {
   bookingUnit: { findFirst: vi.fn(), update: vi.fn() },
   folioCharge: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   folioChargeOverride: { create: vi.fn() },
-  folioSettlement: { create: vi.fn() },
+  folioSettlement: { create: vi.fn(), findFirst: vi.fn() },
   payment: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receipt: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   receiptLine: { findMany: vi.fn(), findFirst: vi.fn() },
   receiptBooking: { findMany: vi.fn(), create: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
-  referenceSequence: { upsert: vi.fn() },
+  referenceSequence: { upsert: vi.fn(), findUnique: vi.fn() },
   $transaction: vi.fn(),
 };
 
@@ -98,6 +98,14 @@ beforeEach(() => {
   // exercising the 409 can delete freely.
   mockPrisma.receiptLine.findFirst.mockResolvedValue(null);
   mockPrisma.payment.findMany.mockResolvedValue([]);
+  // peekNextBillingNumber's own read — no ReferenceSequence row yet by
+  // default, so the previewed number starts at -01. Tests asserting a
+  // specific previewed number override this explicitly.
+  mockPrisma.referenceSequence.findUnique.mockResolvedValue(null);
+  // deletePayment's own isReferencedByAnIssuedReceipt-equivalent check
+  // — not drawn into any receipt by default, so a test not specifically
+  // exercising the 409 can delete freely.
+  mockPrisma.folioSettlement.findFirst.mockResolvedValue(null);
 });
 
 describe('Folio charges', () => {
@@ -705,6 +713,52 @@ describe('Payments', () => {
     expect(res.status).toBe(422);
     expect(mockPrisma.payment.update).not.toHaveBeenCalled();
   });
+
+  // Spec.md §13 decision 25 (2026-11-14): cashier-level payment
+  // deletion, the same "delete is for errors" trade-off decision 21
+  // made for folio charges — gated on payment:submit, the same
+  // permission that records one, not a manager-level key.
+  describe('DELETE /payments/:id', () => {
+    it('deletes a payment no FolioSettlement has drawn against, with no reason required', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.payment.findFirst.mockResolvedValue({ id: 'payment_1', status: 'PENDING', amount: 500 });
+
+      const res = await request(createApp()).delete('/api/v1/payments/payment_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(204);
+      expect(mockPrisma.payment.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'payment_1' }, data: expect.objectContaining({ deletedAt: expect.any(Date) }) }),
+      );
+    });
+
+    it('404s for an unknown or already-deleted payment', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.payment.findFirst.mockResolvedValue(null);
+
+      const res = await request(createApp()).delete('/api/v1/payments/payment_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(404);
+    });
+
+    it('409s ALREADY_SETTLED when a FolioSettlement has already drawn against this payment, and does not delete it', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.payment.findFirst.mockResolvedValue({ id: 'payment_1', status: 'PENDING', amount: 500 });
+      mockPrisma.folioSettlement.findFirst.mockResolvedValue({ id: 'settlement_1', paymentId: 'payment_1' });
+
+      const res = await request(createApp()).delete('/api/v1/payments/payment_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('ALREADY_SETTLED');
+      expect(mockPrisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses without payment:submit', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('OPS_SAFETY_SUPERVISOR'));
+      const res = await request(createApp()).delete('/api/v1/payments/payment_1').set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+      expect(mockPrisma.payment.findFirst).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('Receipt preview', () => {
@@ -743,6 +797,47 @@ describe('Receipt preview', () => {
     expect(res.body.grandTotal).toBe(2200);
     expect(res.body.totalDeductions).toBe(1100);
     expect(res.body.totalAmountDue).toBe(1100);
+  });
+
+  // Spec.md §13 decision 25 (2026-11-14): the billing number is
+  // display-only now — previewReceipt peeks the current
+  // ReferenceSequence row (never incrementing it) and returns what a
+  // receipt would be numbered if issued right now, computed from
+  // booking.referenceNo alone, no cashier input.
+  it('previews the next billing number from the current ReferenceSequence row, without incrementing it', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking); // referenceNo: '83887'
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    vi.setSystemTime(new Date('2026-11-14T01:00:00.000Z')); // 2026-11-14 in Asia/Manila
+    mockPrisma.referenceSequence.findUnique.mockResolvedValue({ scope: '83887-11142026', seq: 3 });
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    vi.useRealTimers();
+
+    expect(res.status).toBe(200);
+    expect(res.body.billingNumberPreview).toBe('83887-11142026-04');
+    expect(mockPrisma.referenceSequence.upsert).not.toHaveBeenCalled();
+  });
+
+  // No ReferenceSequence row yet for today at all (the very first
+  // receipt of the day) — previews as -01, not a crash on a null read.
+  it('previews -01 when no receipt has been issued under this scope yet today', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.referenceSequence.findUnique.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.billingNumberPreview).toMatch(/^83887-\d{8}-01$/);
   });
 
   // The real gap this test guards: GET /settings/resort-identity is
@@ -974,24 +1069,33 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
     );
   });
 
-  // Pins the exact gap caught in review (spec.md §13.4): the typed
-  // billing number must equal this booking's own external ID, not just
-  // not-collide with someone else's. A mismatch is rejected outright
-  // (422), never folded into the soft duplicate-warn above.
-  it('422s with BILLING_NUMBER_MISMATCH when the typed billing number does not match this booking\'s own referenceNo', async () => {
+  // Spec.md §13 decision 25 (2026-11-14): billingNumberTyped is no
+  // longer a client input at all — the billing number's {typed} base
+  // was always required to equal booking.referenceNo (the
+  // BILLING_NUMBER_MISMATCH check this replaces), so there was never
+  // anything for a cashier to meaningfully type that the system didn't
+  // already hold. This pins that the scope is computed straight from
+  // booking.referenceNo regardless of what, if anything, a caller still
+  // sends in that now-ignored field (extra fields are stripped by the
+  // non-strict schema, not rejected) — proving the old mismatch can no
+  // longer occur because there's nothing left to mismatch.
+  it('computes the billing number scope from booking.referenceNo, ignoring any billingNumberTyped a caller still sends', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
-    mockPrisma.booking.findFirst.mockResolvedValue(booking); // referenceNo: '83887'
-    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    stubIssuance();
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts')
       .set('Cookie', authCookie())
+      // booking.referenceNo is '83887' — a deliberately different,
+      // now-meaningless value here must have no effect at all.
       .send({ billingNumberTyped: '99999', preparedByName: 'yssa' });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('BILLING_NUMBER_MISMATCH');
-    expect(mockPrisma.receipt.findFirst).not.toHaveBeenCalled();
-    expect(mockPrisma.referenceSequence.upsert).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(mockPrisma.referenceSequence.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { scope: expect.stringMatching(/^83887-/) } }),
+    );
+    expect(res.body.receipt.billingNumberFull).toMatch(/^83887-/);
   });
 
   // The actual retry requirement: a P2002 on the Receipt insert (inside

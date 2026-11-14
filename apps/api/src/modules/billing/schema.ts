@@ -160,12 +160,6 @@ export type ReceiptDraftInput = z.infer<typeof receiptDraftSchema>;
 
 export const issueReceiptSchema = receiptDraftSchema.extend({
   preparedByName: z.string().trim().min(1).max(200),
-  // Cashier-typed — the {typed} in {typed}-{MMDDYYYY}-{NN}. Digits only
-  // on the sample (e.g. "83887"), but not enforced as numeric here: a
-  // pre-printed receipt booklet number is whatever's physically
-  // printed on it, and this app has no reason to assume every resort's
-  // booklet uses digits only.
-  billingNumberTyped: z.string().trim().min(1).max(50),
   // See billing/service.ts's own issueReceipt comment: true skips the
   // soft duplicate-billing-number warning and issues anyway — the
   // cashier UI sets this only after the person confirms the warning

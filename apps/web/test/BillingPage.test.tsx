@@ -157,14 +157,12 @@ describe('BillingPage', () => {
     await waitFor(() => expect(postedRoomCharge).toBe(true));
     await waitFor(() => expect(previewCallCount).toBe(2));
 
-    // Issue — the breakdown and issue form are behind "Print Receipt".
-    await user.click(screen.getByRole('button', { name: 'Print Receipt' }));
+    // Spec.md §13 decision 25: issuing now lives directly in "Current
+    // charges" — no "Print Receipt" toggle, and no Billing No. field
+    // to type (display-only, computed server-side).
     await waitFor(() => expect(screen.getAllByText('₱2,200.00').length).toBeGreaterThan(0));
-    // Spec.md §13 decision 18: the running-balance line is a layout
-    // addition to both the pre-issuance preview and the printed receipt.
-    expect(screen.getAllByText('Running Balance').length).toBeGreaterThan(0);
 
-    await user.type(screen.getByLabelText('Billing No.'), '83887');
+    await user.clear(screen.getByLabelText('Prepared by'));
     await user.type(screen.getByLabelText('Prepared by'), 'yssa');
     await user.click(screen.getByRole('button', { name: 'Issue receipt' }));
 
@@ -307,8 +305,7 @@ describe('BillingPage', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getAllByText('Roel Villagomez').length).toBeGreaterThan(0));
-    await user.click(screen.getByRole('button', { name: 'Print Receipt' }));
-    await user.type(screen.getByLabelText('Billing No.'), '83887');
+    await user.clear(screen.getByLabelText('Prepared by'));
     await user.type(screen.getByLabelText('Prepared by'), 'yssa');
     await user.click(screen.getByRole('button', { name: 'Issue receipt' }));
 
@@ -679,11 +676,12 @@ describe('BillingPage', () => {
 
     await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Double-posted by mistake' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
-    // Spec.md §13 decision 21: voided charges default to hidden in the
-    // Folio table — "Show voided charges" reveals them.
+    // Spec.md §13 decision 25: a reverted (voided, never-receipted)
+    // charge has no "Show voided charges" toggle to reveal it anymore
+    // — "Current charges" only ever shows status !== 'VOIDED' &&
+    // !hasBeenReceipted rows, permanently, not just by default. The
+    // audit trail on FolioCharge itself is where it's still findable.
     expect(screen.queryByText('Voided')).not.toBeInTheDocument();
-    await user.click(screen.getByLabelText('Show voided charges'));
-    await waitFor(() => expect(screen.getAllByText('Voided').length).toBeGreaterThan(0));
   });
 
   // Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void had no
@@ -722,16 +720,15 @@ describe('BillingPage', () => {
 
     render(<App />);
 
-    // Spec.md §13 decision 22: Past receipts is behind its own link now.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Past receipts' })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Past receipts' }));
+    // Spec.md §13 decision 25: the receipts stack is always on screen
+    // now — no "Past receipts" button to click first.
     await waitFor(() => expect(screen.getAllByText('83887-11042026-01').length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'Void' })[0]!);
     await user.type(screen.getByLabelText('Reason'), 'Issued with the wrong billing number');
     await user.click(screen.getByRole('button', { name: 'Confirm void' }));
 
     await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Issued with the wrong billing number' }));
-    await waitFor(() => expect(screen.getAllByText('VOIDED').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Voided').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: 'Void' })).not.toBeInTheDocument();
   });
 
@@ -764,8 +761,8 @@ describe('BillingPage', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Past receipts' })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Past receipts' }));
+    // Spec.md §13 decision 25: the receipts stack is always on screen
+    // now — no "Past receipts" button to click first.
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'View' })[0]!);
 
@@ -773,9 +770,6 @@ describe('BillingPage', () => {
     expect(screen.queryByRole('heading', { name: 'Receipt issued' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back to billing' })).toBeInTheDocument();
 
-    // showPastReceipts is still true from before — the panel stays
-    // open across the view/back round trip since the component never
-    // unmounts, only its early-return branch changes.
     await user.click(screen.getByRole('button', { name: 'Back to billing' }));
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
   });
@@ -784,16 +778,18 @@ describe('BillingPage', () => {
   // finding — a ₱12,000 Charges list sitting next to a ₱2,000 Amount
   // Due with nothing on screen bridging them, and a receipted charge
   // (Family Room) looking identical to an unpaid one (Day Tour Cottage).
-  // This is a rendering test only: chargesTotal/paymentsTotal/
-  // discountsTotal/amountDue are supplied by the mocked
-  // /receipts/preview response below exactly as `previewReceipt`
-  // would compute them — BillingPage.tsx reads them straight off
-  // `preview`, it no longer re-derives them from folioCharges/
-  // payments/deductions itself. The server-side reconciliation of
-  // those four fields against `outstandingBalance` (and against what
-  // actually gets persisted on an issued receipt) is covered by
-  // apps/api's own billing/router.test.ts, not here.
-  it('shows the totals bridge reconciling Charges to Amount due, and marks an already-receipted charge', async () => {
+  // Spec.md §13 decision 25 (2026-11-14): the fix moved from a
+  // "Receipted" badge to structural removal — a receipted charge no
+  // longer renders in "Current charges" at all. This is a rendering
+  // test only: chargesTotal/paymentsTotal/discountsTotal/amountDue
+  // are supplied by the mocked /receipts/preview response below
+  // exactly as `previewReceipt` would compute them — BillingPage.tsx
+  // reads them straight off `preview`, it no longer re-derives them
+  // from folioCharges/payments/deductions itself. The server-side
+  // reconciliation of those four fields against `outstandingBalance`
+  // (and against what actually gets persisted on an issued receipt)
+  // is covered by apps/api's own billing/router.test.ts, not here.
+  it('shows the whole-account totals bridge in the header, and excludes an already-receipted charge from Current charges', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
@@ -852,11 +848,17 @@ describe('BillingPage', () => {
       if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
         return jsonResponse(200, {
           ...emptyPreview,
+          // Only the unreceipted charge (Day Tour Cottage) belongs in
+          // this draft receipt's own lines/grandTotal.
+          lines: [{ description: 'Day Tour Cottage (C03)', qty: 1, unitPrice: 4000, amount: 4000 }],
+          grandTotal: 4000,
+          totalAmountDue: 4000,
           outstandingBalance: 2000,
           chargesTotal: 12000,
           paymentsTotal: 10000,
           discountsTotal: 0,
           amountDue: 2000,
+          billingNumberPreview: '83887-11142026-01',
         });
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
@@ -873,13 +875,118 @@ describe('BillingPage', () => {
     await waitFor(() => expect(screen.getAllByText('₱2,000.00').length).toBeGreaterThan(1));
     expect(screen.getByText('₱12,000.00')).toBeInTheDocument();
     expect(screen.getByText('-₱10,000.00')).toBeInTheDocument();
-    expect(screen.getByText('-₱0.00')).toBeInTheDocument();
+    // "-₱0.00" appears twice — the header bridge's own "Less discounts"
+    // and "Current charges"' own, differently-scoped "Deductions" line
+    // (both legitimately zero here; see the two totals blocks' own
+    // comments in BillingPage.tsx for why they're allowed to differ).
+    expect(screen.getAllByText('-₱0.00').length).toBeGreaterThan(0);
 
-    // The receipted charge is marked; the unpaid one isn't.
-    const receiptedRow = screen.getAllByText('Family Room (R12)')[0]!.closest('tr') ?? screen.getAllByText('Family Room (R12)')[0]!.closest('li');
-    expect(receiptedRow?.textContent).toContain('Receipted');
-    const unpaidRow = screen.getAllByText('Day Tour Cottage (C03)')[0]!.closest('tr') ?? screen.getAllByText('Day Tour Cottage (C03)')[0]!.closest('li');
-    expect(unpaidRow?.textContent).not.toContain('Receipted');
+    // The receipted charge (Family Room) is gone from "Current
+    // charges" entirely — not badged, just absent; the unreceipted
+    // one (Day Tour Cottage) is the only row.
+    await waitFor(() => expect(screen.getAllByText('Day Tour Cottage (C03)').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Family Room (R12)')).not.toBeInTheDocument();
+
+    // The billing number is displayed, never typed.
+    expect(screen.getByText('Billing No. 83887-11142026-01')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Billing No.')).not.toBeInTheDocument();
+  });
+
+  // Spec.md §13 decision 25 (2026-11-14): cashier-level payment
+  // deletion — gated the same way submitting one is (payment:submit),
+  // with a plain confirm, no reason, same shape as handleDeleteCharge.
+  it('deletes a payment from Payment history, with a plain confirm', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const cashierWithSubmit = { ...cashierUser, permissions: { 'receipt:issue': 'ALL', 'payment:submit': 'ALL' } };
+    let payments = [
+      {
+        id: 'payment_1',
+        amount: 500,
+        method: 'CASH',
+        kind: 'DOWNPAYMENT',
+        referenceNo: null,
+        status: 'PENDING',
+        submittedAt: '2026-11-14T01:00:00.000Z',
+        submittedBy: { fullName: 'Cashier (Demo)' },
+      },
+    ];
+    let deleted = false;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierWithSubmit });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) return jsonResponse(200, { folioCharges: [] });
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { payments: deleted ? [] : payments });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      if (url.endsWith('/payments/payment_1') && init?.method === 'DELETE') {
+        deleted = true;
+        payments = [];
+        return jsonResponse(204, {});
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Payment history' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Payment history' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' }).length).toBeGreaterThan(0));
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(screen.getByText('No payments recorded yet.')).toBeInTheDocument());
+  });
+
+  // Spec.md §13 decision 25: a line's own charge can still be voided
+  // after the fact (Manage Rooms' "Revert" on an already-receipted ROOM
+  // charge) — the receipt card that covered it marks that one line,
+  // not the whole receipt.
+  it('marks a receipt card line "Voided" when its source charge has since been voided', async () => {
+    const pastReceiptWithVoidedLine = {
+      ...issuedReceipt,
+      lines: [{ description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, sourceChargeId: 'charge_1' }],
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [
+            { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'VOIDED', overrides: [], hasBeenReceipted: true },
+          ],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { receipts: [pastReceiptWithVoidedLine] });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    // The receipt itself isn't voided — only the one line is marked.
+    await waitFor(() => expect(screen.getAllByText('83887-11042026-01').length).toBeGreaterThan(0));
+    const lineRow = screen.getByText('R01 room charge').closest('li')!;
+    expect(lineRow.textContent).toContain('Voided');
+    expect(screen.getByRole('button', { name: 'Void' })).toBeInTheDocument(); // the receipt's own Void action is still offered
   });
 
   it('a non-receipt:issue holder does not see the page', async () => {

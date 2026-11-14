@@ -6,7 +6,6 @@ import {
   PAYMENT_KIND_LABELS,
   PAYMENT_METHOD_KEYS,
   PAYMENT_METHOD_LABELS,
-  PAYMENT_STATUS_LABELS,
   RECEIPT_DEDUCTION_TYPE_KEYS,
   RECEIPT_DEDUCTION_TYPE_LABELS,
   type BookingStatusKey,
@@ -25,6 +24,7 @@ import { EmptyState } from '../components/EmptyState.js';
 import { Field, INPUT_CLASSES } from '../components/Field.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StatusBadge } from '../components/StatusBadge.js';
+import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_STATUS_BADGE_VARIANT, BOOKING_STATUS_LABELS } from '../lib/bookingStyle.js';
 
@@ -39,6 +39,14 @@ interface ComputedLine {
   qty: number;
   unitPrice: number;
   amount: number;
+  // Spec.md §13 decision 25 (2026-11-14): which FolioCharge this line
+  // came from — already returned by the API (gatherReceiptLines sets
+  // it on every line), just not previously typed here. Lets a receipt
+  // card cross-reference `folioCharges` to mark a line "Voided" if the
+  // charge behind it has since been voided (only possible via Manage
+  // Rooms' "Revert", which can void an already-receipted ROOM charge —
+  // the charges-list Void action this used to also cover is gone).
+  sourceChargeId: string | null;
 }
 
 interface ComputedDeduction extends DraftDeduction {
@@ -87,6 +95,12 @@ interface PreviewResponse {
   paymentsTotal: number;
   discountsTotal: number;
   amountDue: number;
+  // Spec.md §13 decision 25 (2026-11-14): display-only — what a receipt
+  // would be numbered if issued right now, computed server-side from
+  // booking.referenceNo (peekNextBillingNumber). No cashier input
+  // exists for this anymore; typing it was always transcribing a value
+  // the system already held.
+  billingNumberPreview: string;
 }
 
 interface IssuedReceipt extends PreviewResponse {
@@ -186,12 +200,14 @@ interface ReadyUnit {
   status: string;
 }
 
-// Spec.md §13 decision 23 (2026-11-14): the right column's single
-// open panel. Replaces decision 22's seven independent booleans — at
-// most one of these ever renders at a time, so one key is the whole
-// state, and it's what lets opening a new panel *replace* the right
-// column's content instead of stacking another one below it.
-type RightPanelKey = 'printReceipt' | 'addCharge' | 'addDiscount' | 'manageRooms' | 'guestDetails' | 'paymentHistory' | 'pastReceipts';
+// Spec.md §13 decision 25 (2026-11-14): one fewer than decision 23 had
+// — Print Receipt is gone as a toggle (issuing now lives directly in
+// the "Current charges" panel, which *is* the next receipt) and Past
+// Receipts is gone entirely (the right-hand receipts stack is always
+// on screen, never behind a click). Still one key, not five booleans,
+// for the same reason as before: opening one replaces the slot below
+// the button bar rather than stacking.
+type RightPanelKey = 'addCharge' | 'addDiscount' | 'manageRooms' | 'guestDetails' | 'paymentHistory';
 
 // Non-ROOM sources only — a ROOM charge is always posted per-room, from
 // the Rooms section's own "Post room charge" action, never from this
@@ -228,14 +244,19 @@ function formatPeso(amount: number): string {
 export function BillingPage() {
   const { bookingId } = useParams<{ bookingId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [booking, setBooking] = useState<BookingDetail | 'loading' | 'error'>('loading');
+  // Spec.md §13 decision 25 (2026-11-14): "current charges" now means
+  // exactly !hasBeenReceipted && status !== 'VOIDED' — a charge that's
+  // VOIDED is, almost always, one that was already receipted (void only
+  // ever applied to a receipted charge via the old charges-list action,
+  // now removed) and so belongs on its receipt card instead; the sole
+  // remaining way to void a never-receipted charge is Manage Rooms'
+  // "Revert" on a ROOM charge, and a reverted charge needs no ongoing
+  // visibility here either — the audit trail on FolioCharge itself
+  // (voidedById/voidedAt/voidReason) is where that's still findable.
   const [folioCharges, setFolioCharges] = useState<FolioChargeRow[]>([]);
-  // Spec.md §13 decision 21 (2026-11-06): voided charges stay in the
-  // folio's own history (that's the point of voiding over deleting),
-  // but default to hidden — a cashier working the folio shouldn't have
-  // to read past them to see what's actually owed.
-  const [showVoided, setShowVoided] = useState(false);
   const [unsettledFnb, setUnsettledFnb] = useState<UnsettledFnbCharge[]>([]);
   const [readyUnits, setReadyUnits] = useState<ReadyUnit[]>([]);
   const [preview, setPreview] = useState<PreviewResponse | 'loading' | 'error'>('loading');
@@ -259,13 +280,6 @@ export function BillingPage() {
   const [editDeductionLabel, setEditDeductionLabel] = useState('');
   const [editDeductionAmount, setEditDeductionAmount] = useState('');
   const [editDeductionReason, setEditDeductionReason] = useState('');
-  // Spec.md §13 decision 19 (2026-11-06): voiding a charge from the
-  // Folio table (any source) — same confirm-dialog-with-required-
-  // reason shape as an override, just one text field instead of two.
-  const [voidingChargeId, setVoidingChargeId] = useState<string | null>(null);
-  const [voidReason, setVoidReason] = useState('');
-  const [voidError, setVoidError] = useState<string | null>(null);
-  const [voiding, setVoiding] = useState(false);
   // The Rooms section's own revert action reuses this same confirm
   // shape, keyed separately so a room-row revert and a Folio-table void
   // can't fight over the one open dialog.
@@ -299,8 +313,11 @@ export function BillingPage() {
   // be charged. Keyed by BookingUnit id, one per room row.
   const [roomCheckOutDates, setRoomCheckOutDates] = useState<Record<string, string>>({});
 
-  const [billingNumberTyped, setBillingNumberTyped] = useState('');
-  const [preparedByName, setPreparedByName] = useState('');
+  // Spec.md §13 decision 25 (2026-11-14): no more billingNumberTyped —
+  // the billing number is display-only now (previewData.
+  // billingNumberPreview), never a cashier input. preparedByName still
+  // is one, just pre-filled from the signed-in user rather than blank.
+  const [preparedByName, setPreparedByName] = useState(user?.fullName ?? '');
   const [guestContactNo, setGuestContactNo] = useState('');
   const [guestEmail, setGuestEmail] = useState('');
   const [checkInDate, setCheckInDate] = useState('');
@@ -465,6 +482,25 @@ export function BillingPage() {
       setPaymentError(err instanceof ApiRequestError ? err.message : 'Could not record this payment.');
     } finally {
       setPostingPayment(false);
+    }
+  }
+
+  // Spec.md §13 decision 25 (2026-11-14): cashier-level delete for a
+  // misrecorded payment — same no-reason, plain-confirm shape as
+  // handleDeleteCharge, and the same line drawn server-side: a 409 if
+  // some issued receipt has already drawn on this payment (the error
+  // message names the real fix, voiding that receipt, rather than the
+  // UI silently allowing something that would desync an issued
+  // document's own totals).
+  async function handleDeletePayment(paymentId: string) {
+    if (!window.confirm('Delete this payment record?')) return;
+    setPaymentError(null);
+    try {
+      await api.delete(`/payments/${paymentId}`);
+      refetchPayments();
+      void runPreview();
+    } catch (err) {
+      setPaymentError(err instanceof ApiRequestError ? err.message : 'Could not delete this payment.');
     }
   }
 
@@ -638,33 +674,6 @@ export function BillingPage() {
     }
   }
 
-  function startVoidCharge(chargeId: string) {
-    setVoidingChargeId(chargeId);
-    setVoidReason('');
-    setVoidError(null);
-  }
-
-  function cancelVoidCharge() {
-    setVoidingChargeId(null);
-    setVoidError(null);
-  }
-
-  async function handleVoidCharge() {
-    if (!voidingChargeId || !voidReason.trim()) return;
-    setVoiding(true);
-    setVoidError(null);
-    try {
-      await api.post(`/folio-charges/${voidingChargeId}/void`, { voidReason: voidReason.trim() });
-      setVoidingChargeId(null);
-      refetchFolio();
-      void runPreview();
-    } catch (err) {
-      setVoidError(err instanceof ApiRequestError ? err.message : 'Could not void this charge.');
-    } finally {
-      setVoiding(false);
-    }
-  }
-
   // Spec.md §13 decision 21: the lower-friction sibling of void, for a
   // charge no receipt has ever referenced — no reason prompt, since
   // the client's own point was that an error corrected seconds later
@@ -725,7 +734,6 @@ export function BillingPage() {
     try {
       const receipt = await api.post<{ receipt: IssuedReceipt }>(`/bookings/${bookingId}/receipts`, {
         ...draftBody(),
-        billingNumberTyped: billingNumberTyped.trim(),
         confirmDuplicateBillingNumber,
       });
       setIssuedReceipt(receipt.receipt);
@@ -750,41 +758,24 @@ export function BillingPage() {
     setIssuedReceipt(null);
     setViewedPastReceipt(false);
     setDeductions([]);
-    setBillingNumberTyped('');
     refetchFolio();
     refetchReceipts();
     void runPreview();
   }
 
-  // Spec.md §13 decision 23 (2026-11-14): shared by the desktop table
-  // column and the mobile card — identical buttons either way now that
-  // neither needs a tap-only menu to stay out of the way.
+  // Spec.md §13 decision 25 (2026-11-14): "Current charges" never
+  // shows a receipted or voided row (see folioCharges's own state
+  // comment above), so there's nothing left to pick between — every
+  // row here only ever offers Override and Delete.
   function folioRowActions(l: FolioChargeRow) {
-    if (l.status === 'VOIDED') return null;
     return (
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="secondary" onClick={() => startOverride(l)}>
           Override amount
         </Button>
-        {/* Spec.md §13 decision 21 (2026-11-06): the client's own
-            words, caught live-testing decision 19's void action —
-            "the purpose of delete is for errors, don't make it
-            hard to delete errors." Picked automatically, per
-            charge: never on an issued receipt deletes outright (no
-            reason — the audit extension still records it); once a
-            receipt references it, voiding is the only option, same
-            trade-off decision 17 already settled for overriding an
-            amount — reasoned, and the charge stays visible as
-            VOIDED rather than silently gone. */}
-        {l.hasBeenReceipted ? (
-          <Button type="button" variant="secondary" onClick={() => startVoidCharge(l.id)}>
-            Void
-          </Button>
-        ) : (
-          <Button type="button" variant="secondary" onClick={() => void handleDeleteCharge(l.id)}>
-            Delete
-          </Button>
-        )}
+        <Button type="button" variant="secondary" onClick={() => void handleDeleteCharge(l.id)}>
+          Delete
+        </Button>
       </div>
     );
   }
@@ -804,20 +795,6 @@ export function BillingPage() {
               Overridden (was {formatPeso(l.overrides[0]!.previousAmount)})
             </span>
           )}
-          {/* Spec.md §13 decision 19: a voided line stays visible with
-              this badge rather than disappearing — the whole point of
-              voiding over silently removing it. */}
-          {l.status === 'VOIDED' && (
-            <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">Voided</span>
-          )}
-          {/* Spec.md §13 decision 23 (2026-11-14): client's first finding
-              — a charge already on an issued receipt still sat in this
-              list looking unpaid, with nothing distinguishing it from
-              one still owed. Reads the same `hasBeenReceipted` flag that
-              already drives the Delete-vs-Void choice below. */}
-          {l.status !== 'VOIDED' && l.hasBeenReceipted && (
-            <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">Receipted</span>
-          )}
         </>
       ),
     },
@@ -828,67 +805,21 @@ export function BillingPage() {
     {
       key: 'actions',
       header: 'Actions',
-      // Spec.md §13 decision 23 (2026-11-14): back to plain, visible
-      // per-row buttons — the client's second finding was that the
-      // prior "⋮" was "not easy to see... I need to scroll the small
-      // page to see it." There's ample horizontal room for two buttons
-      // once the layout actually uses the screen's width, so there's
-      // no density problem left to solve by hiding them.
       render: folioRowActions,
       hideOnMobile: true,
     },
   ];
 
-  // Spec.md §13 decision 19 (2026-11-06): the Payments section's own
-  // table. "Balance effect" is what makes decision 18's CASH-is-
-  // immediate/others-need-verified split visible — without it the only
-  // way to learn why a GCash payment didn't move the balance would be
-  // to already know the rule.
-  // Spec.md §13 decision 20: the past-receipts table — Void is the only
-  // action, and only for a receipt not already VOIDED.
-  const receiptColumns: DataTableColumn<IssuedReceipt>[] = [
-    { key: 'billingNumberFull', header: 'Billing No.', render: (r) => r.billingNumberFull },
-    { key: 'issuedAt', header: 'Issued', render: (r) => new Date(r.issuedAt).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) },
-    { key: 'totalAmountDue', header: 'Total Amount Due', render: (r) => formatPeso(r.totalAmountDue) },
-    { key: 'status', header: 'Status', render: (r) => r.status },
-    {
-      key: 'actions',
-      header: 'Actions',
-      render: (r) => (
-        <div className="flex gap-2">
-          {/* Spec.md §13 decision 20: GET /receipts/:id had no caller
-              either — the Past Receipts table below only ever showed
-              summary columns, with no way to see or reprint the full
-              document once issued. Reuses the exact printable view the
-              just-issued receipt already renders. */}
-          <Button variant="secondary" onClick={() => void viewReceipt(r.id)}>
-            View
-          </Button>
-          {r.status !== 'VOIDED' && (
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setVoidingReceiptId(r.id);
-                setReceiptVoidReason('');
-                setReceiptVoidError(null);
-              }}
-            >
-              Void
-            </Button>
-          )}
-        </div>
-      ),
-      hideOnMobile: true,
-    },
-  ];
-
+  // Spec.md §13 decision 25 (2026-11-14): the Status column is gone —
+  // "Balance effect" already carries the half of it that matters (did
+  // this payment move the balance), and a Delete action replaces it,
+  // gated the same way submitting one is (payment:submit).
   const paymentColumns: DataTableColumn<PaymentRow>[] = [
     { key: 'method', header: 'Method', render: (p) => PAYMENT_METHOD_LABELS[p.method] },
     { key: 'amount', header: 'Amount', render: (p) => formatPeso(p.amount) },
     { key: 'kind', header: 'Kind', render: (p) => PAYMENT_KIND_LABELS[p.kind] },
     { key: 'submittedAt', header: 'When', render: (p) => new Date(p.submittedAt).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) },
     { key: 'submittedBy', header: 'Recorded by', render: (p) => p.submittedBy.fullName },
-    { key: 'status', header: 'Status', render: (p) => PAYMENT_STATUS_LABELS[p.status] },
     {
       key: 'effect',
       header: 'Balance effect',
@@ -902,6 +833,17 @@ export function BillingPage() {
         ) : (
           <span className="text-amber-700">Awaiting verification — not yet applied</span>
         ),
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (p) =>
+        Boolean(user?.permissions['payment:submit']) && (
+          <Button variant="secondary" onClick={() => void handleDeletePayment(p.id)}>
+            Delete
+          </Button>
+        ),
+      hideOnMobile: true,
     },
   ];
 
@@ -937,6 +879,9 @@ export function BillingPage() {
   // activeUnits above rather than re-narrowing `preview` inline at each
   // JSX site.
   const previewData = preview !== 'loading' && preview !== 'error' ? preview : null;
+  // Spec.md §13 decision 25 (2026-11-14): "Current charges" — never a
+  // receipted or voided row (see folioCharges's own state comment).
+  const activeCharges = folioCharges.filter((c) => c.status !== 'VOIDED' && !c.hasBeenReceipted);
 
   return (
     <div className="flex flex-col gap-6">
@@ -996,33 +941,43 @@ export function BillingPage() {
       {preview === 'loading' && <p className="text-sm text-ink-secondary">Loading…</p>}
       {preview === 'error' && <p role="alert">Could not load this booking.</p>}
 
-      {/* Spec.md §13 decision 23 (2026-11-14): second redesign pass,
-          after the client's live test of decision 22 came back "the
-          rest is very hard to understand and see." Three causes, all
-          fixed here: (1) a single stacked column on a confirmed
-          1600px-wide desktop meant every opened panel pushed the page
-          down and the cashier lost their place — fixed with a real
-          two-column grid, not another disclosure trick. (2) the six
-          disclosure links read as plain text, not controls, and the
-          per-row "⋮" was a narrow target opening a popup that could
-          land off-screen — fixed by making every control a bordered,
-          visible button, and putting the per-row actions back in the
-          open (decision 21's shape) now that the layout has the width
-          for them. (3) the Charges list's gross total and the headline
-          Amount Due's net figure had nothing bridging them — fixed by
-          the totals bridge directly under the Charges list, computed
-          by the exact same `chargesTotal`/`paymentsTotal`/
-          `discountsTotal`/`amountDue` the hero reads, so the two
-          numbers can't drift. Left column: guest/rooms/amount due,
-          then the Charges list and its bridge, both fixed in place.
-          Right column: Take Payment always visible (the main job,
-          never behind a click), the remaining actions as proper
-          buttons below it, and whichever one is clicked replaces the
-          column's own content under those buttons — never the left
-          column's. */}
+      {/* Spec.md §13 decision 25 (2026-11-14): third redesign pass,
+          replacing decision 23's "Charges list + bridge, left; Take
+          Payment + toggles, right" split with the model the client
+          drew directly. The old split put a receipted charge in the
+          same list as an unpaid one (distinguished only by a
+          "Receipted" badge) and a toggled "Print Receipt" panel beside
+          a "Charges" list that was really a mix of settled and
+          unsettled money — two things that read as one, needing a
+          badge to tell apart. Here they're structurally separate: a
+          charge leaves "Current charges" the moment it's receipted,
+          appearing instead on its own receipt's card in the always-
+          visible stack to the right — nothing to badge, because
+          nothing is ambiguous.
+          Three regions: (1) this top row — guest/rooms/booking and
+          the whole-account Amount due (outstandingBalance, decisions
+          23/24 — kept, not retired: the client's own sample receipt
+          is issued *with* a balance outstanding, so the account-wide
+          number has to keep meaning something even after a receipt
+          exists) with its own totals bridge beneath it, beside Take
+          Payment, unconditional, never a toggle. (2) the button bar,
+          full width, holding what's left: Add charge/Add discount/
+          Manage rooms/Guest details/Payment history — Print Receipt
+          and Past Receipts aren't here, because issuing now lives
+          directly in "Current charges" below (it *is* the next
+          receipt) and past receipts are never behind a click.
+          (3) the two working columns: "Current charges" (left, wider)
+          — only charges not yet receipted, headed so that's explicit,
+          with its own total scoped to just this draft receipt and the
+          billing number it would issue as, displayed, never typed
+          (clarifying, not reversing, decision 16 — the client's own
+          words: the typed number was always required to equal
+          booking.referenceNo, so there was nothing left to transcribe)
+          — and the receipts stack (right, narrower), newest first,
+          always visible, each card self-contained. */}
       {preview !== 'loading' && preview !== 'error' && booking !== 'loading' && booking !== 'error' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
-          <div className="flex flex-col gap-6">
+        <>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
             <Card>
               <div className="flex flex-col gap-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1039,135 +994,40 @@ export function BillingPage() {
                 </div>
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-ink-secondary">Amount due</p>
-                  <p className="text-4xl font-bold text-ink">{formatPeso(preview.amountDue)}</p>
+                  <p className="text-4xl font-bold text-ink">{formatPeso(preview.outstandingBalance)}</p>
+                </div>
+                {/* Spec.md §13 decisions 23/24: the whole-account
+                    bridge — reads the exact same server-computed
+                    fields the headline above reads, so this box's own
+                    numbers can never drift from each other. This is a
+                    different, wider total than "Current charges" own
+                    totals below: this one covers every charge ever
+                    posted (receipted or not); that one covers only
+                    what the next receipt would bill. */}
+                <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                  <div className="flex justify-between">
+                    <span>Charges</span>
+                    <span>{formatPeso(preview.chargesTotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Less payments</span>
+                    <span>-{formatPeso(preview.paymentsTotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Less discounts</span>
+                    <span>-{formatPeso(preview.discountsTotal)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-gray-300 pt-1 text-base font-semibold text-ink">
+                    <span>Amount due</span>
+                    <span>{formatPeso(preview.amountDue)}</span>
+                  </div>
                 </div>
               </div>
             </Card>
 
-            {/* Re-plan, spec.md §13 decision 16: the folio itself — read
-                only. previewReceipt/issueReceipt build their lines from
-                these same posted FolioCharge rows (gathered across every
-                sibling booking), so nothing typed here could ever drift
-                from what gets billed. Renamed to "Charges" (decision 22):
-                "Folio" is a hotelier's word, "Charges" is a cashier's. */}
-            <Section title="Charges" description="Every charge posted to this booking (and any sibling room sharing its booking ID).">
-              <label className="flex items-center gap-2 text-sm text-ink-secondary">
-                <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
-                Show voided charges
-              </label>
-              <DataTable
-                columns={folioColumns}
-                rows={folioCharges.filter((l) => showVoided || l.status !== 'VOIDED')}
-                rowKey={(l) => l.id}
-                emptyMessage="No charges posted yet."
-                renderMobileActions={folioRowActions}
-              />
-              {chargeError && (
-                <p role="alert" className="text-sm font-medium text-danger-600">
-                  {chargeError}
-                </p>
-              )}
-              {/* Spec.md §13 decision 23: the totals bridge — always
-                  visible, directly under the Charges list, reading the
-                  exact same server-computed fields the hero above
-                  reads (`previewReceipt`'s own chargesTotal/
-                  paymentsTotal/discountsTotal/amountDue, built from
-                  the same computeFolioBalance call that produces
-                  outstandingBalance — never re-summed here). The
-                  Discounts row stays even at ₱0.00 — a row that
-                  disappears at zero reads as though the arithmetic
-                  skips a step. */}
-              <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
-                <div className="flex justify-between">
-                  <span>Charges</span>
-                  <span>{formatPeso(preview.chargesTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Less payments</span>
-                  <span>-{formatPeso(preview.paymentsTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Less discounts</span>
-                  <span>-{formatPeso(preview.discountsTotal)}</span>
-                </div>
-                <div className="flex justify-between border-t border-gray-300 pt-1 text-base font-semibold text-ink">
-                  <span>Amount due</span>
-                  <span>{formatPeso(preview.amountDue)}</span>
-                </div>
-              </div>
-              {/* Spec.md §13 decision 17: the confirm-dialog-with-
-                  required-reason UX for a cashier-editable amount. The
-                  audit trail (FolioChargeOverride) is what substitutes
-                  for a manager approval here, so a reason is required. */}
-              {overridingChargeId && (
-                <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
-                  <p className="text-sm font-medium text-ink">
-                    Overriding {folioCharges.find((c) => c.id === overridingChargeId)?.description}
-                  </p>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <Field label="New price">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        className={INPUT_CLASSES}
-                        value={overrideUnitPrice}
-                        onChange={(e) => setOverrideUnitPrice(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Reason" hint="Required — this is what the audit trail records.">
-                      <input className={INPUT_CLASSES} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
-                    </Field>
-                    <div className="flex items-end gap-2">
-                      <Button type="button" onClick={() => void handleOverride()} disabled={overriding}>
-                        {overriding ? 'Saving…' : 'Confirm override'}
-                      </Button>
-                      <Button type="button" variant="secondary" onClick={cancelOverride}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                  {overrideError && (
-                    <p role="alert" className="text-sm font-medium text-danger-600">
-                      {overrideError}
-                    </p>
-                  )}
-                </div>
-              )}
-              {/* Spec.md §13 decision 19: voiding from the Charges table —
-                  same confirm-dialog-with-required-reason shape as the
-                  override above. */}
-              {voidingChargeId && (
-                <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
-                  <p className="text-sm font-medium text-ink">Voiding {folioCharges.find((c) => c.id === voidingChargeId)?.description}</p>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <Field label="Reason" hint="Required — this is what the audit trail records.">
-                      <input className={INPUT_CLASSES} value={voidReason} onChange={(e) => setVoidReason(e.target.value)} />
-                    </Field>
-                    <div className="flex items-end gap-2">
-                      <Button type="button" onClick={() => void handleVoidCharge()} disabled={voiding || !voidReason.trim()}>
-                        {voiding ? 'Voiding…' : 'Confirm void'}
-                      </Button>
-                      <Button type="button" variant="secondary" onClick={cancelVoidCharge}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                  {voidError && (
-                    <p role="alert" className="text-sm font-medium text-danger-600">
-                      {voidError}
-                    </p>
-                  )}
-                </div>
-              )}
-            </Section>
-          </div>
-
-          <div className="flex flex-col gap-4">
-            {/* Spec.md §13 decision 23: Take Payment is no longer a
-                toggle — it's the main job, so it renders unconditionally
-                at the top of the right column, always next to the
-                left column's own Amount Due. */}
+            {/* Spec.md §13 decision 23: Take Payment is not a toggle —
+                it's the main job, always beside the amount it's read
+                against. */}
             <Section title="Take Payment">
               {paymentError && (
                 <p role="alert" className="text-sm font-medium text-danger-600">
@@ -1229,124 +1089,46 @@ export function BillingPage() {
                 </Button>
               </form>
             </Section>
+          </div>
 
-            {/* Spec.md §13 decision 23: the remaining actions, as
-                proper bordered buttons rather than underlined text —
-                the client's second finding was that the prior links
-                "read as controls until hovered" and not before.
-                Clicking one replaces whatever's below this grid rather
-                than pushing the left column down. */}
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'printReceipt' ? null : 'printReceipt'))}
-              >
-                Print Receipt
-              </Button>
-              <Button type="button" variant="secondary" onClick={() => setRightPanel((v) => (v === 'addCharge' ? null : 'addCharge'))}>
-                Add charge
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'addDiscount' ? null : 'addDiscount'))}
-              >
-                Add discount
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'manageRooms' ? null : 'manageRooms'))}
-              >
-                Manage rooms
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'guestDetails' ? null : 'guestDetails'))}
-              >
-                Guest details
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'paymentHistory' ? null : 'paymentHistory'))}
-              >
-                Payment history
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRightPanel((v) => (v === 'pastReceipts' ? null : 'pastReceipts'))}
-              >
-                Past receipts
-              </Button>
-            </div>
-
-            {/* Spec.md §13 decision 22: Print Receipt panel — the
-                breakdown a cashier would want to confirm before printing,
-                plus the issue form itself. Never gated on a zero balance
-                (the Issue receipt button's own disabled condition below
-                only ever checked for at least one charge, never a zero
-                balance). */}
-            {rightPanel === 'printReceipt' && (
-              <Section title="Print Receipt">
-                {issueError && (
-                  <p role="alert" className="text-sm font-medium text-danger-600">
-                    {issueError}
-                  </p>
-                )}
-                <div className="flex flex-col gap-1 text-sm">
-                  <div className="flex justify-between">
-                    <span>Grand Total</span>
-                    <span>{formatPeso(preview.grandTotal)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Deductions</span>
-                    <span>-{formatPeso(preview.totalDeductions)}</span>
-                  </div>
-                  <div className="flex justify-between text-base font-semibold text-ink">
-                    <span>Total Amount Due</span>
-                    <span>{formatPeso(preview.totalAmountDue)}</span>
-                  </div>
-                  {/* Spec.md §13 decision 18: the whole-account running
-                      balance — a layout addition the client's own sample
-                      receipt doesn't have. */}
-                  <div className="flex justify-between text-ink-secondary">
-                    <span>Running Balance</span>
-                    <span>{formatPeso(preview.outstandingBalance)}</span>
-                  </div>
-                </div>
-                <Button type="button" variant="secondary" onClick={() => void runPreview()} disabled={previewing}>
-                  {previewing ? 'Updating…' : 'Update preview'}
-                </Button>
-                <form
-                  className="flex flex-col gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void handleIssue(false);
-                  }}
-                >
-                  <Field label="Billing No." hint="Typed from the pre-printed receipt booklet.">
-                    <input
-                      className={INPUT_CLASSES}
-                      value={billingNumberTyped}
-                      onChange={(e) => setBillingNumberTyped(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Prepared by">
-                    <input className={INPUT_CLASSES} value={preparedByName} onChange={(e) => setPreparedByName(e.target.value)} />
-                  </Field>
-                  <Button
-                    type="submit"
-                    disabled={issuing || !billingNumberTyped.trim() || !preparedByName.trim() || preview.lines.length === 0}
-                  >
-                    {issuing ? 'Issuing…' : 'Issue receipt'}
-                  </Button>
-                </form>
-              </Section>
-            )}
+          {/* Spec.md §13 decision 25: the button bar — full width,
+              separating the header from the working area below. Print
+              Receipt and Past Receipts aren't buttons anymore (see the
+              region comment above); Take Payment isn't either, since
+              it already has its own permanent box up top. */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <Button type="button" variant="secondary" onClick={() => setRightPanel((v) => (v === 'addCharge' ? null : 'addCharge'))}>
+              Add charge
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRightPanel((v) => (v === 'addDiscount' ? null : 'addDiscount'))}
+            >
+              Add discount
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRightPanel((v) => (v === 'manageRooms' ? null : 'manageRooms'))}
+            >
+              Manage rooms
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRightPanel((v) => (v === 'guestDetails' ? null : 'guestDetails'))}
+            >
+              Guest details
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRightPanel((v) => (v === 'paymentHistory' ? null : 'paymentHistory'))}
+            >
+              Payment history
+            </Button>
+          </div>
 
             {/* Spec.md §13 decision 22: the charge-posting form and the
                 F&B pull-in — occasional actions, not steps in the main
@@ -1760,37 +1542,225 @@ export function BillingPage() {
               </Section>
             )}
 
-            {/* Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void
-                existed with no caller anywhere in the frontend — a receipt
-                issued in error was permanent. Matters more now that
-                receipts are incremental (decision 18): voiding is what
-                releases a receipt's charges back to be re-billed, so a
-                mistaken receipt doesn't strand them. */}
-            {rightPanel === 'pastReceipts' && (
-              <Section title="Past receipts">
-                <DataTable columns={receiptColumns} rows={receipts} rowKey={(r) => r.id} emptyMessage="No receipts issued yet." />
-                {receiptVoidError && (
-                  <p role="alert" className="text-sm font-medium text-danger-600">
-                    {receiptVoidError}
+          {/* Spec.md §13 decision 25: region 3 — the working area.
+              Left (wider): "Current charges", scoped explicitly to what
+              the next receipt would bill — a charge leaves this list
+              the instant some receipt covers it, not when a badge says
+              so. Right (narrower): every issued receipt, newest first,
+              always on screen — never a "Past receipts" button. */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
+            <Section
+              title="Current charges"
+              description="Charges not yet on an issued receipt — this is exactly what the next receipt would cover."
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-ink-secondary">
+                  {activeCharges.length === 0 ? 'Nothing to bill yet.' : `${activeCharges.length} charge(s) ready to receipt.`}
+                </p>
+                {/* Spec.md §13 decision 25: display-only — computed
+                    server-side from booking.referenceNo, never typed.
+                    A peek, not a reservation: the real number is
+                    allocated atomically at issuance, inside
+                    issueReceipt's own transaction. */}
+                <span className="shrink-0 rounded bg-brand-50 px-3 py-1 text-sm font-semibold text-brand-700">
+                  Billing No. {preview.billingNumberPreview}
+                </span>
+              </div>
+              <DataTable
+                columns={folioColumns}
+                rows={activeCharges}
+                rowKey={(l) => l.id}
+                emptyMessage="No charges posted yet."
+                renderMobileActions={folioRowActions}
+              />
+              {chargeError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {chargeError}
+                </p>
+              )}
+              {/* Spec.md §13 decision 17: the confirm-dialog-with-
+                  required-reason UX for a cashier-editable amount. The
+                  audit trail (FolioChargeOverride) is what substitutes
+                  for a manager approval here, so a reason is required. */}
+              {overridingChargeId && (
+                <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                  <p className="text-sm font-medium text-ink">
+                    Overriding {folioCharges.find((c) => c.id === overridingChargeId)?.description}
                   </p>
-                )}
-                {voidingReceiptId && (
-                  <div className="flex flex-wrap items-end gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
-                    <Field label="Reason" hint="Required — this is what the audit trail records.">
-                      <input className={INPUT_CLASSES} value={receiptVoidReason} onChange={(e) => setReceiptVoidReason(e.target.value)} />
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <Field label="New price">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className={INPUT_CLASSES}
+                        value={overrideUnitPrice}
+                        onChange={(e) => setOverrideUnitPrice(e.target.value)}
+                      />
                     </Field>
-                    <Button type="button" onClick={() => void handleVoidReceipt()} disabled={voidingReceipt || !receiptVoidReason.trim()}>
-                      {voidingReceipt ? 'Voiding…' : 'Confirm void'}
-                    </Button>
-                    <Button type="button" variant="secondary" onClick={() => setVoidingReceiptId(null)}>
-                      Cancel
-                    </Button>
+                    <Field label="Reason" hint="Required — this is what the audit trail records.">
+                      <input className={INPUT_CLASSES} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
+                    </Field>
+                    <div className="flex items-end gap-2">
+                      <Button type="button" onClick={() => void handleOverride()} disabled={overriding}>
+                        {overriding ? 'Saving…' : 'Confirm override'}
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={cancelOverride}>
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
-                )}
-              </Section>
-            )}
+                  {overrideError && (
+                    <p role="alert" className="text-sm font-medium text-danger-600">
+                      {overrideError}
+                    </p>
+                  )}
+                </div>
+              )}
+              {/* Spec.md §13 decision 25: this panel's own total,
+                  scoped to only these unreceipted lines — a different,
+                  narrower number than the header box's whole-account
+                  bridge above, clearly headed so the two are never
+                  mistaken for each other. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                <p className="text-xs font-medium uppercase tracking-wide text-ink-secondary">Totals for this receipt</p>
+                <div className="flex justify-between">
+                  <span>Grand Total</span>
+                  <span>{formatPeso(preview.grandTotal)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Deductions</span>
+                  <span>-{formatPeso(preview.totalDeductions)}</span>
+                </div>
+                <div className="flex justify-between text-base font-semibold text-ink">
+                  <span>Total Amount Due</span>
+                  <span>{formatPeso(preview.totalAmountDue)}</span>
+                </div>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => void runPreview()} disabled={previewing}>
+                {previewing ? 'Updating…' : 'Update preview'}
+              </Button>
+              {issueError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {issueError}
+                </p>
+              )}
+              <form
+                className="flex flex-col gap-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleIssue(false);
+                }}
+              >
+                {/* Spec.md §13 decision 25: pre-filled from the signed-
+                    in user rather than blank — still editable for the
+                    rare case someone else actually prepared it. */}
+                <Field label="Prepared by">
+                  <input className={INPUT_CLASSES} value={preparedByName} onChange={(e) => setPreparedByName(e.target.value)} />
+                </Field>
+                <Button type="submit" disabled={issuing || !preparedByName.trim() || preview.lines.length === 0}>
+                  {issuing ? 'Issuing…' : 'Issue receipt'}
+                </Button>
+              </form>
+            </Section>
+
+            {/* Spec.md §13 decision 25: the receipts stack — every
+                issued receipt for this booking, newest first
+                (listReceiptsForBooking's own issuedAt: 'desc' order),
+                each card self-contained: its own lines, its own
+                totals, its own View/Void. Nothing here is behind a
+                click. */}
+            <div className="flex flex-col gap-4">
+              <h2 className="text-base font-semibold text-ink">Receipts</h2>
+              {receiptVoidError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {receiptVoidError}
+                </p>
+              )}
+              {receipts.length === 0 && <EmptyState message="No receipts issued yet." />}
+              {receipts.map((r) => (
+                <Card key={r.id}>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-ink">{r.billingNumberFull}</h3>
+                      {r.status === 'VOIDED' && (
+                        <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">Voided</span>
+                      )}
+                    </div>
+                    <ul className="flex flex-col gap-1 text-sm">
+                      {r.lines.map((line, i) => {
+                        // Spec.md §13 decision 25: cross-references
+                        // folioCharges (already loaded for the whole
+                        // booking) rather than trusting anything on the
+                        // immutable line snapshot itself — a line never
+                        // carries its own voided state, only the charge
+                        // behind it can be voided, after the fact.
+                        const sourceVoided =
+                          line.sourceChargeId != null &&
+                          folioCharges.find((c) => c.id === line.sourceChargeId)?.status === 'VOIDED';
+                        return (
+                          <li key={i} className={`flex justify-between gap-2 ${sourceVoided ? 'text-ink-secondary line-through' : ''}`}>
+                            <span>
+                              {line.description}
+                              {sourceVoided && (
+                                <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary no-underline">
+                                  Voided
+                                </span>
+                              )}
+                            </span>
+                            <span>{formatPeso(line.amount)}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <div className="flex justify-between border-t border-gray-200 pt-1 text-sm font-semibold text-ink">
+                      <span>Total Amount Due</span>
+                      <span>{formatPeso(r.totalAmountDue)}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="secondary" onClick={() => void viewReceipt(r.id)}>
+                        View
+                      </Button>
+                      {r.status !== 'VOIDED' && (
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setVoidingReceiptId(r.id);
+                            setReceiptVoidReason('');
+                            setReceiptVoidError(null);
+                          }}
+                        >
+                          Void
+                        </Button>
+                      )}
+                    </div>
+                    {/* Spec.md §13 decision 20: voiding releases this
+                        receipt's charges back to "Current charges" for
+                        re-billing (decision 18's incremental exclusion
+                        — no special-case code needed for that). */}
+                    {voidingReceiptId === r.id && (
+                      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                        <Field label="Reason" hint="Required — this is what the audit trail records.">
+                          <input
+                            className={INPUT_CLASSES}
+                            value={receiptVoidReason}
+                            onChange={(e) => setReceiptVoidReason(e.target.value)}
+                          />
+                        </Field>
+                        <Button type="button" onClick={() => void handleVoidReceipt()} disabled={voidingReceipt || !receiptVoidReason.trim()}>
+                          {voidingReceipt ? 'Voiding…' : 'Confirm void'}
+                        </Button>
+                        <Button type="button" variant="secondary" onClick={() => setVoidingReceiptId(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              ))}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

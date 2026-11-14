@@ -15,6 +15,7 @@ import {
 import {
   changePaymentStatus,
   deleteFolioCharge,
+  deletePayment,
   getReceipt,
   issueReceipt,
   listAllPayments,
@@ -108,6 +109,20 @@ billingRouter.post(
     const body = submitPaymentSchema.parse(req.body);
     const payment = await submitPayment(req.params.bookingId as string, body, { id: req.authUser!.id });
     res.status(201).json({ payment });
+  }),
+);
+
+// Spec.md §13 decision 25 (2026-11-14): same permission as submitting
+// one — payment:submit already covers "a cashier records this
+// unilaterally," and delete is the lower-friction undo for a slip made
+// seconds earlier, same trade-off decision 21 made for folio:void vs.
+// folio:charge. No request body: no reason required.
+billingRouter.delete(
+  '/payments/:id',
+  requirePermission('payment:submit'),
+  asyncHandler(async (req, res) => {
+    await deletePayment(req.params.id as string, { id: req.authUser!.id });
+    res.status(204).end();
   }),
 );
 

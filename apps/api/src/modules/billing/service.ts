@@ -452,6 +452,35 @@ export async function changePaymentStatus(id: string, input: ChangePaymentStatus
   return paymentToJson(payment);
 }
 
+// Spec.md §13 decision 25 (2026-11-14): cashier-level payment deletion
+// — the same "delete is for errors, don't make it hard to delete
+// errors" trade-off decision 21 made for a folio charge, applied to
+// its own sibling mistake (a misrecorded payment). The line is drawn
+// by the equivalent fact: whether any FolioSettlement has already
+// drawn against this payment, i.e. whether some issued receipt's own
+// totals already depend on it. Never referenced yet: delete outright,
+// no reason required — a slip corrected seconds later shouldn't need
+// one. Already drawn on: 409, pointing at the real fix (void the
+// receipt that drew on it, which — decision 18's incremental model —
+// releases the draw automatically) rather than silently invalidating
+// an already-issued document's own persisted totals.
+export async function deletePayment(id: string, _actor: BillingActor) {
+  const existing = await prisma.payment.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Payment not found');
+  }
+  const settlement = await prisma.folioSettlement.findFirst({ where: { paymentId: id, deletedAt: null } });
+  if (settlement) {
+    throw new ApiError(
+      409,
+      'ALREADY_SETTLED',
+      'This payment has already been drawn into an issued receipt — void that receipt instead of deleting the payment.',
+    );
+  }
+  await prisma.payment.update({ where: { id }, data: { deletedAt: new Date() } });
+  return { id };
+}
+
 // ————————————————————————————————————————————————————————————
 // Receipts
 // ————————————————————————————————————————————————————————————
@@ -715,6 +744,20 @@ async function logoSnapshotToJson(logoFileId: string | null) {
   };
 }
 
+// Spec.md §13 decision 25 (2026-11-14): display-only — the cashier
+// screen shows what a receipt would be numbered without a cashier ever
+// typing or confirming it. A peek, not a reservation: it reads the
+// current ReferenceSequence row without incrementing it, so the real
+// number (allocated atomically inside issueReceipt's own transaction)
+// can differ if another receipt for a different booking under the
+// same scope is issued in between — acceptable, since nothing downstream
+// trusts this value for anything but display.
+async function peekNextBillingNumber(referenceNo: string): Promise<string> {
+  const scope = billingNumberScope(referenceNo);
+  const existing = await prisma.referenceSequence.findUnique({ where: { scope } });
+  return formatBillingNumber(scope, (existing?.seq ?? 0) + 1);
+}
+
 export async function previewReceipt(bookingId: string, input: ReceiptDraftInput) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();
@@ -737,6 +780,7 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
   // toward.
   const discountsTotal = sumMoney(totals.deductions.filter((d) => d.type !== 'DOWNPAYMENT').map((d) => d.amount));
   const amountDue = roundMoney(outstandingBalance - discountsTotal);
+  const billingNumberPreview = await peekNextBillingNumber(booking.referenceNo);
 
   return {
     resort: {
@@ -764,6 +808,7 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
     paymentsTotal,
     discountsTotal,
     amountDue,
+    billingNumberPreview,
   };
 }
 
@@ -947,21 +992,17 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
   const { deductions, draws } = await deriveReceiptDeductions(bookingIds, lines, input);
   const totals = computeReceiptTotals(lines, deductions);
   const { outstandingBalance } = await computeFolioBalance(bookingIds);
-  const scope = billingNumberScope(input.billingNumberTyped);
-
-  // Prefer validation over warning (spec.md §13.4, client decision,
-  // 2026-11-05): the billing number's typed base is the external
-  // booking ID, and checkInBookingSchema guarantees booking.referenceNo
-  // is never blank — a mismatch here is always a cashier mistype, not a
-  // legitimate case, so it's rejected outright rather than folded into
-  // the soft duplicate-warn below.
-  if (input.billingNumberTyped !== booking.referenceNo) {
-    throw new ApiError(
-      422,
-      'BILLING_NUMBER_MISMATCH',
-      `The billing number "${input.billingNumberTyped}" does not match this booking's own external ID ("${booking.referenceNo}").`,
-    );
-  }
+  // Spec.md §13 decision 25 (2026-11-14): clarifies, rather than
+  // reverses, decision 16's "typed from the pre-printed receipt
+  // booklet" framing — the client's own words: "80512 is the booking
+  // ID that the cashier enters from our external booking app and the
+  // same number we use for billing." The typed base was never a
+  // second, independent value to transcribe; it was always required to
+  // equal booking.referenceNo (the BILLING_NUMBER_MISMATCH check this
+  // replaces), so there was nothing for a cashier to meaningfully type
+  // here that the system didn't already hold. Computed straight from
+  // the booking itself now — no input, no mismatch to guard against.
+  const scope = billingNumberScope(booking.referenceNo);
 
   if (!input.confirmDuplicateBillingNumber) {
     if (await isDuplicateBillingNumber(scope, booking.referenceNo)) {
