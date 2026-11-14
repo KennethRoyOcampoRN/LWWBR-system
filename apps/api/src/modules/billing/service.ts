@@ -661,6 +661,22 @@ async function deriveReceiptDeductions(
   return { deductions: [...clientDeductions, ...downpaymentDeductions], draws };
 }
 
+// Spec.md §13 decision 23 (2026-11-14): the breakdown behind the
+// balance, not just the final number — the client's own finding was
+// that a client-side re-derivation of this same arithmetic (summing
+// folioCharges/payments/deductions in BillingPage.tsx) could silently
+// drift from what this function actually computes, since it gathers
+// sibling bookings, applies the CASH-vs-VERIFIED split, and (via
+// chargesTotal/paymentsTotal here) is the one true source for both
+// figures. There must be exactly one implementation of this rule;
+// everything else — the cashier screen's hero number, its totals
+// bridge, the printed receipt — reads from here, never re-sums.
+interface FolioBalanceBreakdown {
+  chargesTotal: number;
+  paymentsTotal: number;
+  outstandingBalance: number;
+}
+
 // Spec.md §13 decision 18: the whole-account truth, independent of how
 // FolioSettlement has attributed any payment to any particular receipt
 // — every POSTED FolioCharge across the whole referenceNo group, minus
@@ -668,14 +684,14 @@ async function deriveReceiptDeductions(
 // VERIFIED split. Used both for the printed receipt's own
 // outstandingBalance snapshot and for checkOutUnits's pre-mutation
 // balance warning (bookings/service.ts).
-async function computeFolioBalance(bookingIds: string[]): Promise<number> {
+async function computeFolioBalance(bookingIds: string[]): Promise<FolioBalanceBreakdown> {
   const [charges, payments] = await Promise.all([
     prisma.folioCharge.findMany({ where: { bookingId: { in: bookingIds }, status: 'POSTED', deletedAt: null } }),
     prisma.payment.findMany({ where: { bookingId: { in: bookingIds }, deletedAt: null, status: { not: 'REJECTED' } } }),
   ]);
-  const totalCharges = sumMoney(charges.map((c) => roundMoney(c.qty * Number(c.unitPrice))));
-  const totalEffectivePayments = sumMoney(payments.filter((p) => isPaymentEffective(p)).map((p) => Number(p.amount)));
-  return roundMoney(totalCharges - totalEffectivePayments);
+  const chargesTotal = sumMoney(charges.map((c) => roundMoney(c.qty * Number(c.unitPrice))));
+  const paymentsTotal = sumMoney(payments.filter((p) => isPaymentEffective(p)).map((p) => Number(p.amount)));
+  return { chargesTotal, paymentsTotal, outstandingBalance: roundMoney(chargesTotal - paymentsTotal) };
 }
 
 // Takes the Booking row itself, not just its id — every caller
@@ -684,7 +700,7 @@ async function computeFolioBalance(bookingIds: string[]): Promise<number> {
 // function has no reason to make.
 export async function getFolioOutstandingBalance(entryBooking: { id: string; referenceNo: string }): Promise<number> {
   const bookingIds = await gatherBookingIdsForBilling(entryBooking);
-  return computeFolioBalance(bookingIds);
+  return (await computeFolioBalance(bookingIds)).outstandingBalance;
 }
 
 async function logoSnapshotToJson(logoFileId: string | null) {
@@ -706,7 +722,21 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
   const lines = await gatherReceiptLines(bookingIds);
   const { deductions } = await deriveReceiptDeductions(bookingIds, lines, input);
   const totals = computeReceiptTotals(lines, deductions);
-  const outstandingBalance = await computeFolioBalance(bookingIds);
+  const { chargesTotal, paymentsTotal, outstandingBalance } = await computeFolioBalance(bookingIds);
+
+  // Spec.md §13 decision 23 (2026-11-14): the cashier screen's totals
+  // bridge (Charges, less payments, less discounts, equals Amount due)
+  // reads these four fields rather than re-deriving them client-side —
+  // a second implementation of this arithmetic in the browser is what
+  // let the bridge and the printed receipt disagree in the first place.
+  // discountsTotal is the cashier-typed deductions only (never the
+  // derived DOWNPAYMENT ones, which are already netted out of
+  // paymentsTotal above — counting both would double-subtract the same
+  // money), and amountDue is outstandingBalance net of those discounts,
+  // exactly the number a cashier building this receipt is working
+  // toward.
+  const discountsTotal = sumMoney(totals.deductions.filter((d) => d.type !== 'DOWNPAYMENT').map((d) => d.amount));
+  const amountDue = roundMoney(outstandingBalance - discountsTotal);
 
   return {
     resort: {
@@ -730,6 +760,10 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
     totalDeductions: totals.totalDeductions,
     totalAmountDue: totals.totalAmountDue,
     outstandingBalance,
+    chargesTotal,
+    paymentsTotal,
+    discountsTotal,
+    amountDue,
   };
 }
 
@@ -912,7 +946,7 @@ export async function issueReceipt(bookingId: string, input: IssueReceiptInput, 
   }
   const { deductions, draws } = await deriveReceiptDeductions(bookingIds, lines, input);
   const totals = computeReceiptTotals(lines, deductions);
-  const outstandingBalance = await computeFolioBalance(bookingIds);
+  const { outstandingBalance } = await computeFolioBalance(bookingIds);
   const scope = billingNumberScope(input.billingNumberTyped);
 
   // Prefer validation over warning (spec.md §13.4, client decision,

@@ -74,6 +74,19 @@ interface PreviewResponse {
   // balance — a layout addition the client's own sample receipt
   // doesn't have.
   outstandingBalance: number;
+  // Spec.md §13 decision 23 (2026-11-14): the cashier screen's totals
+  // bridge (Charges, less payments, less discounts, equals Amount
+  // due) — all four computed server-side, in `previewReceipt`, from
+  // the exact same `computeFolioBalance` call that produces
+  // `outstandingBalance`. The frontend used to re-derive these by
+  // summing `folioCharges`/`payments`/`deductions` itself, which let
+  // the bridge agree with the hero while both silently disagreed with
+  // the server — the one figure that actually prints and persists.
+  // There is now exactly one implementation of this arithmetic.
+  chargesTotal: number;
+  paymentsTotal: number;
+  discountsTotal: number;
+  amountDue: number;
 }
 
 interface IssuedReceipt extends PreviewResponse {
@@ -198,19 +211,6 @@ const EMPTY_PAYMENT_FORM = { amount: '', method: 'CASH' as PaymentMethodKey, kin
 
 function formatPeso(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-// Spec.md §13 decision 23: the same CASH-is-immediate/others-need-
-// VERIFIED split `isPaymentEffective` already enforces server-side
-// (billing/service.ts) — mirrored here only to build the client-side
-// totals bridge, never to decide what the server actually applies.
-function isPaymentEffective(payment: PaymentRow): boolean {
-  if (payment.status === 'REJECTED') return false;
-  return payment.method === 'CASH' || payment.status === 'VERIFIED';
 }
 
 // Re-plan, spec.md §13 decision 16, Stage C (2026-11-05): rebuilt around
@@ -938,20 +938,6 @@ export function BillingPage() {
   // JSX site.
   const previewData = preview !== 'loading' && preview !== 'error' ? preview : null;
 
-  // Spec.md §13 decision 23 (2026-11-14): the totals bridge the
-  // client's first finding asked for — the Charges list is gross
-  // (every non-voided charge ever posted, receipted or not), while
-  // the headline "Amount due" is net of payments and drafted
-  // discounts. Computed once, read by both the left column's headline
-  // and the bridge directly under the Charges list, so they can't
-  // drift apart the way "Amount Due" and "Outstanding balance" did
-  // before (both read the same number, with nothing on screen
-  // explaining why it differed from the charges list's own total).
-  const chargesTotal = round2(folioCharges.filter((c) => c.status !== 'VOIDED').reduce((sum, c) => sum + c.amount, 0));
-  const paymentsTotal = round2(payments.filter(isPaymentEffective).reduce((sum, p) => sum + p.amount, 0));
-  const discountsTotal = round2(deductions.reduce((sum, d) => sum + d.amount, 0));
-  const amountDue = round2(chargesTotal - paymentsTotal - discountsTotal);
-
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -1053,7 +1039,7 @@ export function BillingPage() {
                 </div>
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-ink-secondary">Amount due</p>
-                  <p className="text-4xl font-bold text-ink">{formatPeso(amountDue)}</p>
+                  <p className="text-4xl font-bold text-ink">{formatPeso(preview.amountDue)}</p>
                 </div>
               </div>
             </Card>
@@ -1082,26 +1068,31 @@ export function BillingPage() {
                 </p>
               )}
               {/* Spec.md §13 decision 23: the totals bridge — always
-                  visible, directly under the Charges list, same numbers
-                  the hero above reads. The Discounts row stays even at
-                  ₱0.00 — a row that disappears at zero reads as though
-                  the arithmetic skips a step. */}
+                  visible, directly under the Charges list, reading the
+                  exact same server-computed fields the hero above
+                  reads (`previewReceipt`'s own chargesTotal/
+                  paymentsTotal/discountsTotal/amountDue, built from
+                  the same computeFolioBalance call that produces
+                  outstandingBalance — never re-summed here). The
+                  Discounts row stays even at ₱0.00 — a row that
+                  disappears at zero reads as though the arithmetic
+                  skips a step. */}
               <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
                 <div className="flex justify-between">
                   <span>Charges</span>
-                  <span>{formatPeso(chargesTotal)}</span>
+                  <span>{formatPeso(preview.chargesTotal)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Less payments</span>
-                  <span>-{formatPeso(paymentsTotal)}</span>
+                  <span>-{formatPeso(preview.paymentsTotal)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Less discounts</span>
-                  <span>-{formatPeso(discountsTotal)}</span>
+                  <span>-{formatPeso(preview.discountsTotal)}</span>
                 </div>
                 <div className="flex justify-between border-t border-gray-300 pt-1 text-base font-semibold text-ink">
                   <span>Amount due</span>
-                  <span>{formatPeso(amountDue)}</span>
+                  <span>{formatPeso(preview.amountDue)}</span>
                 </div>
               </div>
               {/* Spec.md §13 decision 17: the confirm-dialog-with-

@@ -1306,6 +1306,76 @@ describe('Spec.md §13 decision 18: incremental receipts, payment settlement, ru
       expect.objectContaining({ data: expect.objectContaining({ outstandingBalance: 1500 }) }),
     );
   });
+
+  // Spec.md §13 decision 23 (2026-11-14): the cashier screen's totals
+  // bridge used to re-derive chargesTotal/paymentsTotal/discountsTotal/
+  // amountDue client-side from folioCharges/payments/deductions — a
+  // second implementation of the same arithmetic computeFolioBalance
+  // already does, free to drift from it (different sibling-booking
+  // gathering, a different effective-payment rule, etc.). previewReceipt
+  // now returns those four fields itself, computed from the exact same
+  // computeFolioBalance call that produces outstandingBalance — this
+  // pins that they reconcile, and that the issued receipt's own
+  // persisted outstandingBalance matches, for the case most likely to
+  // expose a drift: a sibling booking, a charge already on an issued
+  // receipt (so excluded from this receipt's own lines, but still
+  // counted in chargesTotal), a verified non-cash payment, and an
+  // unverified one.
+  it('previewReceipt returns chargesTotal/paymentsTotal/discountsTotal/amountDue reconciling to outstandingBalance, matching the issued receipt', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    // A sibling booking (booking_2) sharing referenceNo '83887'.
+    mockPrisma.booking.findMany.mockResolvedValue([{ id: 'booking_2' }]);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', bookingId: 'booking_1', description: 'Family Room (R12)', qty: 2, unitPrice: 1100, status: 'POSTED' },
+      { id: 'charge_2', bookingId: 'booking_2', description: 'Day Tour Cottage (C03)', qty: 1, unitPrice: 4000, status: 'POSTED' },
+    ]);
+    // charge_1 is already on a non-voided receipt — excluded from this
+    // preview's own `lines`, but still a POSTED charge chargesTotal
+    // must count.
+    mockPrisma.receiptLine.findMany.mockResolvedValue([{ sourceChargeId: 'charge_1' }]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_verified', amount: '3000.00', method: 'GCASH', status: 'VERIFIED', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+      { id: 'payment_unverified', amount: '1000.00', method: 'GCASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const previewRes = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(previewRes.status).toBe(200);
+    // chargesTotal: both charges, across both sibling bookings, 2200 +
+    // 4000 — gross, regardless of charge_1 already being receipted.
+    expect(previewRes.body.chargesTotal).toBe(6200);
+    // paymentsTotal: only the VERIFIED GCash payment — the unverified
+    // one contributes nothing.
+    expect(previewRes.body.paymentsTotal).toBe(3000);
+    expect(previewRes.body.discountsTotal).toBe(0);
+    expect(previewRes.body.outstandingBalance).toBe(3200);
+    expect(previewRes.body.amountDue).toBe(3200);
+
+    // Issue a receipt for the still-unreceipted charge_2 and confirm
+    // its own persisted outstandingBalance is the same 3200 — the
+    // figure a cashier would have read off the hero/bridge before
+    // printing must be the one that actually prints and persists.
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.referenceSequence.upsert.mockResolvedValue({ scope: '83887-11042026', seq: 1 });
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.receipt.create = vi.fn(
+      ({ data }: { data: Record<string, unknown> & { lines: { create: unknown[] }; deductions: { create: unknown[] } } }) =>
+        Promise.resolve({ id: 'receipt_1', status: 'ISSUED', ...data, lines: data.lines.create, deductions: data.deductions.create }),
+    );
+
+    const issueRes = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ billingNumberTyped: '83887', preparedByName: 'yssa' });
+
+    expect(issueRes.status).toBe(201);
+    expect(issueRes.body.receipt.outstandingBalance).toBe(previewRes.body.amountDue);
+  });
 });
 
 describe('Receipt read/void', () => {

@@ -60,6 +60,14 @@ const emptyPreview = {
   totalDeductions: 0,
   totalAmountDue: 0,
   outstandingBalance: 0,
+  // Spec.md §13 decision 23 (2026-11-14): the cashier screen's hero
+  // and totals bridge now read these straight from the server
+  // (previewReceipt) rather than re-deriving them client-side —
+  // every fixture below needs them, not just outstandingBalance.
+  chargesTotal: 0,
+  paymentsTotal: 0,
+  discountsTotal: 0,
+  amountDue: 0,
 };
 
 const previewWithRoomCharge = {
@@ -68,6 +76,8 @@ const previewWithRoomCharge = {
   grandTotal: 2200,
   totalAmountDue: 2200,
   outstandingBalance: 2200,
+  chargesTotal: 2200,
+  amountDue: 2200,
 };
 
 const issuedReceipt = {
@@ -520,6 +530,8 @@ describe('BillingPage', () => {
             totalDeductions: 500,
             totalAmountDue: 1700,
             outstandingBalance: 1700,
+            paymentsTotal: 500,
+            amountDue: 1700,
           };
         }
         return jsonResponse(201, { payment: payments[payments.length - 1] });
@@ -772,6 +784,15 @@ describe('BillingPage', () => {
   // finding — a ₱12,000 Charges list sitting next to a ₱2,000 Amount
   // Due with nothing on screen bridging them, and a receipted charge
   // (Family Room) looking identical to an unpaid one (Day Tour Cottage).
+  // This is a rendering test only: chargesTotal/paymentsTotal/
+  // discountsTotal/amountDue are supplied by the mocked
+  // /receipts/preview response below exactly as `previewReceipt`
+  // would compute them — BillingPage.tsx reads them straight off
+  // `preview`, it no longer re-derives them from folioCharges/
+  // payments/deductions itself. The server-side reconciliation of
+  // those four fields against `outstandingBalance` (and against what
+  // actually gets persisted on an issued receipt) is covered by
+  // apps/api's own billing/router.test.ts, not here.
   it('shows the totals bridge reconciling Charges to Amount due, and marks an already-receipted charge', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -829,7 +850,14 @@ describe('BillingPage', () => {
       }
       if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
       if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
-        return jsonResponse(200, { ...emptyPreview, outstandingBalance: 2000 });
+        return jsonResponse(200, {
+          ...emptyPreview,
+          outstandingBalance: 2000,
+          chargesTotal: 12000,
+          paymentsTotal: 10000,
+          discountsTotal: 0,
+          amountDue: 2000,
+        });
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });

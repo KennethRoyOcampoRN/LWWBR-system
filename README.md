@@ -8346,3 +8346,37 @@ packages. `apps/api` 723/723 unaffected (no backend change this round).
 more opening "Take Payment" since it's unconditional now; a new test
 pins the totals bridge reconciling ₱12,000/−₱10,000/−₱0/₱2,000 and the
 "Receipted" badge on a settled charge next to an unmarked unpaid one).
+
+**Cashier tab — the totals bridge's own arithmetic moved server-side,
+caught before it shipped further (spec.md §13 decision 24), 2026-11-14.**
+Review finding on decision 23: the bridge and the hero's "Amount due"
+were both reading a figure `BillingPage.tsx` derived itself — summing
+`folioCharges`/`payments`/draft `deductions`, with its own copy of the
+CASH-vs-VERIFIED effective-payment rule. That let the two agree with
+each other while silently disagreeing with `getFolioOutstandingBalance`
+— the server's own answer, which is what actually prints and persists
+on the receipt. Two implementations of the same money rule drift
+eventually; the failure mode is a cashier reading one number, telling
+the guest, then printing another.
+
+Fixed by deleting the client-side version rather than syncing it:
+`computeFolioBalance` now returns its full breakdown (charges total,
+payments total, outstanding balance), and `previewReceipt` exposes
+`chargesTotal`/`paymentsTotal`/`discountsTotal`/`amountDue` built from
+that exact same call. `BillingPage.tsx`'s hero and bridge now render
+`preview.amountDue` and friends directly; the client-side totals
+arithmetic and its own `isPaymentEffective` are deleted outright.
+
+New backend test: a sibling booking, a charge already on an issued
+receipt (still counted in `chargesTotal`, excluded from this preview's
+own lines), a verified GCash payment, and an unverified one — the case
+most likely to expose drift — asserts the preview's four fields, then
+issues a receipt and asserts its *persisted* `outstandingBalance`
+equals the preview's own `amountDue`.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 724/724 (new: the preview/issue
+reconciliation test above). `apps/web` 215/215 (fixtures updated to
+supply the four fields the component now reads instead of deriving).
+Re-screenshotted at 1600px against the real response shape to confirm
+no visual change — this was a data-source fix, not a layout change.
