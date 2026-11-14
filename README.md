@@ -8302,3 +8302,47 @@ disclosure before interacting with what's behind it — e.g. "Manage
 rooms" before "Charge room to folio", "Take Payment" before "Record
 payment", "Print Receipt" before "Issue receipt" — with no change to
 what any test actually asserts about the underlying behavior).
+
+**Cashier tab — the decision-22 layout failed the client's live test,
+fixed by using the screen's width instead of hiding content on it
+(spec.md §13 decision 23), 2026-11-14.** Client's verdict: "the rest is
+very hard to understand and see." Three causes, each traced and fixed:
+
+1. **Single stacked column on a confirmed 1640px-wide desktop** meant
+   dead space beside the Charges table and every opened panel pushing
+   the whole page down — "using one means losing your place." Fixed
+   with a real two-column grid: left, guest/rooms/Amount Due and the
+   Charges list stay fixed in place; right, Take Payment renders
+   unconditionally at the top (no longer a toggle — "the main job"),
+   with the remaining seven actions as proper buttons below it. A
+   single `rightPanel` state (replacing decision 22's seven booleans)
+   means opening one of those seven **replaces** the right column's
+   own content rather than stacking below it — confirmed with a
+   screenshot at 1600px before this was pushed.
+2. **Controls that didn't read as controls** — six bare underlined
+   links, and a per-row "⋮" the client said was "not easy to see... I
+   need to scroll the small page to see it." Fixed by making all seven
+   right-column actions bordered buttons, and by reverting the per-row
+   charge actions to plain, always-visible "Override amount"/"Delete
+   or Void" buttons (decision 21's shape) — removed the "⋮" menu
+   outright rather than restyling it, since there's no density problem
+   left once the layout uses the available width.
+3. **No bridge between the Charges list's gross total and the
+   headline's net figure.** Client's own numbers: ₱12,000 of charges
+   next to an Amount Due reading ₱2,000, nothing explaining the gap —
+   worse because a charge already on an issued receipt (decision 18)
+   still sat in the list looking unpaid. Fixed with an always-visible
+   totals bridge under the Charges list — Charges, less payments, less
+   discounts, equals Amount due — computed once and read by both the
+   bridge and the hero, so the two numbers can't drift; the "Less
+   discounts" row stays even at ₱0.00, since a row that disappears at
+   zero reads as a skipped step. A "Receipted" badge now marks any
+   charge `hasBeenReceipted` already covers, distinguishing it from one
+   still owed in the same list.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 723/723 unaffected (no backend change this round).
+`apps/web` 215/215 (BillingPage suite updated for the new layout — no
+more opening "Take Payment" since it's unconditional now; a new test
+pins the totals bridge reconciling ₱12,000/−₱10,000/−₱0/₱2,000 and the
+"Receipted" badge on a settled charge next to an unmarked unpaid one).

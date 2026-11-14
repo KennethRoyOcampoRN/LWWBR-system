@@ -389,8 +389,11 @@ describe('BillingPage', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Override amount' })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Override amount' }));
+    // Spec.md §13 decision 23: back to plain visible buttons, so the
+    // desktop table and mobile card (DataTable renders both in jsdom)
+    // each have their own "Override amount" — pick the first.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Override amount' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Override amount' })[0]!);
 
     const reasonField = await screen.findByLabelText('Reason');
     await user.type(reasonField, 'Loyalty discount');
@@ -436,17 +439,19 @@ describe('BillingPage', () => {
     // Add a deduction through the ordinary form first — there is no
     // server-side draft-deduction entity, only this page's own local
     // state, so the edit flow under test needs a row to act on.
+    // "Amount" is ambiguous with the always-visible Take Payment panel's
+    // own field (decision 23 made it unconditional) — Take Payment
+    // renders first in DOM order, so the Add-discount form's is index 1.
     await user.type(screen.getByLabelText('Label'), 'Downpayment');
-    await user.type(screen.getByLabelText('Amount'), '500');
+    await user.type(screen.getAllByLabelText('Amount')[1]!, '500');
     await user.click(screen.getByRole('button', { name: 'Add deduction' }));
 
     await waitFor(() => expect(screen.getAllByText(/-₱500\.00/).length).toBeGreaterThan(0));
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]!);
 
-    // "Amount"/"Label" are now ambiguous with the still-visible "Add
-    // deduction" form below — in DOM order that's [edit dialog,
-    // Add-deduction form], so the edit dialog's own field is first.
-    const amountField = (await screen.findAllByLabelText('Amount'))[0]!;
+    // Now [Take Payment, edit dialog, Add-deduction form] — the edit
+    // dialog's own field is still index 1, same slot as before.
+    const amountField = (await screen.findAllByLabelText('Amount'))[1]!;
     await user.clear(amountField);
     await user.type(amountField, '600');
     // Save is a no-op without a reason — the confirm-dialog-with-
@@ -529,20 +534,23 @@ describe('BillingPage', () => {
 
     render(<App />);
 
-    // Spec.md §13 decision 22: Take Payment is now its own panel,
-    // opened from the hero's primary action.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Take Payment' })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Take Payment' }));
+    // Spec.md §13 decision 23: Take Payment is unconditional now, not a
+    // toggle — it's the main job, always at the top of the right column.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Record payment' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText('Outstanding balance: ₱2,200.00')).toBeInTheDocument());
+    // Amount due (the bridge's own computation: charges less effective
+    // payments less drafted discounts — ₱2,200 less nothing yet) shows
+    // in both the hero and the bridge under the Charges list.
+    await waitFor(() => expect(screen.getAllByText('₱2,200.00').length).toBeGreaterThan(1));
 
-    // Record cash. "Amount" is unambiguous now — the Deductions form
-    // only renders behind "Add discount", not open here.
+    // Record cash. "Amount" is unambiguous — Take Payment is the only
+    // form on screen until a right-column panel is opened.
     await user.type(screen.getByLabelText('Amount'), '500');
     await user.click(screen.getByRole('button', { name: 'Record payment' }));
 
     await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 500, method: 'CASH' }));
-    await waitFor(() => expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument());
+    // Amount due drops to ₱1,700 — a cash payment is effective
+    // immediately regardless of its own verification status.
+    await waitFor(() => expect(screen.getAllByText('₱1,700.00').length).toBeGreaterThan(1));
     // The derived deduction appears without being typed, marked
     // automatic — surfaced behind "Add discount" (spec.md §13 decision 22).
     await user.click(screen.getByRole('button', { name: 'Add discount' }));
@@ -560,8 +568,8 @@ describe('BillingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Record payment' }));
 
     await waitFor(() => expect(postedPaymentBody).toMatchObject({ amount: 1000, method: 'GCASH' }));
-    // Balance and deduction are unchanged from the cash-only state above.
-    expect(screen.getByText('Outstanding balance: ₱1,700.00')).toBeInTheDocument();
+    // Amount due is unchanged from the cash-only state above.
+    expect(screen.getAllByText('₱1,700.00').length).toBeGreaterThan(1);
 
     // Payment history (reference material, behind its own link) shows
     // both: cash effective immediately, GCash awaiting verification.
@@ -758,6 +766,92 @@ describe('BillingPage', () => {
     // unmounts, only its early-return branch changes.
     await user.click(screen.getByRole('button', { name: 'Back to billing' }));
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'View' }).length).toBeGreaterThan(0));
+  });
+
+  // Spec.md §13 decision 23 (2026-11-14): the client's first live-test
+  // finding — a ₱12,000 Charges list sitting next to a ₱2,000 Amount
+  // Due with nothing on screen bridging them, and a receipted charge
+  // (Family Room) looking identical to an unpaid one (Day Tour Cottage).
+  it('shows the totals bridge reconciling Charges to Amount due, and marks an already-receipted charge', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [
+            {
+              id: 'charge_1',
+              bookingId: 'booking_1',
+              source: 'ROOM',
+              sourceId: 'bu_1',
+              description: 'Family Room (R12)',
+              qty: 1,
+              unitPrice: 8000,
+              amount: 8000,
+              status: 'POSTED',
+              overrides: [],
+              hasBeenReceipted: true,
+            },
+            {
+              id: 'charge_2',
+              bookingId: 'booking_1',
+              source: 'OTHER',
+              sourceId: null,
+              description: 'Day Tour Cottage (C03)',
+              qty: 1,
+              unitPrice: 4000,
+              amount: 4000,
+              status: 'POSTED',
+              overrides: [],
+              hasBeenReceipted: false,
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          payments: [
+            {
+              id: 'payment_1',
+              amount: 10000,
+              method: 'CASH',
+              kind: 'DOWNPAYMENT',
+              referenceNo: null,
+              status: 'PENDING',
+              submittedAt: '2026-11-14T01:00:00.000Z',
+              submittedBy: { fullName: 'Cashier (Demo)' },
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, { ...emptyPreview, outstandingBalance: 2000 });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    // The hero's "Amount due" and the bridge's own "Amount due" row
+    // read the same figure — ₱12,000 charges, less ₱10,000 effective
+    // cash (PENDING doesn't matter — cash is effective on record), less
+    // ₱0 drafted discounts.
+    await waitFor(() => expect(screen.getAllByText('₱2,000.00').length).toBeGreaterThan(1));
+    expect(screen.getByText('₱12,000.00')).toBeInTheDocument();
+    expect(screen.getByText('-₱10,000.00')).toBeInTheDocument();
+    expect(screen.getByText('-₱0.00')).toBeInTheDocument();
+
+    // The receipted charge is marked; the unpaid one isn't.
+    const receiptedRow = screen.getAllByText('Family Room (R12)')[0]!.closest('tr') ?? screen.getAllByText('Family Room (R12)')[0]!.closest('li');
+    expect(receiptedRow?.textContent).toContain('Receipted');
+    const unpaidRow = screen.getAllByText('Day Tour Cottage (C03)')[0]!.closest('tr') ?? screen.getAllByText('Day Tour Cottage (C03)')[0]!.closest('li');
+    expect(unpaidRow?.textContent).not.toContain('Receipted');
   });
 
   it('a non-receipt:issue holder does not see the page', async () => {
