@@ -8533,3 +8533,51 @@ three packages. `apps/api` 731/731 (3 unrelated pre-existing skips;
 two assertions updated for the new unscoped `scope` value, one new
 test issuing three receipts for one booking across three different
 simulated dates and asserting `-01`/`-02`/`-03`).
+
+**Named rate plans — schema and service layer built, UI deliberately
+not (spec.md §13 decisions 29/30), 2026-11-15.** Replaces the never-
+built date-range/weekday rule engine (spec.md §13.3, now rewritten in
+full) with named plans the cashier explicitly chooses — "Weekdays,"
+"December Xmas" — rather than rules the system resolves. New
+`RatePlan`/`RatePlanRate` models (one row per plan per room type — a
+plan is a complete price list, not a single number); `FolioCharge`
+gains a `ratePlanId` (ROOM charges only, purely historical — the
+charge's own `unitPrice` is already the frozen, resolved number); new
+`rateplan:manage` permission (same roles as `unittype:manage`). New
+module `apps/api/src/modules/rateplans/` for the admin CRUD surface;
+`billing/service.ts`'s `priceRoomCharge` now resolves a cashier-chosen
+plan instead of reading `UnitType.baseRate` directly, and builds the
+charge's own description server-side ("Family Room (R12)," or "Family
+Room (R12) — December Xmas" when the plan isn't Standard) rather than
+trusting a client-typed one.
+
+Two questions settled, both server-enforced: (1) **a plan with no rate
+for a room type, or every plan deactivated, fails loudly** —
+`RATE_PLAN_INACTIVE`/`RATE_PLAN_RATE_MISSING`, 422, never a silent
+fallback to `baseRate`, not even through "Standard." (2) **plan
+selection is remembered per booking group, changeable, and a mismatch
+is flagged, not silently allowed** — the newest ROOM charge's plan
+across every sibling booking is what "remembered" means; a different
+explicit choice still goes through, but 409s `RATE_PLAN_MISMATCH`
+first, naming both plans, bypassed only by confirming the same way
+`issueReceipt`'s duplicate-billing-number warning already works. A new
+cashier-facing `GET /bookings/:bookingId/rate-plans` (`folio:charge`-
+gated) backs the eventual picker with both the active plan list and
+this suggestion. A "Standard" plan is seeded from every existing
+`UnitType.baseRate`, idempotently (`prisma/seed.ts`).
+
+**Deliberately not built:** the Setup Rates UI, `BillingPage.tsx`'s
+plan picker and its prominent display, and the Rooms-section rate-
+visibility fix — stopped here per instruction, for review before the
+UI. One deliberate consequence: until `BillingPage.tsx` sends
+`ratePlanId` and stops sending its own `description` for ROOM charges,
+posting a room charge from the current UI 422s. Expected, not a
+regression — the cost of this staging, not something to patch around.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 760/760 (3 unrelated pre-existing skips; 16
+new tests for rate plan admin CRUD, 7 new/updated ROOM-charge tests
+covering the plan-named description, both failure modes, and the
+mismatch warn-and-confirm, 6 new tests for the suggestion endpoint's
+four reasons). `apps/web`/`packages/shared` unchanged, still
+220/220 and 96/96.

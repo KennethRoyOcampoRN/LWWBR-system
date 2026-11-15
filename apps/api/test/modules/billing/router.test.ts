@@ -16,6 +16,8 @@ const mockPrisma = {
   receiptBooking: { findMany: vi.fn(), create: vi.fn() },
   fnbOrder: { findMany: vi.fn() },
   referenceSequence: { upsert: vi.fn(), findUnique: vi.fn() },
+  ratePlan: { findFirst: vi.fn(), findMany: vi.fn() },
+  ratePlanRate: { findUnique: vi.fn() },
   $transaction: vi.fn(),
 };
 
@@ -106,6 +108,12 @@ beforeEach(() => {
   // — not drawn into any receipt by default, so a test not specifically
   // exercising the 409 can delete freely.
   mockPrisma.folioSettlement.findFirst.mockResolvedValue(null);
+  // Spec.md §13 decision 29: resolveRatePlanRate's two reads — an
+  // active plan by default, with a rate for whatever unit type a test's
+  // own bookingUnit fixture uses, so a ROOM-charge test not specifically
+  // exercising the rate-plan failure modes doesn't 422 on either check.
+  mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_1', name: 'Standard', isActive: true, deletedAt: null });
+  mockPrisma.ratePlanRate.findUnique.mockResolvedValue({ rate: 1500 });
 });
 
 describe('Folio charges', () => {
@@ -206,11 +214,11 @@ describe('Folio charges', () => {
       deletedAt: null,
       occupiedFrom: new Date('2026-11-10T00:00:00.000Z'),
       occupiedTo: new Date('2026-11-12T00:00:00.000Z'),
-      unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+      unit: { id: 'unit_1', code: 'R01', unitType: { id: 'unittype_1', name: 'Family Room', baseRate: 1500 } },
       booking: { ...booking, departureDate: null },
     };
 
-    it('computes unitPrice from UnitType.baseRate and qty from the night count, ignoring any client-submitted value', async () => {
+    it('computes unitPrice from the selected RatePlan and qty from the night count, ignoring any client-submitted value', async () => {
       mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
       mockPrisma.booking.findFirst.mockResolvedValue(booking);
       mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
@@ -221,12 +229,36 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (2 nights)' });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
 
       expect(res.status).toBe(201);
       expect(res.body.folioCharge.qty).toBe(2);
       expect(res.body.folioCharge.unitPrice).toBe(1500);
       expect(res.body.folioCharge.amount).toBe(3000);
+      // Spec.md §13 decision 29: server-built, not client-typed — the
+      // "Standard" plan's own name is omitted from it.
+      expect(res.body.folioCharge.description).toBe('Family Room (R01)');
+      expect(res.body.folioCharge.ratePlanId).toBe('plan_1');
+    });
+
+    it('names the rate plan on the description when it is not "Standard"', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_xmas', name: 'December Xmas', isActive: true, deletedAt: null });
+      mockPrisma.ratePlanRate.findUnique.mockResolvedValue({ rate: 2500 });
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_xmas' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.folioCharge.unitPrice).toBe(2500);
+      expect(res.body.folioCharge.description).toBe('Family Room (R01) — December Xmas');
     });
 
     it('422s with an explicit error — not a silent overwrite — when the client submits a unitPrice for ROOM', async () => {
@@ -234,7 +266,7 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01', unitPrice: 999 });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1', unitPrice: 999 });
 
       expect(res.status).toBe(422);
       expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
@@ -245,7 +277,29 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01', qty: 2 });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1', qty: 2 });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('422s when the client submits a description for ROOM', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1', description: 'Hand-typed' });
+
+      expect(res.status).toBe(422);
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    it('422s when ratePlanId is missing for ROOM', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1' });
 
       expect(res.status).toBe(422);
       expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
@@ -256,7 +310,7 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', description: 'R01' });
+        .send({ source: 'ROOM', ratePlanId: 'plan_1' });
 
       expect(res.status).toBe(422);
       expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
@@ -270,10 +324,97 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_bogus', description: 'R01' });
+        .send({ source: 'ROOM', sourceId: 'bu_bogus', ratePlanId: 'plan_1' });
 
       expect(res.status).toBe(422);
       expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    // Spec.md §13 decision 29: the client's own "fail loudly" requirement
+    // — a plan deactivated out from under a cashier mid-charge must not
+    // silently price at zero or fall back to UnitType.baseRate.
+    it('422s RATE_PLAN_INACTIVE when the selected plan is no longer active', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_1', name: 'Standard', isActive: false, deletedAt: null });
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('RATE_PLAN_INACTIVE');
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    // Spec.md §13 decision 29: the client's other named failure scenario
+    // — a plan missing a rate for this specific room type never falls
+    // through to baseRate, whether or not the plan is "Standard."
+    it('422s RATE_PLAN_RATE_MISSING when the plan has no rate set for this room type', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.ratePlanRate.findUnique.mockResolvedValue(null);
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('RATE_PLAN_RATE_MISSING');
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+    });
+
+    // Spec.md §13 decision 29: the client's own concern — a three-room
+    // booking drifting across plans without anyone noticing.
+    it('409s RATE_PLAN_MISMATCH when this booking was last charged under a different plan, bypassed by confirmRatePlanMismatch', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_other', ratePlanId: 'plan_xmas' });
+      mockPrisma.ratePlan.findFirst
+        .mockResolvedValueOnce({ id: 'plan_xmas', name: 'December Xmas', isActive: true, deletedAt: null }) // the mismatch check's "last plan" lookup
+        .mockResolvedValueOnce({ id: 'plan_1', name: 'Standard', isActive: true, deletedAt: null }) // the mismatch check's "chosen plan" lookup
+        .mockResolvedValue({ id: 'plan_1', name: 'Standard', isActive: true, deletedAt: null }); // resolveRatePlanRate's own read, once confirmed
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const blocked = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
+
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error.code).toBe('RATE_PLAN_MISMATCH');
+      expect(mockPrisma.folioCharge.create).not.toHaveBeenCalled();
+
+      const confirmed = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1', confirmRatePlanMismatch: true });
+
+      expect(confirmed.status).toBe(201);
+    });
+
+    it('does not warn when this booking has never been charged under any plan yet', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+      mockPrisma.booking.findFirst.mockResolvedValue(booking);
+      mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+      mockPrisma.folioCharge.findFirst.mockResolvedValue(null);
+      mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'charge_1', ...data }),
+      );
+
+      const res = await request(createApp())
+        .post('/api/v1/bookings/booking_1/folio-charges')
+        .set('Cookie', authCookie())
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
+
+      expect(res.status).toBe(201);
     });
 
     it('falls back to the booking\'s own departureDate for an open-ended assignment (occupiedTo still null)', async () => {
@@ -291,7 +432,7 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (added mid-stay)' });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
 
       expect(res.status).toBe(201);
       expect(res.body.folioCharge.qty).toBe(3); // Nov 10 -> Nov 13
@@ -314,7 +455,7 @@ describe('Folio charges', () => {
         deletedAt: null,
         occupiedFrom: null,
         occupiedTo: null,
-        unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+        unit: { id: 'unit_1', code: 'R01', unitType: { id: 'unittype_1', name: 'Family Room', baseRate: 1500 } },
         booking: { arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null },
       });
       mockPrisma.folioCharge.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
@@ -324,7 +465,7 @@ describe('Folio charges', () => {
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (walk-up)', checkOutDate: '2026-11-12' });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1', checkOutDate: '2026-11-12' });
 
       expect(res.status).toBe(201);
       expect(res.body.folioCharge.qty).toBe(2);
@@ -348,14 +489,14 @@ describe('Folio charges', () => {
         deletedAt: null,
         occupiedFrom: null,
         occupiedTo: null,
-        unit: { id: 'unit_1', code: 'R01', unitType: { baseRate: 1500 } },
+        unit: { id: 'unit_1', code: 'R01', unitType: { id: 'unittype_1', name: 'Family Room', baseRate: 1500 } },
         booking: { arrivalDate: new Date('2026-11-10T00:00:00.000Z'), departureDate: null },
       });
 
       const res = await request(createApp())
         .post('/api/v1/bookings/booking_1/folio-charges')
         .set('Cookie', authCookie())
-        .send({ source: 'ROOM', sourceId: 'bu_1', description: 'R01 (walk-up)' });
+        .send({ source: 'ROOM', sourceId: 'bu_1', ratePlanId: 'plan_1' });
 
       expect(res.status).toBe(422);
       expect(res.body.error.code).toBe('ROOM_CHECKOUT_DATE_REQUIRED');
@@ -551,6 +692,128 @@ describe('Folio charges', () => {
       expect(res.body.folioCharges[0].overrides[0].previousAmount).toBe(1500);
       expect(res.body.folioCharges[0].overrides[1].reason).toBe('second override');
     });
+  });
+});
+
+// Spec.md §13 decision 29 (2026-11-15): the cashier-facing rate-plan
+// picker — folio:charge-gated, same permission as actually posting the
+// room charge this informs. Admin CRUD on RatePlan itself is covered in
+// apps/api/test/modules/rateplans/router.test.ts.
+describe('GET /bookings/:bookingId/rate-plans — the cashier-facing suggestion endpoint', () => {
+  const bookingUnit = {
+    id: 'bu_1',
+    bookingId: 'booking_1',
+    deletedAt: null,
+    occupiedFrom: new Date('2026-12-08T00:00:00.000Z'), // a Tuesday
+    occupiedTo: new Date('2026-12-09T00:00:00.000Z'),
+    booking: { ...booking, departureDate: null },
+  };
+
+  it('refuses without folio:charge', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_1' })
+      .set('Cookie', authCookie());
+    expect(res.status).toBe(403);
+  });
+
+  it('suggests the plan this booking group was last charged a room under ("remembered")', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+    mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_other', ratePlanId: 'plan_xmas' });
+    mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_xmas', name: 'December Xmas', isActive: true, deletedAt: null });
+    mockPrisma.ratePlan.findMany.mockResolvedValue([{ id: 'plan_1', name: 'Standard' }, { id: 'plan_xmas', name: 'December Xmas' }]);
+
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_1' })
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestedRatePlanId).toBe('plan_xmas');
+    expect(res.body.reason).toBe('remembered');
+    expect(res.body.ratePlans).toHaveLength(2);
+  });
+
+  it('falls back to a date/weekday match ("date-match") when nothing has been charged yet', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+    mockPrisma.folioCharge.findFirst.mockResolvedValue(null); // nothing remembered yet
+    mockPrisma.ratePlan.findMany.mockResolvedValue([
+      { id: 'plan_1', name: 'Standard', startDate: null, endDate: null, weekdayMask: null, isActive: true, createdAt: new Date('2026-01-01') },
+      {
+        id: 'plan_xmas',
+        name: 'December Xmas',
+        startDate: new Date('2026-12-01T00:00:00.000Z'),
+        endDate: new Date('2026-12-31T00:00:00.000Z'),
+        weekdayMask: null,
+        isActive: true,
+        createdAt: new Date('2026-02-01'),
+      },
+    ]);
+
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_1' })
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestedRatePlanId).toBe('plan_xmas');
+    expect(res.body.reason).toBe('date-match');
+  });
+
+  it('falls back to "Standard" ("standard-default") when nothing is remembered and no plan date-matches', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+    mockPrisma.folioCharge.findFirst.mockResolvedValue(null);
+    mockPrisma.ratePlan.findMany.mockResolvedValue([
+      { id: 'plan_1', name: 'Standard', startDate: null, endDate: null, weekdayMask: null, isActive: true, createdAt: new Date('2026-01-01') },
+    ]);
+    mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_1', name: 'Standard', isActive: true, deletedAt: null });
+
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_1' })
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestedRatePlanId).toBe('plan_1');
+    expect(res.body.reason).toBe('standard-default');
+  });
+
+  it('suggests nothing ("none") when no rate plan exists at all yet', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue(bookingUnit);
+    mockPrisma.folioCharge.findFirst.mockResolvedValue(null);
+    mockPrisma.ratePlan.findMany.mockResolvedValue([]);
+    mockPrisma.ratePlan.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_1' })
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestedRatePlanId).toBe(null);
+    expect(res.body.reason).toBe('none');
+  });
+
+  it('422s when bookingUnitId does not resolve to an existing room assignment', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.bookingUnit.findFirst.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .get('/api/v1/bookings/booking_1/rate-plans')
+      .query({ bookingUnitId: 'bu_bogus' })
+      .set('Cookie', authCookie());
+
+    expect(res.status).toBe(422);
   });
 });
 

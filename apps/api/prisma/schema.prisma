@@ -114,6 +114,7 @@ model User {
   unitStatusEvents      UnitStatusEvent[]
   issuedReceipts        Receipt[]             @relation("ReceiptIssuedBy")
   voidedReceipts        Receipt[]             @relation("ReceiptVoidedBy")
+  createdRatePlans      RatePlan[]
 
   @@index([department])
 }
@@ -263,7 +264,59 @@ model UnitType {
   updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
 
-  units Unit[]
+  units         Unit[]
+  ratePlanRates RatePlanRate[]
+}
+
+// Spec.md §13 decision 29/§13.3 (2026-11-15): named rate plans the
+// cashier explicitly chooses at billing time, replacing the never-built
+// RateRule design (date-range/weekday rules resolved by a priority
+// ladder — superseded in full, kept in spec.md §13.3 only as a
+// blockquoted historical record). startDate/endDate/weekdayMask are a
+// SUGGESTION mechanism only — nothing in priceRoomCharge evaluates them
+// against a stay to decide what the guest pays; they only decide which
+// plan is pre-selected (suggestRatePlan, billing/service.ts) when a
+// cashier opens a booking. All three stay nullable: a plan with none of
+// the three set (an "Off-season" catch-all, say) is never suggested
+// over anything, only ever chosen explicitly. No RateKind split, no
+// appliesToAll flag — a plan is unconditionally a full room-type price
+// list (one row per UnitType in RatePlanRate below), and extra-person/
+// day-tour pricing stay exactly where decision 14 already put them
+// (UnitType.extraPersonRate/dayTourRate), untouched.
+model RatePlan {
+  id          String    @id @default(cuid())
+  name        String // "Weekdays", "Weekend", "December Xmas" — client's own words; shown on the cashier screen and, when not "Standard", on the room charge description/printed receipt (see FolioCharge.ratePlanId below).
+  startDate   DateTime?
+  endDate     DateTime?
+  weekdayMask Int?
+  isActive    Boolean   @default(true)
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  createdBy User           @relation(fields: [createdById], references: [id])
+  rates     RatePlanRate[]
+  charges   FolioCharge[]
+}
+
+// One row per (plan, unit type) — a plan is a complete price list, not
+// a single number, matching how the client described thinking about it
+// ("I'll setup Weekdays then set rate for each room type"). No
+// onDelete: Cascade on either FK — a plan or unit type is soft-deleted
+// (deletedAt), never hard-deleted, so there is nothing to cascade from.
+model RatePlanRate {
+  id         String   @id @default(cuid())
+  ratePlanId String
+  unitTypeId String
+  rate       Decimal  @db.Decimal(12, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  ratePlan RatePlan @relation(fields: [ratePlanId], references: [id])
+  unitType UnitType @relation(fields: [unitTypeId], references: [id])
+
+  @@unique([ratePlanId, unitTypeId])
 }
 
 model Unit {
@@ -581,9 +634,23 @@ model FolioCharge {
   updatedAt   DateTime          @updatedAt
   deletedAt   DateTime?
 
+  // Spec.md §13 decision 29 (2026-11-15): which RatePlan priced this
+  // charge — ROOM charges only (postFolioChargeSchema's own refinement
+  // rejects it for any other source). Purely informational/historical:
+  // unitPrice above is already the resolved, frozen number, so this
+  // column is never read back to reprice anything — a later edit to
+  // RatePlanRate.rate can't retroactively move it. It exists so
+  // suggestRatePlanForBooking can find "the plan this booking group
+  // last charged a room under" (the newest ROOM charge with a non-null
+  // ratePlanId across every sibling Booking row) to pre-select it next
+  // time, and so a mismatch against that remembered plan can be
+  // detected and soft-warned on (see postFolioCharge's own comment).
+  ratePlanId String?
+
   booking      Booking               @relation(fields: [bookingId], references: [id])
   postedBy     User                  @relation("ChargePostedBy", fields: [postedById], references: [id])
   voidedBy     User?                 @relation("ChargeVoidedBy", fields: [voidedById], references: [id])
+  ratePlan     RatePlan?             @relation(fields: [ratePlanId], references: [id])
   receiptLines ReceiptLine[]
   overrides    FolioChargeOverride[]
 

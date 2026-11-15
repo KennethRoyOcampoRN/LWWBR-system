@@ -19,6 +19,7 @@ import { incidentsRouter } from './modules/incidents/router.js';
 import { jobsRouter } from './modules/jobs/router.js';
 import { notificationsRouter } from './modules/notifications/router.js';
 import { quotationsRouter } from './modules/quotations/router.js';
+import { ratePlansRouter } from './modules/rateplans/router.js';
 import { remittancesRouter } from './modules/remittances/router.js';
 import { reportsRouter } from './modules/reports/router.js';
 import { restDayRouter } from './modules/restday/router.js';
@@ -99,6 +100,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use('/api/v1', notificationsRouter);
   app.use('/api/v1', bookingsRouter);
   app.use('/api/v1', billingRouter);
+  app.use('/api/v1', ratePlansRouter);
   app.use('/api/v1', amenitiesRouter);
   app.use('/api/v1', fnbRouter);
   app.use('/api/v1', reportsRouter);

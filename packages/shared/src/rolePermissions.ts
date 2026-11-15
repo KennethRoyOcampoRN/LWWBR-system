@@ -137,6 +137,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'unit:read': 'ALL',
     'unit:update_status': 'ALL',
     'unittype:manage': 'ALL',
+    // Spec.md §13 decision 29 (2026-11-15): same roles as
+    // unittype:manage, same reasoning — see permissions.ts's own
+    // comment for why this is a separate key, not folded into it.
+    'rateplan:manage': 'ALL',
     'user:manage': 'ALL',
     'user:read': 'ALL',
     'workorder:assign': 'ALL',
@@ -249,6 +253,9 @@ export const ROLE_PERMISSIONS: Record<RoleKey, Partial<Record<PermissionKey, Per
     'unit:read': 'ALL',
     'unit:update_status': 'ALL',
     'unittype:manage': 'ALL',
+    // Spec.md §13 decision 29 (2026-11-15) — see SYSTEM_ADMIN's own
+    // comment above.
+    'rateplan:manage': 'ALL',
     'user:read': 'ALL',
     'workorder:assign': 'ALL',
     'workorder:close': 'ALL',

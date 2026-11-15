@@ -5,6 +5,7 @@ import {
   changePaymentStatusSchema,
   issueReceiptSchema,
   listPaymentsQuerySchema,
+  listRatePlanOptionsQuerySchema,
   overrideFolioChargeSchema,
   postFolioChargeSchema,
   receiptDraftSchema,
@@ -20,6 +21,7 @@ import {
   listAllPayments,
   listFolioCharges,
   listPayments,
+  listRatePlanOptionsForBooking,
   listReceiptsForBooking,
   listUnsettledFnbCharges,
   overrideFolioCharge,
@@ -50,6 +52,22 @@ billingRouter.post(
     const body = postFolioChargeSchema.parse(req.body);
     const folioCharge = await postFolioCharge(req.params.bookingId as string, body, { id: req.authUser!.id });
     res.status(201).json({ folioCharge });
+  }),
+);
+
+// Spec.md §13 decision 29 (2026-11-15): the cashier-facing rate-plan
+// picker — folio:charge-gated, the same permission required to
+// actually post the ROOM charge this informs. rateplan:manage (the
+// admin CRUD surface, apps/api/src/modules/rateplans/router.ts) is
+// deliberately not required here; a cashier never edits a plan, only
+// selects from the active ones.
+billingRouter.get(
+  '/bookings/:bookingId/rate-plans',
+  requirePermission('folio:charge'),
+  asyncHandler(async (req, res) => {
+    const query = listRatePlanOptionsQuerySchema.parse(req.query);
+    const result = await listRatePlanOptionsForBooking(req.params.bookingId as string, query.bookingUnitId, query.checkOutDate);
+    res.status(200).json(result);
   }),
 );
 

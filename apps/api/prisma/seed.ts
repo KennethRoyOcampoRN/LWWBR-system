@@ -207,6 +207,10 @@ async function main() {
 
   console.warn(`Seeding ${ROLE_KEYS.length} demo users (one per role)...`);
   const passwordHash = await hashPassword(DEMO_PASSWORD);
+  // Captured for the Standard RatePlan's own createdById below —
+  // ROLE_KEYS[0] is SYSTEM_ADMIN, so this is always set by the time that
+  // seeding block runs.
+  let systemAdminUserId: string | null = null;
 
   for (const [index, roleKey] of ROLE_KEYS.entries()) {
     const employeeCode = `LWW-${String(index + 1).padStart(3, '0')}`;
@@ -243,6 +247,13 @@ async function main() {
       create: { userId: user.id, roleId },
       update: {},
     });
+
+    if (roleKey === 'SYSTEM_ADMIN') {
+      systemAdminUserId = user.id;
+    }
+  }
+  if (!systemAdminUserId) {
+    throw new Error('SYSTEM_ADMIN demo user was not seeded');
   }
 
   console.warn(`Seeding ${UNIT_TYPE_SEEDS.length} unit types...`);
@@ -266,6 +277,32 @@ async function main() {
         },
       }));
     unitTypeIdByKey.set(seed.key, unitType.id);
+  }
+
+  // Spec.md §13 decision 29 (2026-11-15): every booking needs a rate
+  // plan from day one, so the seed migrates each UnitType's own
+  // baseRate into a single named "Standard" plan rather than leaving
+  // priceRoomCharge with nothing to resolve. `name` is this plan's own
+  // idempotency key, same pattern as UnitType/AmenityItem above.
+  // Create-if-missing only for both the plan and each of its rates —
+  // once a cashier or admin has actually edited a Standard rate through
+  // the Setup Rates UI, a re-run of this seed must not clobber that
+  // back to whatever UnitType.baseRate happens to hold today.
+  console.warn('Seeding the "Standard" rate plan from existing UnitType.baseRate values...');
+  const standardPlan =
+    (await prisma.ratePlan.findFirst({ where: { name: 'Standard', deletedAt: null } })) ??
+    (await prisma.ratePlan.create({ data: { name: 'Standard', createdById: systemAdminUserId } }));
+  for (const seed of UNIT_TYPE_SEEDS) {
+    const unitTypeId = unitTypeIdByKey.get(seed.key);
+    if (!unitTypeId) throw new Error(`Unit type ${seed.key} was not seeded`);
+    const existingRate = await prisma.ratePlanRate.findUnique({
+      where: { ratePlanId_unitTypeId: { ratePlanId: standardPlan.id, unitTypeId } },
+    });
+    if (existingRate) continue;
+    const unitType = await prisma.unitType.findFirstOrThrow({ where: { id: unitTypeId } });
+    await prisma.ratePlanRate.create({
+      data: { ratePlanId: standardPlan.id, unitTypeId, rate: unitType.baseRate },
+    });
   }
 
   const defaultCapacityByKey = new Map(UNIT_TYPE_SEEDS.map((s) => [s.key, s.defaultCapacity]));

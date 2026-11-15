@@ -26,7 +26,16 @@ export const postFolioChargeSchema = z
     // optional loose pointer back to whatever record the charge came
     // from (an FnbOrder, an AmenityRequest, ...).
     sourceId: z.string().min(1).optional(),
-    description: z.string().trim().min(1).max(300),
+    // Optional, not plain-required, as of spec.md §13 decision 29
+    // (2026-11-15) — same "ROOM is automatic, everything else stays
+    // cashier-typed" split the refinements below already apply to
+    // unitPrice/qty, now extended to description: a ROOM charge's
+    // description is built server-side from the unit, unit type, and
+    // selected rate plan (service.ts's priceRoomCharge), including the
+    // plan's own name when it isn't "Standard" — a client-typed
+    // description for ROOM can no longer be partially right, since it
+    // would omit that name.
+    description: z.string().trim().min(1).max(300).optional(),
     qty: z.number().int().positive().optional(),
     unitPrice: z.number().nonnegative().optional(),
     // Bug caught in review, 2026-11-06 (spec.md §13 decision 16): a
@@ -40,6 +49,19 @@ export const postFolioChargeSchema = z
     // already resolvable); see that function's own comment for exactly
     // when this is actually required.
     checkOutDate: z.string().date().optional(),
+    // Spec.md §13 decision 29 (2026-11-15): the cashier's explicit rate
+    // plan choice for a ROOM charge — required, never inferred server-
+    // side, since inferring it would defeat the entire point of
+    // "cashier chooses." The UI pre-selects a suggested default (see
+    // billing/router.ts's own GET /bookings/:bookingId/rate-plans), but
+    // still sends it explicitly; nothing here silently falls back to
+    // one. Rejected outright for every other source, same as sourceId.
+    ratePlanId: z.string().min(1).optional(),
+    // Set only after the cashier confirms the RATE_PLAN_MISMATCH warning
+    // dialog (service.ts's checkRatePlanMismatch) — same confirm-and-
+    // bypass shape as issueReceipt's confirmDuplicateBillingNumber, never
+    // defaulted true by this schema.
+    confirmRatePlanMismatch: z.boolean().default(false),
   })
   .refine((data) => data.source !== 'ROOM' || data.unitPrice === undefined, {
     message: "Room charges are priced automatically from the unit type's rate — do not submit unitPrice.",
@@ -49,15 +71,40 @@ export const postFolioChargeSchema = z
     message: 'Room charges compute their own night count automatically — do not submit qty.',
     path: ['qty'],
   })
+  .refine((data) => data.source !== 'ROOM' || data.description === undefined, {
+    message: "Room charges build their own description automatically — do not submit description.",
+    path: ['description'],
+  })
   .refine((data) => data.source !== 'ROOM' || Boolean(data.sourceId), {
     message: 'sourceId (the BookingUnit assignment being billed) is required for ROOM charges.',
     path: ['sourceId'],
   })
+  .refine((data) => data.source !== 'ROOM' || Boolean(data.ratePlanId), {
+    message: 'ratePlanId is required for ROOM charges.',
+    path: ['ratePlanId'],
+  })
+  .refine((data) => data.source === 'ROOM' || data.ratePlanId === undefined, {
+    message: 'ratePlanId only applies to ROOM charges.',
+    path: ['ratePlanId'],
+  })
   .refine((data) => data.source === 'ROOM' || data.unitPrice !== undefined, {
     message: 'unitPrice is required.',
     path: ['unitPrice'],
+  })
+  .refine((data) => data.source === 'ROOM' || data.description !== undefined, {
+    message: 'description is required.',
+    path: ['description'],
   });
 export type PostFolioChargeInput = z.infer<typeof postFolioChargeSchema>;
+
+// Spec.md §13 decision 29 (2026-11-15): the cashier-facing rate-plan
+// picker's own query — same checkOutDate escape hatch postFolioCharge
+// already needs for a walk-up BookingUnit with no date on file yet.
+export const listRatePlanOptionsQuerySchema = z.object({
+  bookingUnitId: z.string().min(1),
+  checkOutDate: z.string().date().optional(),
+});
+export type ListRatePlanOptionsQuery = z.infer<typeof listRatePlanOptionsQuerySchema>;
 
 // Spec.md §13 decision 17 (2026-11-06): "any amount except the total
 // becomes cashier-editable, with a confirmation step" — overrides

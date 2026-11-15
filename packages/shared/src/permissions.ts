@@ -125,6 +125,13 @@ export const PERMISSION_KEYS = [
   // (SYSTEM_ADMIN only) and would be wrong to fold into a key that
   // also hands out geofence editing.
   'resort:configure',
+  // Spec.md §13 decision 29/§13.3 (2026-11-15): named rate plans the
+  // cashier picks at billing time, replacing the never-built rule-engine
+  // design (which would have introduced `raterule:manage`). Deliberately
+  // separate from `unittype:manage` — rate changes are a materially
+  // different, money-sensitive concern from room metadata, same
+  // reasoning as `receipt:issue` staying separate from `folio:*` above.
+  'rateplan:manage',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

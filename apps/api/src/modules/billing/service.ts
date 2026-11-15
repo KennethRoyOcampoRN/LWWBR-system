@@ -12,6 +12,7 @@ import { roundMoney, sumMoney } from '../../lib/money.js';
 import { prisma } from '../../lib/prisma.js';
 import { billingNumberScope, formatBillingNumber } from '../../lib/receiptNo.js';
 import { listUnsettledChargeToRoomOrders } from '../fnb/service.js';
+import { checkRatePlanMismatch, listActiveRatePlans, resolveRatePlanRate, suggestRatePlanForBooking } from '../rateplans/service.js';
 import { getResortIdentityForSnapshot } from '../settings/service.js';
 import type {
   ChangePaymentStatusInput,
@@ -151,10 +152,13 @@ function resolveManilaDate(dateStr: string): Date {
 // the room/unit must be automatic based on what the system admin has
 // setup" (client's own words). sourceId for a ROOM charge is the
 // BookingUnit assignment being billed — its own occupiedFrom/occupiedTo
-// gives the night count, and its Unit's UnitType.baseRate gives the
-// per-night price. Rate RULES (seasonal/day-of-week pricing) are future
-// work per the plan's own parenthetical — baseRate is the whole story
-// for now.
+// gives the night count. The per-night price itself is spec.md §13
+// decision 29's job as of 2026-11-15 — a named RatePlan the cashier
+// chose, resolved via rateplans/service.ts's resolveRatePlanRate, not
+// UnitType.baseRate directly (that field is now only ever reached
+// indirectly, through the seeded "Standard" plan's own RatePlanRate
+// row — see that decision's own note on why there is no longer a
+// baseRate fallback at this layer).
 //
 // Bug caught in review, 2026-11-06: this used to require
 // bookingUnit.occupiedFrom outright and 422 if it was null — which it
@@ -171,16 +175,17 @@ function resolveManilaDate(dateStr: string): Date {
 // departureDate resolves it, the cashier is asked for one explicitly
 // (checkOutDate, postFolioChargeSchema) rather than silently guessing.
 // Once resolved from any source, both dates are written back onto the
-// BookingUnit row so a later reprice (or Stage D's per-night rate
-// resolution) never has to ask again — this is the same row a pre-
-// arrival booking already has these fields on from creation; a
-// walk-up's just gets filled in lazily, at the moment billing actually
-// needs it, which is the only moment this app ever learns it.
+// BookingUnit row so a later reprice never has to ask again — this is
+// the same row a pre-arrival booking already has these fields on from
+// creation; a walk-up's just gets filled in lazily, at the moment
+// billing actually needs it, which is the only moment this app ever
+// learns it.
 async function priceRoomCharge(
   bookingId: string,
   bookingUnitId: string,
+  ratePlanId: string,
   cashierCheckOutDate?: string,
-): Promise<{ unitPrice: number; qty: number }> {
+): Promise<{ unitPrice: number; qty: number; description: string }> {
   const bookingUnit = await prisma.bookingUnit.findFirst({
     where: { id: bookingUnitId, bookingId, deletedAt: null },
     include: { unit: { include: { unitType: true } }, booking: true },
@@ -212,36 +217,121 @@ async function priceRoomCharge(
     await prisma.bookingUnit.update({ where: { id: bookingUnit.id }, data: { occupiedFrom: from, occupiedTo: to } });
   }
 
-  return { unitPrice: Number(bookingUnit.unit.unitType.baseRate), qty: nights };
+  const { rate, ratePlanName } = await resolveRatePlanRate(ratePlanId, bookingUnit.unit.unitType.id);
+  // Spec.md §13 decision 29: the plan's own name appears on the
+  // description — and so on the printed receipt — whenever it isn't
+  // "Standard" (every room defaults to that plan, so naming it on an
+  // ordinary receipt would be noise, not information). A guest asking
+  // why a night costs ₱2,500 should see "Christmas rate," the client's
+  // own example.
+  const planSuffix = ratePlanName === 'Standard' ? '' : ` — ${ratePlanName}`;
+  const description = `${bookingUnit.unit.unitType.name} (${bookingUnit.unit.code})${planSuffix}`;
+
+  return { unitPrice: rate, qty: nights, description };
 }
 
-// unitPrice/qty are cashier input for every source except ROOM — see
-// postFolioChargeSchema's own refinements for why ROOM rejects both
-// outright instead of silently overwriting them. amount is always
-// qty*unitPrice computed here, server-side, never trusted from the
-// client — same reconciliation principle the receipt totals below are
-// built on.
+// Spec.md §13 decision 29 (2026-11-15): backs the cashier-facing picker
+// — GET /bookings/:bookingId/rate-plans, folio:charge-gated, same
+// permission required to actually post the room charge this informs.
+// Deliberately does not call priceRoomCharge itself (that would price
+// and write back BookingUnit.occupiedFrom/occupiedTo as a side effect
+// of a read-only suggestion call) — it resolves the same stay window
+// independently, read-only, and falls back to a provisional one-night
+// window only for the suggestion's own date-match logic if neither
+// occupiedTo/departureDate nor a cashier-supplied checkOutDate resolves
+// it yet; that fallback is never persisted and never shown as a real
+// date anywhere, so a wrong guess here costs nothing — the suggestion
+// is just a pre-selection the cashier can always override.
+export async function listRatePlanOptionsForBooking(
+  bookingId: string,
+  bookingUnitId: string,
+  cashierCheckOutDate?: string,
+) {
+  const booking = await requireBooking(bookingId);
+  const bookingUnit = await prisma.bookingUnit.findFirst({
+    where: { id: bookingUnitId, bookingId, deletedAt: null },
+    include: { booking: true },
+  });
+  if (!bookingUnit) {
+    throw new ApiError(422, 'VALIDATION_ERROR', 'bookingUnitId must be an existing room assignment on this booking.');
+  }
+
+  const stayFrom = bookingUnit.occupiedFrom ?? bookingUnit.booking.arrivalDate;
+  const stayTo =
+    bookingUnit.occupiedTo ??
+    bookingUnit.booking.departureDate ??
+    (cashierCheckOutDate ? resolveManilaDate(cashierCheckOutDate) : new Date(stayFrom.getTime() + MS_PER_NIGHT));
+
+  const bookingIds = await gatherBookingIdsForBilling(booking);
+  const [ratePlans, suggestion] = await Promise.all([
+    listActiveRatePlans(),
+    suggestRatePlanForBooking(bookingIds, stayFrom, stayTo),
+  ]);
+  return { ratePlans, suggestedRatePlanId: suggestion.ratePlanId, reason: suggestion.reason };
+}
+
+// unitPrice/qty/description are cashier input for every source except
+// ROOM — see postFolioChargeSchema's own refinements for why ROOM
+// rejects all three outright instead of silently overwriting them.
+// amount is always qty*unitPrice computed here, server-side, never
+// trusted from the client — same reconciliation principle the receipt
+// totals below are built on.
 export async function postFolioCharge(bookingId: string, input: PostFolioChargeInput, actor: BillingActor) {
-  await requireBooking(bookingId);
+  const booking = await requireBooking(bookingId);
 
   let qty: number;
   let unitPrice: number;
+  let description: string;
+  let ratePlanId: string | null;
   if (input.source === 'ROOM') {
-    // input.sourceId's presence is already guaranteed by the schema's
-    // own refinement; this check exists only because that refinement
-    // doesn't narrow PostFolioChargeInput's type for TypeScript.
+    // input.sourceId/ratePlanId's presence is already guaranteed by the
+    // schema's own refinements; these checks exist only because those
+    // refinements don't narrow PostFolioChargeInput's type for
+    // TypeScript.
     if (!input.sourceId) {
       throw new ApiError(422, 'VALIDATION_ERROR', 'sourceId is required for ROOM charges.');
     }
-    const priced = await priceRoomCharge(bookingId, input.sourceId, input.checkOutDate);
+    if (!input.ratePlanId) {
+      throw new ApiError(422, 'VALIDATION_ERROR', 'ratePlanId is required for ROOM charges.');
+    }
+    // Spec.md §13 decision 29 (2026-11-15): the client's own concern —
+    // a three-room booking could otherwise drift across plans without
+    // anyone noticing. Checked across every sibling Booking row sharing
+    // this booking's external reference, same gathering every other
+    // cross-booking folio read in this module already does. Bypassed
+    // only after the cashier confirms the warning dialog
+    // (confirmRatePlanMismatch), never defaulted true by the schema.
+    if (!input.confirmRatePlanMismatch) {
+      const bookingIds = await gatherBookingIdsForBilling(booking);
+      const { mismatched, lastRatePlanId } = await checkRatePlanMismatch(bookingIds, input.ratePlanId);
+      if (mismatched) {
+        const [lastPlan, chosenPlan] = await Promise.all([
+          prisma.ratePlan.findFirst({ where: { id: lastRatePlanId! } }),
+          prisma.ratePlan.findFirst({ where: { id: input.ratePlanId } }),
+        ]);
+        throw new ApiError(
+          409,
+          'RATE_PLAN_MISMATCH',
+          `This booking's other rooms were last charged under "${lastPlan?.name ?? 'a different plan'}" — this charge would use "${chosenPlan?.name ?? 'a different plan'}" instead. Confirm to proceed anyway.`,
+        );
+      }
+    }
+    const priced = await priceRoomCharge(bookingId, input.sourceId, input.ratePlanId, input.checkOutDate);
     qty = priced.qty;
     unitPrice = priced.unitPrice;
+    description = priced.description;
+    ratePlanId = input.ratePlanId;
   } else {
     if (input.unitPrice === undefined) {
       throw new ApiError(422, 'VALIDATION_ERROR', 'unitPrice is required.');
     }
+    if (input.description === undefined) {
+      throw new ApiError(422, 'VALIDATION_ERROR', 'description is required.');
+    }
     qty = input.qty ?? 1;
     unitPrice = input.unitPrice;
+    description = input.description;
+    ratePlanId = null;
   }
 
   const charge = await prisma.folioCharge.create({
@@ -249,9 +339,10 @@ export async function postFolioCharge(bookingId: string, input: PostFolioChargeI
       bookingId,
       source: input.source,
       sourceId: input.sourceId,
-      description: input.description,
+      description,
       qty,
       unitPrice,
+      ratePlanId,
       amount: roundMoney(qty * unitPrice),
       postedById: actor.id,
       postedAt: new Date(),
