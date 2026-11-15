@@ -9,7 +9,6 @@ import {
   postFolioChargeSchema,
   receiptDraftSchema,
   submitPaymentSchema,
-  voidFolioChargeSchema,
   voidReceiptSchema,
 } from './schema.js';
 import {
@@ -27,7 +26,6 @@ import {
   postFolioCharge,
   previewReceipt,
   submitPayment,
-  voidFolioCharge,
   voidReceipt,
 } from './service.js';
 
@@ -55,22 +53,13 @@ billingRouter.post(
   }),
 );
 
-billingRouter.post(
-  '/folio-charges/:id/void',
-  requirePermission('folio:void'),
-  asyncHandler(async (req, res) => {
-    const body = voidFolioChargeSchema.parse(req.body);
-    const folioCharge = await voidFolioCharge(req.params.id as string, body, { id: req.authUser!.id });
-    res.status(200).json({ folioCharge });
-  }),
-);
-
-// Client's own words, caught live-testing decision 19's void action:
-// "the purpose of delete is for errors, don't make it hard to delete
-// errors." Same permission as void — folio:void already covers
-// "undo a charge," delete is just the lower-friction form of that for
-// a charge no document has referenced yet (billing/service.ts's own
-// isReferencedByAnIssuedReceipt). No request body: no reason required.
+// Spec.md §13 decision 27 (2026-11-15): per-charge void is removed
+// entirely — a charge not yet on any receipt is deleted outright (no
+// trace, no reason); one already on an issued receipt is corrected by
+// voiding that receipt, not by voiding the charge in place. folio:void
+// still gates this route and POST /receipts/:id/void below — the
+// permission name is unchanged, only the charge-level action it used
+// to also cover is gone. No request body: no reason required.
 billingRouter.delete(
   '/folio-charges/:id',
   requirePermission('folio:void'),

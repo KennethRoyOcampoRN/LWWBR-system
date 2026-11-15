@@ -640,12 +640,16 @@ describe('BillingPage', () => {
     await waitFor(() => expect(screen.getByText('No charges posted yet.')).toBeInTheDocument());
   });
 
-  it('shows an already-charged room as a toggle, and reverting it voids the charge', async () => {
+  // Spec.md §13 decision 27 (2026-11-15): per-charge void removed —
+  // reverting a never-receipted room charge now deletes it outright
+  // (no trace, no reason), the same as the Charges list's own Delete.
+  it('shows an already-charged room as a toggle, and reverting it deletes the charge with a plain confirm', async () => {
     const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     let charges: Record<string, unknown>[] = [
-      { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [] },
+      { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [], hasBeenReceipted: false },
     ];
-    let voidedBody: Record<string, unknown> | null = null;
+    let deleted = false;
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -653,15 +657,16 @@ describe('BillingPage', () => {
       if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
       if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
       if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { folioCharges: charges });
+        return jsonResponse(200, { folioCharges: deleted ? [] : charges });
       }
       if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
       if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
-      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, previewWithRoomCharge);
-      if (url.endsWith('/folio-charges/charge_1/void') && init?.method === 'POST') {
-        voidedBody = JSON.parse(init.body as string);
-        charges = [{ ...charges[0]!, status: 'VOIDED' }];
-        return jsonResponse(200, { folioCharge: charges[0] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, deleted ? emptyPreview : previewWithRoomCharge);
+      }
+      if (url.endsWith('/folio-charges/charge_1') && init?.method === 'DELETE') {
+        deleted = true;
+        return jsonResponse(204, {});
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -676,17 +681,45 @@ describe('BillingPage', () => {
     expect(screen.queryByRole('button', { name: 'Charge room to folio' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Revert' }));
-    await user.type(screen.getByLabelText('Reason'), 'Double-posted by mistake');
-    await user.click(screen.getByRole('button', { name: 'Confirm revert' }));
 
-    await waitFor(() => expect(voidedBody).toEqual({ voidReason: 'Double-posted by mistake' }));
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(deleted).toBe(true));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
-    // Spec.md §13 decision 25: a reverted (voided, never-receipted)
-    // charge has no "Show voided charges" toggle to reveal it anymore
-    // — "Current charges" only ever shows status !== 'VOIDED' &&
-    // !hasBeenReceipted rows, permanently, not just by default. The
-    // audit trail on FolioCharge itself is where it's still findable.
-    expect(screen.queryByText('Voided')).not.toBeInTheDocument();
+  });
+
+  // Spec.md §13 decision 27 (2026-11-15): once that same room charge
+  // is on an issued receipt, it is no longer individually touchable —
+  // no Revert button at all, only a note pointing at voiding the
+  // receipt instead.
+  it('refuses to revert an already-receipted room charge, pointing at voiding the receipt', async () => {
+    const charges: Record<string, unknown>[] = [
+      { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [], hasBeenReceipted: true },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: charges });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, previewWithRoomCharge);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Manage rooms' }));
+    await waitFor(() => expect(screen.getByText(/Charged to folio/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Revert' })).not.toBeInTheDocument();
+    expect(screen.getByText(/void that receipt to correct it/)).toBeInTheDocument();
   });
 
   // Spec.md §13 decision 20 (2026-11-06): POST /receipts/:id/void had no
@@ -951,47 +984,6 @@ describe('BillingPage', () => {
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => expect(deleted).toBe(true));
     await waitFor(() => expect(screen.getByText('No payments recorded yet.')).toBeInTheDocument());
-  });
-
-  // Spec.md §13 decision 25: a line's own charge can still be voided
-  // after the fact (Manage Rooms' "Revert" on an already-receipted ROOM
-  // charge) — the receipt card that covered it marks that one line,
-  // not the whole receipt.
-  it('marks a receipt card line "Voided" when its source charge has since been voided', async () => {
-    const pastReceiptWithVoidedLine = {
-      ...issuedReceipt,
-      lines: [{ description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, sourceChargeId: 'charge_1' }],
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
-      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
-      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
-      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
-        return jsonResponse(200, {
-          folioCharges: [
-            { id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'VOIDED', overrides: [], hasBeenReceipted: true },
-          ],
-        });
-      }
-      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
-      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
-      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { receipts: [pastReceiptWithVoidedLine] });
-      }
-      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
-      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    window.history.pushState({}, '', '/billing/booking_1');
-
-    render(<App />);
-
-    // The receipt itself isn't voided — only the one line is marked.
-    await waitFor(() => expect(screen.getAllByText('83887-11042026-01').length).toBeGreaterThan(0));
-    const lineRow = screen.getByText('R01 room charge').closest('li')!;
-    expect(lineRow.textContent).toContain('Voided');
-    expect(screen.getByRole('button', { name: 'Void' })).toBeInTheDocument(); // the receipt's own Void action is still offered
   });
 
   // Spec.md §13 decision 26 (2026-11-15): the client's own finding —

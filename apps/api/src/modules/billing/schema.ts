@@ -59,11 +59,6 @@ export const postFolioChargeSchema = z
   });
 export type PostFolioChargeInput = z.infer<typeof postFolioChargeSchema>;
 
-export const voidFolioChargeSchema = z.object({
-  voidReason: z.string().trim().min(1).max(500),
-});
-export type VoidFolioChargeInput = z.infer<typeof voidFolioChargeSchema>;
-
 // Spec.md §13 decision 17 (2026-11-06): "any amount except the total
 // becomes cashier-editable, with a confirmation step" — overrides
 // unitPrice, not amount directly, so amount stays qty*unitPrice (the
@@ -175,10 +170,12 @@ export const issueReceiptSchema = receiptDraftSchema.extend({
 });
 export type IssueReceiptInput = z.infer<typeof issueReceiptSchema>;
 
-// Same shape as voidFolioChargeSchema — a mistaken receipt is voided
-// (status: VOIDED), never deleted, same append-only reasoning as
-// FolioCharge's own POSTED/VOIDED (see Receipt's own schema.prisma
-// comment for why it has no deletedAt).
+// Spec.md §13 decision 27 (2026-11-15): the sole remaining void path —
+// per-charge void is gone, so this is now how any receipted charge
+// gets corrected, not just how a mistaken receipt as a whole is voided.
+// A mistaken receipt is voided (status: VOIDED), never deleted, same
+// append-only reasoning as FolioCharge's own POSTED/VOIDED (see
+// Receipt's own schema.prisma comment for why it has no deletedAt).
 export const voidReceiptSchema = z.object({
   voidReason: z.string().trim().min(1).max(500),
 });

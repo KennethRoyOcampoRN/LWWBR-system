@@ -8476,3 +8476,60 @@ a voided receipt card's struck-through Grand Total). Screenshotted at
 1600px with a voided receipt, a paid-down receipt, unapplied credit,
 and a zero-due-but-account-owes scenario all on screen together —
 every fix visible and correct in one shot.
+
+**Cashier tab — per-charge void removed entirely; a receipted charge
+is corrected only by voiding its receipt (spec.md §13 decision 27),
+2026-11-15.** Client found the cause of a receipt card showing a
+struck-through line inside a total that still counted it: the strike
+was derived live from the charge's current status while the card's
+own total is a frozen snapshot — a line that can change independently
+of a frozen total can never agree with it. Client's instruction: "all
+voided must be deleted and instead of void it should be delete without
+trace" — right about the outcome, not quite applicable once a receipt
+already prints the charge (a guest holds a copy). Fix: a charge is now
+exactly one of two states. Never receipted — delete, no trace, no
+reason (already built). Receipted — not individually touchable at all;
+correct it by voiding the whole receipt, which releases its charges
+back to Current charges, where the bad one deletes normally and a
+corrected receipt is issued. `voidFolioCharge` (service, schema, and
+the `POST /folio-charges/:id/void` route) is deleted outright. Manage
+Rooms' "Revert" — the one UI path this reached — now deletes a
+never-receipted room charge with a plain confirm, and shows no button
+at all for a receipted one, only a note pointing at voiding the
+receipt. Receipt cards drop the per-line voided cross-reference and
+badge along with it, since nothing can ever set it again; the
+whole-card strike for a voided receipt (decision 26) is unaffected.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 730/730 (3 unrelated pre-existing skips;
+net two tests removed covering the deleted void route, one added
+confirming it 404s). `apps/web` 220/220 (one test rewritten for
+delete-with-confirm instead of void-with-reason, one new test for the
+receipted-charge refusal note, one obsolete voided-line test removed).
+Screenshotted Manage Rooms at 1600px with an already-receipted room
+charge: no Revert button, just the note.
+
+**Billing numbers scoped to the booking, not the booking plus the
+day — fixing the "-01, -02, -03" sub-numbering (spec.md §13 decision
+28), 2026-11-15.** Client's requirement: "a sub number like -01, -02,
+-03 for every new receipt issued under the same billing number," per
+booking across the whole stay — not per day. As built, three receipts
+for one booking issued on three different dates were each the first of
+their own day and all read `-01`, conveying no order at all. Fix,
+confined to `receiptNo.ts`: `billingNumberScope` now returns the
+booking's `referenceNo` on its own, with no date segment; the date
+stays in the formatted number purely as a display stamp, no longer
+part of what the sequence counts against. `peekNextBillingNumber`
+needed no code change — it already composes both functions in order.
+Existing `ReferenceSequence` rows and issued receipts keep their old
+`{referenceNo}-{date}` scope values as issued — confirmed test data
+only, so no backfill was run; a booking with receipts spanning the
+cutover will show old and new numbering side by side, named here
+rather than left to be found. The schema's own comment documenting the
+billing-number format and its scope is rewritten to match.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 731/731 (3 unrelated pre-existing skips;
+two assertions updated for the new unscoped `scope` value, one new
+test issuing three receipts for one booking across three different
+simulated dates and asserting `-01`/`-02`/`-03`).

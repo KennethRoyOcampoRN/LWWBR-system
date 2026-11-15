@@ -271,15 +271,13 @@ export function BillingPage() {
   const { user } = useAuth();
 
   const [booking, setBooking] = useState<BookingDetail | 'loading' | 'error'>('loading');
-  // Spec.md §13 decision 25 (2026-11-14): "current charges" now means
-  // exactly !hasBeenReceipted && status !== 'VOIDED' — a charge that's
-  // VOIDED is, almost always, one that was already receipted (void only
-  // ever applied to a receipted charge via the old charges-list action,
-  // now removed) and so belongs on its receipt card instead; the sole
-  // remaining way to void a never-receipted charge is Manage Rooms'
-  // "Revert" on a ROOM charge, and a reverted charge needs no ongoing
-  // visibility here either — the audit trail on FolioCharge itself
-  // (voidedById/voidedAt/voidReason) is where that's still findable.
+  // Spec.md §13 decision 25 (2026-11-14): "current charges" means
+  // exactly !hasBeenReceipted && status !== 'VOIDED'. Decision 27
+  // (2026-11-15) removed per-charge void outright — a VOIDED status on
+  // a FolioCharge is now historical only, never written by any live
+  // path (Manage Rooms' "Revert" deletes a never-receipted charge the
+  // same way the Charges list's own Delete action does; a receipted
+  // one is corrected only by voiding its receipt).
   const [folioCharges, setFolioCharges] = useState<FolioChargeRow[]>([]);
   const [unsettledFnb, setUnsettledFnb] = useState<UnsettledFnbCharge[]>([]);
   const [readyUnits, setReadyUnits] = useState<ReadyUnit[]>([]);
@@ -304,11 +302,6 @@ export function BillingPage() {
   const [editDeductionLabel, setEditDeductionLabel] = useState('');
   const [editDeductionAmount, setEditDeductionAmount] = useState('');
   const [editDeductionReason, setEditDeductionReason] = useState('');
-  // The Rooms section's own revert action reuses this same confirm
-  // shape, keyed separately so a room-row revert and a Folio-table void
-  // can't fight over the one open dialog.
-  const [revertingBookingUnitId, setRevertingBookingUnitId] = useState<string | null>(null);
-  const [revertReason, setRevertReason] = useState('');
   // Spec.md §13 decision 19: the Payments section — record a payment,
   // list what's already recorded, and distinguish CASH (effective
   // immediately) from everything else (awaits payment:verify).
@@ -579,17 +572,19 @@ export function BillingPage() {
     }
   }
 
-  // Spec.md §13 decision 19 (2026-11-06): the undo for a double-posted
-  // room charge — "Post room charge" becomes a toggle (postedRoomCharge
+  // Spec.md §13 decision 27 (2026-11-15): the undo for a double-posted
+  // room charge — "Post room charge" becomes a toggle (postedCharge
   // below decides which face renders), and this is its revert side.
-  // Same confirm-dialog-with-required-reason UX as decision 17's
-  // override, for the same reason: the audit trail (voidReason, who,
-  // when — already on FolioCharge) is what substitutes for a manager's
-  // approval here.
-  async function revertRoomCharge(chargeId: string, reason: string) {
+  // Per-charge void is gone; a never-receipted room charge is deleted
+  // outright (no trace, no reason), the same as any other charge. The
+  // JSX below never calls this once the charge is already receipted —
+  // that case has no button at all, only a note pointing at voiding
+  // the receipt instead.
+  async function revertRoomCharge(chargeId: string) {
+    if (!window.confirm('Remove this room charge from the folio?')) return;
     setRoomActionError(null);
     try {
-      await api.post(`/folio-charges/${chargeId}/void`, { voidReason: reason });
+      await api.delete(`/folio-charges/${chargeId}`);
       refetchFolio();
       void runPreview();
     } catch (err) {
@@ -1419,7 +1414,6 @@ export function BillingPage() {
                     const postedCharge = folioCharges.find(
                       (c) => c.source === 'ROOM' && c.sourceId === bu.id && c.status !== 'VOIDED',
                     );
-                    const isReverting = revertingBookingUnitId === bu.id;
                     return (
                       <li key={bu.id} className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3">
                         <div className="flex flex-col gap-2">
@@ -1433,17 +1427,23 @@ export function BillingPage() {
                                     enough that a cashier doesn't press "Charge
                                     room to folio" a second time in the first
                                     place; Revert is the safety net for when
-                                    they already have. */}
+                                    they already have. Spec.md §13 decision 27
+                                    (2026-11-15): once this charge is on an
+                                    issued receipt it is no longer individually
+                                    touchable — no Revert button at all, just a
+                                    note pointing at voiding that receipt. */}
                                 <span className="rounded-full bg-success-50 px-2 py-1 text-xs font-medium text-success-600">
                                   Charged to folio ({formatPeso(postedCharge.amount)})
                                 </span>
-                                <Button
-                                  type="button"
-                                  variant="secondary"
-                                  onClick={() => setRevertingBookingUnitId(isReverting ? null : bu.id)}
-                                >
-                                  Revert
-                                </Button>
+                                {postedCharge.hasBeenReceipted ? (
+                                  <span className="text-xs text-ink-secondary">
+                                    On an issued receipt — void that receipt to correct it.
+                                  </span>
+                                ) : (
+                                  <Button type="button" variant="secondary" onClick={() => void revertRoomCharge(postedCharge.id)}>
+                                    Revert
+                                  </Button>
+                                )}
                               </>
                             ) : (
                               <>
@@ -1481,27 +1481,6 @@ export function BillingPage() {
                             </Button>
                           </div>
                         </div>
-                        {isReverting && postedCharge && (
-                          <div className="flex flex-wrap items-end gap-3 rounded border border-amber-300 bg-amber-50 p-2">
-                            <Field label="Reason" hint="Required — this is what the audit trail records.">
-                              <input className={INPUT_CLASSES} value={revertReason} onChange={(e) => setRevertReason(e.target.value)} />
-                            </Field>
-                            <Button
-                              type="button"
-                              onClick={async () => {
-                                await revertRoomCharge(postedCharge.id, revertReason.trim());
-                                setRevertingBookingUnitId(null);
-                                setRevertReason('');
-                              }}
-                              disabled={!revertReason.trim()}
-                            >
-                              Confirm revert
-                            </Button>
-                            <Button type="button" variant="secondary" onClick={() => setRevertingBookingUnitId(null)}>
-                              Cancel
-                            </Button>
-                          </div>
-                        )}
                         {movingFromUnitId === bu.id && (
                           <div className="flex flex-wrap items-end gap-3">
                             <Field label="Move to (Ready only)">
@@ -1788,31 +1767,20 @@ export function BillingPage() {
                         <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">Voided</span>
                       )}
                     </div>
+                    {/* Spec.md §13 decision 27 (2026-11-15): no more
+                        per-line voided cross-reference — a receipted
+                        charge is no longer individually touchable, so
+                        its lines here can never disagree with the
+                        card's own frozen total. A whole receipt is
+                        either live or voided; see the card-level strike
+                        below for the latter. */}
                     <ul className="flex flex-col gap-1 text-sm">
-                      {r.lines.map((line, i) => {
-                        // Spec.md §13 decision 25: cross-references
-                        // folioCharges (already loaded for the whole
-                        // booking) rather than trusting anything on the
-                        // immutable line snapshot itself — a line never
-                        // carries its own voided state, only the charge
-                        // behind it can be voided, after the fact.
-                        const sourceVoided =
-                          line.sourceChargeId != null &&
-                          folioCharges.find((c) => c.id === line.sourceChargeId)?.status === 'VOIDED';
-                        return (
-                          <li key={i} className={`flex justify-between gap-2 ${sourceVoided ? 'text-ink-secondary line-through' : ''}`}>
-                            <span>
-                              {line.description}
-                              {sourceVoided && (
-                                <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary no-underline">
-                                  Voided
-                                </span>
-                              )}
-                            </span>
-                            <span>{formatPeso(line.amount)}</span>
-                          </li>
-                        );
-                      })}
+                      {r.lines.map((line, i) => (
+                        <li key={i} className="flex justify-between gap-2">
+                          <span>{line.description}</span>
+                          <span>{formatPeso(line.amount)}</span>
+                        </li>
+                      ))}
                     </ul>
                     {/* Spec.md §13 decision 26 (2026-11-15): the
                         client's own finding — "Total Amount Due" here

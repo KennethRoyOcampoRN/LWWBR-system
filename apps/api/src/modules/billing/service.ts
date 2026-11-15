@@ -21,7 +21,6 @@ import type {
   PostFolioChargeInput,
   ReceiptDraftInput,
   SubmitPaymentInput,
-  VoidFolioChargeInput,
   VoidReceiptInput,
 } from './schema.js';
 
@@ -261,21 +260,6 @@ export async function postFolioCharge(bookingId: string, input: PostFolioChargeI
   return folioChargeToJson(charge);
 }
 
-export async function voidFolioCharge(id: string, input: VoidFolioChargeInput, actor: BillingActor) {
-  const existing = await prisma.folioCharge.findFirst({ where: { id, deletedAt: null } });
-  if (!existing) {
-    throw new ApiError(404, 'NOT_FOUND', 'Folio charge not found');
-  }
-  if (existing.status === 'VOIDED') {
-    throw new ApiError(409, 'ALREADY_VOIDED', 'This charge is already voided.');
-  }
-  const charge = await prisma.folioCharge.update({
-    where: { id },
-    data: { status: 'VOIDED', voidedById: actor.id, voidedAt: new Date(), voidReason: input.voidReason },
-  });
-  return folioChargeToJson(charge);
-}
-
 // True once some non-voided Receipt's own ReceiptLine references this
 // charge — the exact fact that decides delete vs. void below, and the
 // same fact gatherReceiptLines's own incremental-exclusion check reads
@@ -296,11 +280,17 @@ async function isReferencedByAnIssuedReceipt(chargeId: string): Promise<boolean>
 // it yet. Soft-delete (deletedAt), not a hard DELETE: the audit
 // extension (lib/auditExtension.ts) records every `update` generically,
 // so this still shows up there with no special-case code, exactly the
-// way every other soft-delete in this codebase already does. Once a
-// non-voided receipt exists referencing this charge, that protection
-// starts mattering — 409s and points the caller at voidFolioCharge
-// instead, which keeps the charge visible (reasoned) rather than
-// silently gone out from under an issued document.
+// way every other soft-delete in this codebase already does.
+//
+// Spec.md §13 decision 27 (2026-11-15): once a non-voided receipt
+// exists referencing this charge, it is no longer individually
+// touchable at all — per-charge void (voidFolioCharge) is removed
+// entirely, since a card whose lines can change independently of its
+// own frozen total can never agree with that total. The only
+// correction path for a receipted charge is voiding the whole receipt
+// (voidReceipt below), which releases every one of its charges back
+// to "current," unreceipted, and therefore deletable by this same
+// function — no separate charge-level undo is needed once that's done.
 export async function deleteFolioCharge(id: string, _actor: BillingActor) {
   const existing = await prisma.folioCharge.findFirst({ where: { id, deletedAt: null } });
   if (!existing) {
@@ -310,7 +300,7 @@ export async function deleteFolioCharge(id: string, _actor: BillingActor) {
     throw new ApiError(
       409,
       'ALREADY_RECEIPTED',
-      'This charge is already on an issued receipt — void it instead of deleting it.',
+      'This charge is already on an issued receipt — void that receipt instead of deleting the charge.',
     );
   }
   await prisma.folioCharge.update({ where: { id }, data: { deletedAt: new Date() } });
@@ -968,14 +958,14 @@ const MAX_BILLING_NUMBER_ATTEMPTS = 5;
 // error here: this used to compare bookingId, which warns on every
 // second room of a legitimate group checked in across more than one
 // submission under the same external ID (referenceNo isn't unique —
-// see gatherBookingIdsForBilling's own comment). The scope is
-// deliberately NOT globally unique — the same cashier-typed number can
-// legitimately recur across days, or collide within a day if mistyped
-// — so this checks whether an existing receipt under the same scope
-// belongs to a *different external booking*; if so, it's a soft warn
-// (409 DUPLICATE_BILLING_NUMBER) the caller can bypass by resubmitting
-// with confirmDuplicateBillingNumber: true. A same-external-booking
-// match (an ordinary reissue, or another room under the same group) now
+// see gatherBookingIdsForBilling's own comment). The scope (narrowed to
+// just `referenceNo` by decision 28, 2026-11-15 — no date segment) is
+// deliberately NOT globally unique across bookings — so this checks
+// whether an existing receipt under the same scope belongs to a
+// *different external booking*; if so, it's a soft warn (409
+// DUPLICATE_BILLING_NUMBER) the caller can bypass by resubmitting with
+// confirmDuplicateBillingNumber: true. A same-external-booking match
+// (an ordinary reissue, or another room under the same group) now
 // correctly never triggers this.
 //
 // The `OR` with an explicit `externalBookingRef: null` branch is
@@ -999,15 +989,19 @@ async function isDuplicateBillingNumber(scope: string, externalBookingRef: strin
   return collision !== null;
 }
 
-// Client-confirmed design (spec.md §13 decision 13 build plan, gap 4):
-// the {typed}-{MMDDYYYY} scope is deliberately NOT globally unique — the
-// same cashier-typed number can legitimately recur across days, or
-// collide within a day if mistyped. Before issuing, this checks whether
-// an existing receipt under the same scope belongs to a *different*
-// booking; if so, it's a soft warn (409 DUPLICATE_BILLING_NUMBER) the
-// caller can bypass by resubmitting with confirmDuplicateBillingNumber:
-// true (set only after the cashier confirms a warning dialog) — a
-// same-booking match (an ordinary reissue) never triggers this at all.
+// Client-confirmed design (spec.md §13 decision 13 build plan, gap 4,
+// scope narrowed by decision 28, 2026-11-15): the scope (now just
+// `booking.referenceNo` — no date segment) is deliberately NOT globally
+// unique across bookings — since decision 25 the billing number is
+// never cashier-typed, so the only way two receipts land under the
+// same scope is two Booking rows sharing the same external reference,
+// which is exactly the legitimate "one group, several rooms" case.
+// Before issuing, this checks whether an existing receipt under the
+// same scope belongs to a *different* booking; if so, it's a soft warn
+// (409 DUPLICATE_BILLING_NUMBER) the caller can bypass by resubmitting
+// with confirmDuplicateBillingNumber: true (set only after the cashier
+// confirms a warning dialog) — a same-booking match (an ordinary
+// reissue, or another room under the same group) never triggers this.
 export async function issueReceipt(bookingId: string, input: IssueReceiptInput, actor: BillingActor) {
   const booking = await requireBooking(bookingId);
   const resortIdentity = await getResortIdentityForSnapshot();

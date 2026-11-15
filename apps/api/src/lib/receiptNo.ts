@@ -17,10 +17,20 @@ export function manilaBillingDateStamp(now: Date = new Date()): string {
   return format(new TZDate(now, RESORT_TIMEZONE), 'MMddyyyy');
 }
 
-export function billingNumberScope(typedByCashier: string, now: Date = new Date()): string {
-  return `${typedByCashier}-${manilaBillingDateStamp(now)}`;
+// Spec.md §13 decision 28 (2026-11-15): scoped to the booking's own
+// external reference ONLY — previously `${referenceNo}-${dateStamp}`,
+// which reset the sequence every day and made three receipts issued on
+// three different dates under the same booking all read "-01" (no way
+// to tell them apart, and no way to tell their order from the number
+// alone). The client's own requirement: "-01, -02, -03 for every new
+// receipt issued under the same billing number," per booking across
+// the whole stay, not per day. The date doesn't disappear — it's still
+// in the formatted number below, as a stamp — it just no longer
+// participates in what the sequence counts against.
+export function billingNumberScope(referenceNo: string): string {
+  return referenceNo;
 }
 
-export function formatBillingNumber(scope: string, seq: number): string {
-  return `${scope}-${String(seq).padStart(2, '0')}`;
+export function formatBillingNumber(scope: string, seq: number, now: Date = new Date()): string {
+  return `${scope}-${manilaBillingDateStamp(now)}-${String(seq).padStart(2, '0')}`;
 }

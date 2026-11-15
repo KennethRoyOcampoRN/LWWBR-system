@@ -801,23 +801,29 @@ model Receipt {
   // billing/service.ts's own comment on isDuplicateBillingNumber.
   externalBookingRef String?
 
-  // Billing number: {typedByCashier}-{MMDDYYYY in Asia/Manila}-{NN}.
-  // billingNumberScope is the first two parts (what ReferenceSequence's
-  // own `scope` column is keyed on — see apps/api/src/lib/receiptNo.ts,
-  // stage 3), billingSeq is the NN, billingNumberFull is the complete,
-  // display-ready string. The scope is intentionally NOT globally
-  // unique — the same cashier-typed number can legitimately recur
-  // across different days (a new MMDDYYYY segment) or, within the same
-  // day, can collide across two different EXTERNAL bookings if the
-  // cashier mistypes it; that collision is caught in the service layer
-  // against externalBookingRef, not bookingId (corrected 2026-11-05 —
-  // comparing bookingId made every second room of a legitimate group
-  // under one external ID look like a mistake and warn on it). A
-  // same-external-booking match proceeds silently as an ordinary
-  // reissue/additional-room bill, a different-external-booking match is
-  // a soft warn-and-confirm, never a hard unique-constraint failure —
-  // a hard DB constraint can't distinguish "reissue" from "mistake" the
-  // way the service's own check can.
+  // Billing number: {referenceNo}-{MMDDYYYY in Asia/Manila}-{NN}.
+  // billingNumberFull is the complete, display-ready string; billingSeq
+  // is the NN. billingNumberScope (what ReferenceSequence's own `scope`
+  // column is keyed on — see apps/api/src/lib/receiptNo.ts) is just
+  // `referenceNo` on its own as of spec.md §13 decision 28 (2026-11-15)
+  // — the MMDDYYYY segment stays in billingNumberFull purely as a date
+  // stamp and no longer participates in the sequence, so three receipts
+  // issued under one booking across three different days now read -01/
+  // -02/-03, not three separate -01s. (Before decision 28, scope was
+  // `{referenceNo}-{MMDDYYYY}`, resetting the sequence every day — the
+  // client's own complaint: a booking's receipts couldn't be told apart
+  // or ordered by number alone. Pre-decision-28 rows keep their old
+  // scope value as issued; no backfill, since all of it was test data.)
+  // Scope is NOT globally unique across bookings by design — two
+  // different external bookings colliding on the same referenceNo is
+  // caught in the service layer against externalBookingRef, not
+  // bookingId (corrected 2026-11-05 — comparing bookingId made every
+  // second room of a legitimate group under one external ID look like
+  // a mistake and warn on it). A same-external-booking match proceeds
+  // silently as an ordinary reissue/additional-room bill, a different-
+  // external-booking match is a soft warn-and-confirm, never a hard
+  // unique-constraint failure — a hard DB constraint can't distinguish
+  // "reissue" from "mistake" the way the service's own check can.
   billingNumberScope String
   billingSeq         Int
   // @unique: this is the denormalized, display-ready string — what a

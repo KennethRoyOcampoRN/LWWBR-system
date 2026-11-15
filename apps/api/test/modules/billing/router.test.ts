@@ -363,56 +363,17 @@ describe('Folio charges', () => {
     });
   });
 
-  it('voids a folio charge, rejecting a void with no reason', async () => {
-    // Spec.md §13 decision 19 (2026-11-06): folio:void moved to
-    // cashier-level too — a RESORT_MANAGER holder still has it, same as
-    // every other manager role.
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'POSTED', unitPrice: 100, amount: 100 });
-    mockPrisma.folioCharge.update.mockResolvedValue({ id: 'charge_1', status: 'VOIDED', unitPrice: 100, amount: 100 });
-
-    const missingReason = await request(createApp())
-      .post('/api/v1/folio-charges/charge_1/void')
-      .set('Cookie', authCookie())
-      .send({});
-    expect(missingReason.status).toBe(422);
-
+  // Spec.md §13 decision 27 (2026-11-15): per-charge void is removed
+  // entirely — the route no longer exists, in either direction (a
+  // never-receipted charge or an already-receipted one). Correcting a
+  // receipted charge now only ever goes through voiding its receipt.
+  it('no longer has a per-charge void route', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
     const res = await request(createApp())
       .post('/api/v1/folio-charges/charge_1/void')
       .set('Cookie', authCookie())
       .send({ voidReason: 'Posted to the wrong booking' });
-    expect(res.status).toBe(200);
-    expect(res.body.folioCharge.status).toBe('VOIDED');
-  });
-
-  // Spec.md §13 decision 19 (2026-11-06): the client's actual scenario
-  // — a double-posted room charge, caught seconds later with the guest
-  // still at the counter. folio:void is now cashier-level, the same
-  // trade-off decision 17 already settled for overriding an amount —
-  // the audit trail (voidReason, voidedById, voidedAt) substitutes for
-  // a manager's approval.
-  it('lets a CASHIER void their own double-posted room charge', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
-    mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_2', status: 'POSTED', unitPrice: 2200, amount: 2200 });
-    mockPrisma.folioCharge.update.mockResolvedValue({ id: 'charge_2', status: 'VOIDED', unitPrice: 2200, amount: 2200 });
-
-    const res = await request(createApp())
-      .post('/api/v1/folio-charges/charge_2/void')
-      .set('Cookie', authCookie())
-      .send({ voidReason: 'Double-posted — guest only has one room' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.folioCharge.status).toBe('VOIDED');
-  });
-
-  it('409s voiding an already-voided charge', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.folioCharge.findFirst.mockResolvedValue({ id: 'charge_1', status: 'VOIDED' });
-    const res = await request(createApp())
-      .post('/api/v1/folio-charges/charge_1/void')
-      .set('Cookie', authCookie())
-      .send({ voidReason: 'x' });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(404);
   });
 
   // Client's own words, caught live-testing decision 19's void action:
@@ -809,7 +770,7 @@ describe('Receipt preview', () => {
     mockPrisma.booking.findFirst.mockResolvedValue(booking); // referenceNo: '83887'
     mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
     vi.setSystemTime(new Date('2026-11-14T01:00:00.000Z')); // 2026-11-14 in Asia/Manila
-    mockPrisma.referenceSequence.findUnique.mockResolvedValue({ scope: '83887-11142026', seq: 3 });
+    mockPrisma.referenceSequence.findUnique.mockResolvedValue({ scope: '83887', seq: 3 });
 
     const res = await request(createApp())
       .post('/api/v1/bookings/booking_1/receipts/preview')
@@ -959,7 +920,7 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
 
     expect(res.status).toBe(201);
     expect(mockPrisma.referenceSequence.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { scope: '83887-11052026' } }),
+      expect.objectContaining({ where: { scope: '83887' } }),
     );
     expect(res.body.receipt.billingNumberFull).toBe('83887-11052026-01');
   });
@@ -1093,9 +1054,58 @@ describe('Receipt issuance — numbering, reconciliation, duplicate warning', ()
 
     expect(res.status).toBe(201);
     expect(mockPrisma.referenceSequence.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { scope: expect.stringMatching(/^83887-/) } }),
+      expect.objectContaining({ where: { scope: '83887' } }),
     );
     expect(res.body.receipt.billingNumberFull).toMatch(/^83887-/);
+  });
+
+  // Spec.md §13 decision 28 (2026-11-15): the client's actual scenario
+  // — three receipts for one booking, issued on three different
+  // calendar days, numbered -01/-02/-03 (not three separate -01s, which
+  // is what the old {referenceNo}-{date} scope produced). The scope
+  // passed to the sequence allocator carries no date at all; only the
+  // formatted billingNumberFull does.
+  it('sequences a booking across days, not resetting per day (-01/-02/-03, not three -01s)', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.receipt.findFirst.mockResolvedValue(null);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Tapsilog', qty: 1, unitPrice: 400, status: 'POSTED' },
+    ]);
+    mockPrisma.receipt.create = vi.fn(
+      ({ data }: { data: Record<string, unknown> & { lines: { create: unknown[] }; deductions: { create: unknown[] } } }) =>
+        Promise.resolve({ id: 'receipt_1', status: 'ISSUED', ...data, lines: data.lines.create, deductions: data.deductions.create }),
+    );
+
+    const seqs = [1, 2, 3];
+    mockPrisma.referenceSequence.upsert.mockImplementation(({ where }: { where: { scope: string } }) => {
+      expect(where.scope).toBe('83887'); // never a date-suffixed scope
+      return Promise.resolve({ scope: where.scope, seq: seqs.shift()! });
+    });
+
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    vi.setSystemTime(new Date('2026-11-06T01:00:00.000Z'));
+    const first = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    vi.setSystemTime(new Date('2026-11-14T01:00:00.000Z'));
+    const second = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    vi.setSystemTime(new Date('2026-11-15T01:00:00.000Z'));
+    const third = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+    vi.useRealTimers();
+
+    expect(first.body.receipt.billingNumberFull).toBe('83887-11062026-01');
+    expect(second.body.receipt.billingNumberFull).toBe('83887-11142026-02');
+    expect(third.body.receipt.billingNumberFull).toBe('83887-11152026-03');
   });
 
   // The actual retry requirement: a P2002 on the Receipt insert (inside
