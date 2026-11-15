@@ -51,6 +51,27 @@ interface ComputedLine {
 
 interface ComputedDeduction extends DraftDeduction {
   amount: number;
+  // Spec.md §13 decision 26 (2026-11-15): when this deduction is a
+  // server-derived DOWNPAYMENT, when the payment behind it was taken
+  // — undefined/null for a cashier-typed deduction, which has no
+  // payment to date. "Payment received (Cash)" alone doesn't say when.
+  // Optional (not just nullable) so the local draft array — which is
+  // DraftDeduction, never actually a ComputedDeduction, and has no
+  // server round-trip to supply this — still satisfies the type when
+  // read by the same deductionColumns/DataTable the server-sourced
+  // rows above also use.
+  paymentSubmittedAt?: string | null;
+}
+
+// Spec.md §13 decision 26 (2026-11-15): unapplied payment credit —
+// shown so the cashier can see it before any of it is drawn on, not
+// after. Always present when credit exists, regardless of whether
+// `applyAvailableCredit` actually drew on any of it this time.
+interface AvailableCredit {
+  paymentId: string;
+  method: PaymentMethodKey;
+  amount: number;
+  submittedAt: string;
 }
 
 interface ResortHeader {
@@ -101,6 +122,9 @@ interface PreviewResponse {
   // exists for this anymore; typing it was always transcribing a value
   // the system already held.
   billingNumberPreview: string;
+  // Spec.md §13 decision 26 (2026-11-15): see AvailableCredit's own
+  // comment.
+  availableCredit: AvailableCredit[];
 }
 
 interface IssuedReceipt extends PreviewResponse {
@@ -339,6 +363,16 @@ export function BillingPage() {
   // column, since it's the main job, not an exception.
   const [rightPanel, setRightPanel] = useState<RightPanelKey | null>(null);
 
+  // Spec.md §13 decision 26 (2026-11-15): the client's own finding —
+  // a derived DOWNPAYMENT deduction applied with no cashier action and
+  // no announcement is "alarming rather than convenient" at a counter
+  // with a guest present. Defaults true (the exact pre-decision-26
+  // behavior — cash effective on record, decision 18's own point,
+  // still holds), but it's now a visible, reversible checkbox rather
+  // than something that just happens. Toggling it re-runs the preview
+  // so the draw/deduction actually appears or disappears live.
+  const [applyAvailableCredit, setApplyAvailableCredit] = useState(true);
+
   function draftBody() {
     return {
       guestContactNo: guestContactNo.trim() || null,
@@ -348,15 +382,21 @@ export function BillingPage() {
       nightsOfStay: nightsOfStay ? Number(nightsOfStay) : null,
       preparedByName: preparedByName.trim(),
       deductions,
+      applyAvailableCredit,
     };
   }
 
-  function runPreview() {
+  // Spec.md §13 decision 26 (2026-11-15): `overrides` lets the
+  // "Apply available credit" checkbox's own onChange hand in the new
+  // value directly — setApplyAvailableCredit's update isn't visible to
+  // draftBody()'s closure until the next render, so without this the
+  // very next preview call would still send the stale, pre-click value.
+  function runPreview(overrides?: Partial<ReturnType<typeof draftBody>>) {
     if (!bookingId) return Promise.resolve();
     setPreviewing(true);
     setIssueError(null);
     return api
-      .post<PreviewResponse>(`/bookings/${bookingId}/receipts/preview`, draftBody())
+      .post<PreviewResponse>(`/bookings/${bookingId}/receipts/preview`, { ...draftBody(), ...overrides })
       .then((res) => {
         setPreview(res);
         if (!guestContactNo && res.guest.contactNo) setGuestContactNo(res.guest.contactNo);
@@ -1095,8 +1135,15 @@ export function BillingPage() {
               separating the header from the working area below. Print
               Receipt and Past Receipts aren't buttons anymore (see the
               region comment above); Take Payment isn't either, since
-              it already has its own permanent box up top. */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              it already has its own permanent box up top.
+              Spec.md §13 decision 26: a 5-column grid stretched each
+              button across its own equal-width cell, so a short label
+              like "Add charge" sat left-aligned against a lot of empty
+              cell — reading as "four buttons, then Payment history
+              alone far to the right" rather than one grouped row. A
+              flex row lets buttons hug their own content and each
+              other instead. */}
+          <div className="flex flex-wrap gap-3">
             <Button type="button" variant="secondary" onClick={() => setRightPanel((v) => (v === 'addCharge' ? null : 'addCharge'))}>
               Add charge
             </Button>
@@ -1249,6 +1296,14 @@ export function BillingPage() {
                         <li key={i} className="flex items-center justify-between gap-2">
                           <span>
                             {d.label}
+                            {/* Spec.md §13 decision 26: the date the
+                                payment behind this was actually taken
+                                — the label alone doesn't say when. */}
+                            {d.paymentSubmittedAt && (
+                              <span className="ml-2 text-ink-secondary">
+                                ({new Date(d.paymentSubmittedAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })})
+                              </span>
+                            )}
                             <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-ink-secondary">
                               Automatic — from a recorded payment, not editable
                             </span>
@@ -1617,6 +1672,42 @@ export function BillingPage() {
                   )}
                 </div>
               )}
+              {/* Spec.md §13 decision 26 (2026-11-15): the client's own
+                  finding — a derived deduction appearing with no
+                  cashier action and no announcement is alarming, not
+                  convenient, at a counter with a guest present. Shown
+                  whenever credit exists, before the totals block below
+                  that would otherwise just show its effect as a fait
+                  accompli — says how much, from which payment, and
+                  when, and lets the cashier decide per receipt. */}
+              {preview.availableCredit.length > 0 && (
+                <div className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+                  <p className="font-medium text-ink">Unapplied payment credit available</p>
+                  <ul className="flex flex-col gap-1">
+                    {preview.availableCredit.map((c) => (
+                      <li key={c.paymentId} className="flex justify-between gap-2">
+                        <span>
+                          {PAYMENT_METHOD_LABELS[c.method]} —{' '}
+                          {new Date(c.submittedAt).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
+                        </span>
+                        <span>{formatPeso(c.amount)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <label className="flex items-center gap-2 text-ink-secondary">
+                    <input
+                      type="checkbox"
+                      checked={applyAvailableCredit}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setApplyAvailableCredit(checked);
+                        void runPreview({ applyAvailableCredit: checked });
+                      }}
+                    />
+                    Apply this credit to this receipt
+                  </label>
+                </div>
+              )}
               {/* Spec.md §13 decision 25: this panel's own total,
                   scoped to only these unreceipted lines — a different,
                   narrower number than the header box's whole-account
@@ -1637,6 +1728,16 @@ export function BillingPage() {
                   <span>{formatPeso(preview.totalAmountDue)}</span>
                 </div>
               </div>
+              {/* Spec.md §13 decision 26: the client's own finding — a
+                  receipt reading ₱0.00 due while the account still
+                  reads a balance needs explaining, or a cashier prints
+                  and lets the guest leave still owing money. */}
+              {preview.totalAmountDue === 0 && preview.outstandingBalance > 0 && (
+                <p className="text-sm font-medium text-amber-700">
+                  This receipt is fully covered, but the account still has an outstanding balance of{' '}
+                  {formatPeso(preview.outstandingBalance)} from other charges or receipts.
+                </p>
+              )}
               <Button type="button" variant="secondary" onClick={() => void runPreview()} disabled={previewing}>
                 {previewing ? 'Updating…' : 'Update preview'}
               </Button>
@@ -1713,9 +1814,25 @@ export function BillingPage() {
                         );
                       })}
                     </ul>
-                    <div className="flex justify-between border-t border-gray-200 pt-1 text-sm font-semibold text-ink">
-                      <span>Total Amount Due</span>
-                      <span>{formatPeso(r.totalAmountDue)}</span>
+                    {/* Spec.md §13 decision 26 (2026-11-15): the
+                        client's own finding — "Total Amount Due" here
+                        read as live debt next to the header's own
+                        "Amount due", when it's really the grand total
+                        this receipt covered at issuance, frozen
+                        (decision 13's immutable snapshot). Payments
+                        since then have moved the real, current balance
+                        — which only ever belongs in the header, never
+                        duplicated here. A voided receipt's total is
+                        struck through, same treatment as a voided line
+                        above — it owes nothing, and (decision 20) its
+                        charges are back in "Current charges" now, so
+                        this total describes history, not a live debt
+                        either way. */}
+                    <div
+                      className={`flex justify-between border-t border-gray-200 pt-1 text-sm font-semibold text-ink ${r.status === 'VOIDED' ? 'text-ink-secondary line-through' : ''}`}
+                    >
+                      <span>Grand Total</span>
+                      <span>{formatPeso(r.grandTotal)}</span>
                     </div>
                     <div className="flex gap-2">
                       <Button variant="secondary" onClick={() => void viewReceipt(r.id)}>

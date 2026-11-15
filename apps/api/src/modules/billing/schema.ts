@@ -155,6 +155,13 @@ export const receiptDraftSchema = z.object({
   nightsOfStay: z.number().int().positive().nullable().optional(),
   preparedByName: z.string().trim().max(200).default(''),
   deductions: z.array(receiptDeductionInputSchema).default([]),
+  // Spec.md §13 decision 26 (2026-11-15): whether this receipt draws
+  // down any unapplied payment credit into a derived DOWNPAYMENT
+  // deduction. Defaults true — same effective-on-record behavior
+  // decision 18 always had — but it's now a cashier-visible,
+  // reversible choice (BillingPage.tsx's own "Apply available
+  // credit" checkbox) rather than something that happens silently.
+  applyAvailableCredit: z.boolean().default(true),
 });
 export type ReceiptDraftInput = z.infer<typeof receiptDraftSchema>;
 

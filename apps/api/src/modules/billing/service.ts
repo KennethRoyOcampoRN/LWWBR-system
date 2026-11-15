@@ -498,6 +498,12 @@ interface ComputedReceiptDeduction {
   label: string;
   amount: number;
   sourcePaymentId: string | null;
+  // Spec.md §13 decision 26 (2026-11-15): when this is a derived
+  // DOWNPAYMENT deduction, when the payment it draws on was actually
+  // taken — "Payment received (Cash)" alone doesn't answer "what is
+  // this?" without opening Payment history. Null for a cashier-typed
+  // deduction, which has no payment behind it to date.
+  paymentSubmittedAt: string | null;
 }
 
 interface ComputedReceiptTotals {
@@ -623,6 +629,7 @@ interface DownpaymentDraw {
   paymentId: string;
   amount: number;
   method: PaymentMethodKey;
+  submittedAt: Date;
 }
 
 // Pure — no DB access — so preview and issuance can call it identically
@@ -637,7 +644,7 @@ function deriveDownpaymentDraws(available: AvailablePayment[], amountNeeded: num
     if (remainingNeed <= 0) break;
     const draw = roundMoney(Math.min(payment.remaining, remainingNeed));
     if (draw <= 0) continue;
-    draws.push({ paymentId: payment.id, amount: draw, method: payment.method });
+    draws.push({ paymentId: payment.id, amount: draw, method: payment.method, submittedAt: payment.submittedAt });
     remainingNeed = roundMoney(remainingNeed - draw);
   }
   return draws;
@@ -654,12 +661,13 @@ async function deriveReceiptDeductions(
   bookingIds: string[],
   lines: ComputedReceiptLine[],
   input: ReceiptDraftInput,
-): Promise<{ deductions: ComputedReceiptDeduction[]; draws: DownpaymentDraw[] }> {
+): Promise<{ deductions: ComputedReceiptDeduction[]; draws: DownpaymentDraw[]; available: AvailablePayment[] }> {
   const clientDeductions: ComputedReceiptDeduction[] = input.deductions.map((deduction) => ({
     type: deduction.type,
     label: deduction.label,
     amount: roundMoney(deduction.amount),
     sourcePaymentId: deduction.sourcePaymentId ?? null,
+    paymentSubmittedAt: null,
   }));
 
   const grandTotal = sumMoney(lines.map((line) => line.amount));
@@ -669,7 +677,7 @@ async function deriveReceiptDeductions(
   // See computeReceiptTotals's own history: a genuine refund-due case
   // (deductions exceeding what was charged) is a materially different
   // document from an acknowledgement receipt, so it's rejected outright
-  // rather than silently persisting a negative amount due.
+  // rather than silently persisted a negative amount due.
   if (interimDue < 0) {
     throw new ApiError(
       422,
@@ -678,16 +686,25 @@ async function deriveReceiptDeductions(
     );
   }
 
+  // Spec.md §13 decision 26 (2026-11-15): `available` is always
+  // computed and returned, regardless of `applyAvailableCredit` — the
+  // cashier screen shows what credit *could* be drawn on before any of
+  // it actually is, the client's own ask ("say how much and from
+  // which payment before it's applied"). Only `draws` (and the
+  // deduction/FolioSettlement rows they produce) are gated on the
+  // flag — a cashier declining it changes what gets applied, never
+  // what gets shown.
   const available = await listAvailableEffectivePayments(bookingIds);
-  const draws = deriveDownpaymentDraws(available, interimDue);
+  const draws = input.applyAvailableCredit ? deriveDownpaymentDraws(available, interimDue) : [];
   const downpaymentDeductions: ComputedReceiptDeduction[] = draws.map((draw) => ({
     type: 'DOWNPAYMENT',
     label: `Payment received (${PAYMENT_METHOD_LABELS[draw.method]})`,
     amount: draw.amount,
     sourcePaymentId: draw.paymentId,
+    paymentSubmittedAt: draw.submittedAt.toISOString(),
   }));
 
-  return { deductions: [...clientDeductions, ...downpaymentDeductions], draws };
+  return { deductions: [...clientDeductions, ...downpaymentDeductions], draws, available };
 }
 
 // Spec.md §13 decision 23 (2026-11-14): the breakdown behind the
@@ -763,7 +780,7 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
   const resortIdentity = await getResortIdentityForSnapshot();
   const bookingIds = await gatherBookingIdsForBilling(booking);
   const lines = await gatherReceiptLines(bookingIds);
-  const { deductions } = await deriveReceiptDeductions(bookingIds, lines, input);
+  const { deductions, available } = await deriveReceiptDeductions(bookingIds, lines, input);
   const totals = computeReceiptTotals(lines, deductions);
   const { chargesTotal, paymentsTotal, outstandingBalance } = await computeFolioBalance(bookingIds);
 
@@ -781,6 +798,15 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
   const discountsTotal = sumMoney(totals.deductions.filter((d) => d.type !== 'DOWNPAYMENT').map((d) => d.amount));
   const amountDue = roundMoney(outstandingBalance - discountsTotal);
   const billingNumberPreview = await peekNextBillingNumber(booking.referenceNo);
+  // Spec.md §13 decision 26 (2026-11-15): shown regardless of whether
+  // `applyAvailableCredit` actually drew on any of it — "say how much
+  // and from which payment before it's applied."
+  const availableCredit = available.map((p) => ({
+    paymentId: p.id,
+    method: p.method,
+    amount: p.remaining,
+    submittedAt: p.submittedAt.toISOString(),
+  }));
 
   return {
     resort: {
@@ -809,6 +835,7 @@ export async function previewReceipt(bookingId: string, input: ReceiptDraftInput
     discountsTotal,
     amountDue,
     billingNumberPreview,
+    availableCredit,
   };
 }
 

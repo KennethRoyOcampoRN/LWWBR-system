@@ -8430,3 +8430,49 @@ an issued-but-unpaid receipt plus a new unreceipted charge — the
 state where the two totals (whole-account vs. this-receipt) differ
 most, and each reads as a clearly distinct thing rather than a
 contradiction.
+
+**Cashier tab — four findings from the client's live test of decision
+25's layout, plus a button-bar spacing fix (spec.md §13 decision 26),
+2026-11-15.** All four sit in the two places decision 25 introduced —
+the receipt-card stack and the automatic credit draw-down — and none
+change the arithmetic, only what the cashier sees of it.
+
+(1) Receipt cards no longer show their issuance-time "Total Amount
+Due" as though it were live debt — a stale ₱10,000 next to a live
+₱1,000 header read as a second, contradicting balance. Cards now show
+`grandTotal`, labelled "Grand Total" — what the receipt covered, which
+never changes — leaving exactly one live balance on screen, in the
+header. (2) A voided receipt's card no longer shows an amount due — its
+Grand Total row gets the same `line-through` treatment the per-line
+voided cross-reference already used, so a released charge doesn't
+appear as two obligations. (3) The derived `DOWNPAYMENT` draw-down
+(decision 18) is now visible and reversible before it's applied, not
+just correct after the fact. New `applyAvailableCredit` field
+(`receiptDraftSchema`, defaults true — same effective-on-record
+behavior as before, now a visible choice); `previewReceipt` always
+returns `availableCredit` so the cashier sees what credit could be
+drawn before deciding. An amber callout lists each available payment
+(method, date, amount) with a checkbox, "Apply this credit to this
+receipt"; unchecking it re-previews without the deduction. The derived
+deduction line itself now carries its payment's date, so "Payment
+received (Cash)" doesn't require a trip to Payment history to
+identify. (4) A receipt reading ₱0.00 due while the account still owes
+money now says so: a one-line note renders whenever this receipt's
+total is zero but the account balance isn't, naming the outstanding
+amount. Minor: the button bar changed from an equal-width grid to
+`flex flex-wrap`, since the grid's columns combined with each button's
+content-hugging width to leave large, uneven gaps between short
+labels.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 732/732 (3 pre-existing skips, unrelated —
+new: `paymentSubmittedAt` on the CASH-effective draw-down test;
+`applyAvailableCredit: false` suppresses the draw but still reports
+`availableCredit`; `applyAvailableCredit` defaults true when omitted).
+`apps/web` 220/220 (fixed a crash in every existing test from a
+fixture missing the new `availableCredit` field; new tests for the
+credit checkbox's re-preview, the zero-due-but-account-owes note, and
+a voided receipt card's struck-through Grand Total). Screenshotted at
+1600px with a voided receipt, a paid-down receipt, unapplied credit,
+and a zero-due-but-account-owes scenario all on screen together —
+every fix visible and correct in one shot.

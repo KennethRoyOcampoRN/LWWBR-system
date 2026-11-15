@@ -1277,6 +1277,68 @@ describe('Spec.md §13 decision 18: incremental receipts, payment settlement, ru
     expect(res.body.totalAmountDue).toBe(1500);
     // outstandingBalance: 2000 charged, 500 effective (CASH only) paid.
     expect(res.body.outstandingBalance).toBe(1500);
+    // Spec.md §13 decision 26 (2026-11-15): the derived deduction
+    // carries when the payment behind it was actually taken, not just
+    // its method — "Payment received (Cash)" alone doesn't say that.
+    expect(res.body.deductions[0].paymentSubmittedAt).toBe('2026-11-06T00:00:00.000Z');
+  });
+
+  // Spec.md §13 decision 26 (2026-11-15): the client's own finding —
+  // a ₱1,400 deduction nobody authorised, applied silently. Declining
+  // applyAvailableCredit must suppress the draw/deduction entirely
+  // while still surfacing the credit that *could* be drawn on, so the
+  // cashier sees it before deciding, not after.
+  it('applyAvailableCredit: false suppresses the draw but still reports availableCredit', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 2000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_cash', amount: '500.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa', applyAvailableCredit: false });
+
+    expect(res.status).toBe(200);
+    // No draw — totalAmountDue is the full grand total, undiminished.
+    expect(res.body.deductions).toHaveLength(0);
+    expect(res.body.totalAmountDue).toBe(2000);
+    // outstandingBalance is unaffected either way — it reads straight
+    // off FolioCharge/Payment, never off what a receipt's own draws
+    // claimed (decision 18's own point).
+    expect(res.body.outstandingBalance).toBe(1500);
+    // But the credit is still visible, so the cashier can see what
+    // declining actually left on the table.
+    expect(res.body.availableCredit).toEqual([
+      { paymentId: 'payment_cash', method: 'CASH', amount: 500, submittedAt: '2026-11-06T00:00:00.000Z' },
+    ]);
+  });
+
+  it('applyAvailableCredit defaults to true when omitted — the pre-decision-26 behavior', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('CASHIER'));
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.setting.findUnique.mockResolvedValue(resortIdentitySetting);
+    mockPrisma.folioCharge.findMany.mockResolvedValue([
+      { id: 'charge_1', description: 'Room', qty: 1, unitPrice: 2000, status: 'POSTED' },
+    ]);
+    mockPrisma.payment.findMany.mockResolvedValue([
+      { id: 'payment_cash', amount: '500.00', method: 'CASH', status: 'PENDING', submittedAt: new Date('2026-11-06T00:00:00Z'), settlements: [] },
+    ]);
+
+    const res = await request(createApp())
+      .post('/api/v1/bookings/booking_1/receipts/preview')
+      .set('Cookie', authCookie())
+      .send({ preparedByName: 'yssa' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deductions).toHaveLength(1);
+    expect(res.body.totalAmountDue).toBe(1500);
+    expect(res.body.availableCredit).toHaveLength(1);
   });
 
   it('a VERIFIED non-cash payment counts toward the balance; the same payment unverified does not', async () => {

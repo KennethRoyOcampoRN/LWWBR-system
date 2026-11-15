@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -68,6 +68,11 @@ const emptyPreview = {
   paymentsTotal: 0,
   discountsTotal: 0,
   amountDue: 0,
+  billingNumberPreview: '83887-11142026-01',
+  // Spec.md §13 decision 26 (2026-11-15): BillingPage.tsx reads
+  // `.length` off this unconditionally — every fixture needs it, even
+  // when there's no credit to show.
+  availableCredit: [] as { paymentId: string; method: string; amount: number; submittedAt: string }[],
 };
 
 const previewWithRoomCharge = {
@@ -987,6 +992,131 @@ describe('BillingPage', () => {
     const lineRow = screen.getByText('R01 room charge').closest('li')!;
     expect(lineRow.textContent).toContain('Voided');
     expect(screen.getByRole('button', { name: 'Void' })).toBeInTheDocument(); // the receipt's own Void action is still offered
+  });
+
+  // Spec.md §13 decision 26 (2026-11-15): the client's own finding —
+  // a derived DOWNPAYMENT deduction applied with no cashier action and
+  // no announcement. Available credit must be visible before it's
+  // applied, and declining it must actually suppress the deduction.
+  it('shows available credit with method/date, and unchecking "Apply this credit" re-previews without the deduction', async () => {
+    const user = userEvent.setup();
+    let applied = true;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [{ id: 'charge_1', bookingId: 'booking_1', source: 'ROOM', sourceId: 'bu_1', description: 'R01 room charge', qty: 2, unitPrice: 1100, amount: 2200, status: 'POSTED', overrides: [], hasBeenReceipted: false }],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        applied = body.applyAvailableCredit !== false;
+        return jsonResponse(200, {
+          ...previewWithRoomCharge,
+          deductions: applied
+            ? [{ type: 'DOWNPAYMENT', label: 'Payment received (Cash)', amount: 500, sourcePaymentId: 'payment_1', paymentSubmittedAt: '2026-11-10T00:00:00.000Z' }]
+            : [],
+          totalDeductions: applied ? 500 : 0,
+          totalAmountDue: applied ? 1700 : 2200,
+          availableCredit: [{ paymentId: 'payment_1', method: 'CASH', amount: 500, submittedAt: '2026-11-10T00:00:00.000Z' }],
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Unapplied payment credit available')).toBeInTheDocument());
+    expect(screen.getAllByText(/Cash/).length).toBeGreaterThan(0);
+    expect(screen.getByRole('checkbox', { name: 'Apply this credit to this receipt' })).toBeChecked();
+    await waitFor(() => expect(screen.getAllByText(/₱1,700\.00/).length).toBeGreaterThan(0));
+
+    await user.click(screen.getByRole('checkbox', { name: 'Apply this credit to this receipt' }));
+
+    await waitFor(() => expect(applied).toBe(false));
+    await waitFor(() => expect(screen.getAllByText(/₱2,200\.00/).length).toBeGreaterThan(0));
+    // The credit is still shown — declining it only suppresses the draw.
+    expect(screen.getByText('Unapplied payment credit available')).toBeInTheDocument();
+  });
+
+  // Spec.md §13 decision 26: a receipt reading ₱0.00 due while the
+  // account still owes money needs explaining on the spot.
+  it('notes an outstanding account balance when this receipt is fully covered', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, {
+          folioCharges: [{ id: 'charge_1', bookingId: 'booking_1', source: 'OTHER', sourceId: null, description: 'Tapsilog', qty: 1, unitPrice: 400, amount: 400, status: 'POSTED', overrides: [], hasBeenReceipted: false }],
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
+        return jsonResponse(200, {
+          ...emptyPreview,
+          lines: [{ description: 'Tapsilog', qty: 1, unitPrice: 400, amount: 400 }],
+          grandTotal: 400,
+          totalDeductions: 400,
+          totalAmountDue: 0,
+          outstandingBalance: 1000,
+        });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/This receipt is fully covered, but the account still has an outstanding balance of ₱1,000\.00/),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  // Spec.md §13 decision 26: a receipt card used to show its own
+  // issuance-time "Total Amount Due" next to the header's own live
+  // "Amount due" — read as a second, contradicting debt. Now shows
+  // Grand Total (what it covered), struck through once voided.
+  it('a receipt card shows Grand Total, not Total Amount Due, struck through once voided', async () => {
+    const voidedReceipt = { ...issuedReceipt, id: 'receipt_2', billingNumberFull: '83887-11142026-01', status: 'VOIDED', grandTotal: 400, lines: [{ description: 'Tapsilog', qty: 1, unitPrice: 400, amount: 400, sourceChargeId: null }] };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) return jsonResponse(200, { folioCharges: [] });
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.endsWith('/bookings/booking_1/payments') && (!init || init.method === undefined)) return jsonResponse(200, { payments: [] });
+      if (url.endsWith('/bookings/booking_1/receipts') && (!init || init.method === undefined)) return jsonResponse(200, { receipts: [voidedReceipt] });
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('83887-11142026-01')).toBeInTheDocument());
+    const heading = screen.getByText('83887-11142026-01');
+    const card = heading.closest('.rounded-2xl') as HTMLElement;
+    expect(within(card).getByText('Grand Total')).toBeInTheDocument();
+    expect(within(card).queryByText('Total Amount Due')).not.toBeInTheDocument();
+    const grandTotalRow = within(card).getByText('Grand Total').closest('div');
+    expect(grandTotalRow?.className).toContain('line-through');
   });
 
   it('a non-receipt:issue holder does not see the page', async () => {
