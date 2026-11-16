@@ -1493,6 +1493,300 @@ function UnitTypeFormFields({
   );
 }
 
+// Spec.md §13 decision 29/30 (2026-11-15): named rate plans the cashier
+// explicitly chooses at billing time, replacing the never-built date-
+// range/weekday rule engine. This is the admin CRUD surface for it —
+// Setup: Rates, alongside Setup: Rooms (RatePlansSection above), since
+// that's where room pricing already lives.
+interface RatePlanRateRow {
+  id: string;
+  unitTypeId: string;
+  rate: number;
+  unitType: { id: string; name: string };
+}
+
+interface RatePlanRow {
+  id: string;
+  name: string;
+  startDate: string | null;
+  endDate: string | null;
+  weekdayMask: number | null;
+  isActive: boolean;
+  rates: RatePlanRateRow[];
+}
+
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function weekdayMaskSummary(mask: number | null): string {
+  if (mask === null) return '';
+  const days = WEEKDAY_LABELS.filter((_, i) => ((mask >> i) & 1) === 1);
+  if (days.length === 0) return '';
+  return days.length === 7 ? 'every day' : days.join('/');
+}
+
+function dateRangeSummary(startDate: string | null, endDate: string | null): string {
+  if (!startDate || !endDate) return '';
+  const fmt = (d: string) => new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', timeZone: 'Asia/Manila' });
+  return `${fmt(startDate)}–${fmt(endDate)}`;
+}
+
+// Suggestion-only — see schema.prisma's own RatePlan comment. A plan
+// with neither set (an "Off-season" catch-all) is never suggested over
+// anything, only ever chosen explicitly, so this renders as "—" rather
+// than an empty-looking blank.
+function suggestionSummary(plan: RatePlanRow): string {
+  const parts = [dateRangeSummary(plan.startDate, plan.endDate), weekdayMaskSummary(plan.weekdayMask)].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+const EMPTY_RATE_PLAN_FORM = { name: '', startDate: '', endDate: '', weekdays: new Set<number>() };
+
+function RatePlansSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; onSaved: () => void }) {
+  const [ratePlans, setRatePlans] = useState<RatePlanRow[] | 'loading' | 'error'>('loading');
+  const [addForm, setAddForm] = useState(EMPTY_RATE_PLAN_FORM);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  // Single-open-editor pattern, same as SetupRoomsSection's own
+  // editingId above — only one plan's rates are being edited at a time.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
+  const [rateError, setRateError] = useState<string | null>(null);
+  const [savingRateFor, setSavingRateFor] = useState<string | null>(null);
+
+  const fetchRatePlans = useCallback(() => {
+    return api
+      .get<{ ratePlans: RatePlanRow[] }>('/rate-plans')
+      .then((res) => setRatePlans(res.ratePlans))
+      .catch(() => setRatePlans('error'));
+  }, []);
+
+  useEffect(() => {
+    void fetchRatePlans();
+  }, [fetchRatePlans]);
+
+  async function handleAdd(e: FormEvent) {
+    e.preventDefault();
+    if (!addForm.name.trim()) return;
+    setAddError(null);
+    setAdding(true);
+    try {
+      const weekdayMask = addForm.weekdays.size > 0 ? [...addForm.weekdays].reduce((mask, day) => mask | (1 << day), 0) : undefined;
+      await api.post('/rate-plans', {
+        name: addForm.name.trim(),
+        startDate: addForm.startDate || undefined,
+        endDate: addForm.endDate || undefined,
+        weekdayMask,
+      });
+      setAddForm(EMPTY_RATE_PLAN_FORM);
+      void fetchRatePlans();
+      onSaved();
+    } catch (err) {
+      setAddError(err instanceof ApiRequestError ? err.message : 'Could not create the rate plan.');
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function toggleActive(plan: RatePlanRow) {
+    await api.patch(`/rate-plans/${plan.id}`, { isActive: !plan.isActive });
+    void fetchRatePlans();
+    onSaved();
+  }
+
+  async function handleDelete(plan: RatePlanRow) {
+    if (!window.confirm(`Delete "${plan.name}"? This cannot be undone.`)) return;
+    await api.delete(`/rate-plans/${plan.id}`);
+    if (editingId === plan.id) setEditingId(null);
+    void fetchRatePlans();
+    onSaved();
+  }
+
+  function startEditingRates(plan: RatePlanRow) {
+    setEditingId(plan.id);
+    setRateError(null);
+    const drafts: Record<string, string> = {};
+    for (const ut of unitTypes) {
+      const existing = plan.rates.find((r) => r.unitTypeId === ut.id);
+      drafts[ut.id] = existing ? String(existing.rate) : '';
+    }
+    setRateDrafts(drafts);
+  }
+
+  async function saveRate(planId: string, unitTypeId: string) {
+    const raw = rateDrafts[unitTypeId];
+    const rate = Number(raw);
+    if (!raw || !(rate >= 0)) {
+      setRateError('Enter a non-negative rate before saving.');
+      return;
+    }
+    setRateError(null);
+    setSavingRateFor(unitTypeId);
+    try {
+      await api.put(`/rate-plans/${planId}/rates/${unitTypeId}`, { rate });
+      void fetchRatePlans();
+      onSaved();
+    } catch (err) {
+      setRateError(err instanceof ApiRequestError ? err.message : 'Could not save this rate.');
+    } finally {
+      setSavingRateFor(null);
+    }
+  }
+
+  // Spec.md §13 decision 30: the client's own "fail loudly" requirement
+  // lives at the pricing layer, not here — this is just what makes that
+  // reachable from Setup. Confirmed, not silent: removing a rate takes
+  // this room type out of what the plan can charge at all.
+  async function clearRate(planId: string, unitTypeId: string) {
+    if (!window.confirm('Remove this rate? This room type can no longer be charged under this plan until a rate is set again.')) return;
+    await api.delete(`/rate-plans/${planId}/rates/${unitTypeId}`);
+    setRateDrafts((d) => ({ ...d, [unitTypeId]: '' }));
+    void fetchRatePlans();
+    onSaved();
+  }
+
+  const columns: DataTableColumn<RatePlanRow>[] = [
+    { key: 'name', header: 'Name', render: (p) => <span className="font-medium">{p.name}</span> },
+    { key: 'suggest', header: 'Suggested for', render: (p) => suggestionSummary(p) },
+    { key: 'coverage', header: 'Rates set', render: (p) => `${p.rates.length} / ${unitTypes.length} room types` },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (p) => <StatusBadge variant={p.isActive ? 'success' : 'neutral'}>{p.isActive ? 'Active' : 'Inactive'}</StatusBadge>,
+    },
+    {
+      key: 'actions',
+      header: '',
+      render: (p) => (
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => (editingId === p.id ? setEditingId(null) : startEditingRates(p))}
+            className="text-xs font-medium text-brand-700 hover:underline"
+          >
+            {editingId === p.id ? 'Close' : 'Edit rates'}
+          </button>
+          <button type="button" onClick={() => void toggleActive(p)} className="text-xs font-medium text-brand-700 hover:underline">
+            {p.isActive ? 'Deactivate' : 'Activate'}
+          </button>
+          <button type="button" onClick={() => void handleDelete(p)} className="text-xs font-medium text-danger-600 hover:underline">
+            Delete
+          </button>
+        </div>
+      ),
+    },
+  ];
+
+  const editingPlan = Array.isArray(ratePlans) ? ratePlans.find((p) => p.id === editingId) : undefined;
+
+  return (
+    <Section title="Rate Plans" description='Named price lists the cashier chooses from at billing time — "Weekdays," "December Xmas," and so on.'>
+      <div className="flex flex-col gap-4">
+        {ratePlans === 'loading' && <SkeletonList items={3} />}
+        {ratePlans === 'error' && <EmptyState message="Could not load rate plans." />}
+        {Array.isArray(ratePlans) && (
+          <DataTable columns={columns} rows={ratePlans} rowKey={(p) => p.id} mobileTitle={(p) => p.name} emptyMessage="No rate plans yet." />
+        )}
+
+        {editingPlan && (
+          <Card className="border border-gray-200">
+            <div className="flex flex-col gap-3">
+              <h3 className="text-sm font-semibold text-ink">Rates for "{editingPlan.name}"</h3>
+              {rateError && (
+                <p role="alert" className="text-sm font-medium text-danger-600">
+                  {rateError}
+                </p>
+              )}
+              <div className="flex flex-col gap-2">
+                {unitTypes.map((ut) => (
+                  <div key={ut.id} className="flex flex-wrap items-end gap-2">
+                    <Field label={ut.name}>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className={INPUT_CLASSES}
+                        value={rateDrafts[ut.id] ?? ''}
+                        onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: e.target.value }))}
+                      />
+                    </Field>
+                    <Button type="button" variant="secondary" onClick={() => void saveRate(editingPlan.id, ut.id)} disabled={savingRateFor === ut.id}>
+                      Save
+                    </Button>
+                    {editingPlan.rates.some((r) => r.unitTypeId === ut.id) && (
+                      <Button type="button" variant="secondary" onClick={() => void clearRate(editingPlan.id, ut.id)}>
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <Button type="button" variant="secondary" onClick={() => setEditingId(null)} className="w-fit">
+                Done
+              </Button>
+            </div>
+          </Card>
+        )}
+
+        <Card className="border border-gray-200">
+          <form onSubmit={(e) => void handleAdd(e)} className="flex flex-col gap-4">
+            <h3 className="text-sm font-semibold text-ink">Add a rate plan</h3>
+            {addError && (
+              <p role="alert" className="text-sm font-medium text-danger-600">
+                {addError}
+              </p>
+            )}
+            <Field label="Name">
+              <input required className={INPUT_CLASSES} value={addForm.name} onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))} />
+            </Field>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Suggest from (optional)">
+                <input
+                  type="date"
+                  className={INPUT_CLASSES}
+                  value={addForm.startDate}
+                  onChange={(e) => setAddForm((f) => ({ ...f, startDate: e.target.value }))}
+                />
+              </Field>
+              <Field label="Suggest to (optional)">
+                <input
+                  type="date"
+                  className={INPUT_CLASSES}
+                  value={addForm.endDate}
+                  onChange={(e) => setAddForm((f) => ({ ...f, endDate: e.target.value }))}
+                />
+              </Field>
+            </div>
+            <Field label="Suggest on these weekdays (optional)">
+              <div className="flex flex-wrap gap-3">
+                {WEEKDAY_LABELS.map((label, day) => (
+                  <label key={day} className="flex items-center gap-1 text-sm text-ink-secondary">
+                    <input
+                      type="checkbox"
+                      checked={addForm.weekdays.has(day)}
+                      onChange={(e) =>
+                        setAddForm((f) => {
+                          const weekdays = new Set(f.weekdays);
+                          if (e.target.checked) weekdays.add(day);
+                          else weekdays.delete(day);
+                          return { ...f, weekdays };
+                        })
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <Button type="submit" disabled={adding} className="w-fit">
+              {adding ? 'Adding…' : 'Add rate plan'}
+            </Button>
+          </form>
+        </Card>
+      </div>
+    </Section>
+  );
+}
+
 export function UnitsPage() {
   const { user } = useAuth();
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
@@ -1576,6 +1870,10 @@ export function UnitsPage() {
   const showReconnecting = realtimeStatus === 'reconnecting' && hasConnectedOnce.current;
   const canManageUnits = Boolean(user?.permissions['unit:manage']);
   const canManageUnitTypes = Boolean(user?.permissions['unittype:manage']);
+  // Spec.md §13 decision 29/30 (2026-11-15): rateplan:manage, not
+  // unittype:manage — a materially different, money-sensitive concern,
+  // same reasoning as receipt:issue staying separate from folio:*.
+  const canManageRatePlans = Boolean(user?.permissions['rateplan:manage']);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1666,6 +1964,8 @@ export function UnitsPage() {
       {canManageUnits && <AddUnitForm unitTypes={unitTypes} onCreated={() => void fetchUnits()} />}
 
       {canManageUnitTypes && <SetupRoomsSection unitTypes={unitTypes} onSaved={() => void fetchUnitTypes()} />}
+
+      {canManageRatePlans && <RatePlansSection unitTypes={unitTypes} onSaved={() => void fetchUnitTypes()} />}
 
       {/* New feature, 2026-08-24: check-in as a quick-action below the
           grid, gated on booking:checkin — same pattern as the Verify

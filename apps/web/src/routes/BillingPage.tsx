@@ -15,7 +15,7 @@ import {
   type PaymentStatusKey,
   type ReceiptDeductionTypeKey,
 } from '@lwwbr/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '../components/Button.js';
 import { Card, Section } from '../components/Card.js';
@@ -330,6 +330,33 @@ export function BillingPage() {
   // be charged. Keyed by BookingUnit id, one per room row.
   const [roomCheckOutDates, setRoomCheckOutDates] = useState<Record<string, string>>({});
 
+  // Spec.md §13 decision 29 (2026-11-15): the rate plan picker. One
+  // selection for the whole booking, not per room — "one plan applies
+  // to the whole stay," confirmed explicitly — pre-selected once from
+  // GET /bookings/:id/rate-plans's own suggestion (remembered/date-
+  // match/standard-default) and left alone after that so a later
+  // refetch never clobbers a cashier's own manual change. Rendered
+  // prominently near the header's own "Amount due," per the client's
+  // own words — "very noteworthy which is selected on the top" — not
+  // tucked inside Manage rooms, which only consumes the selection.
+  const [ratePlanOptions, setRatePlanOptions] = useState<{ id: string; name: string }[]>([]);
+  const [selectedRatePlanId, setSelectedRatePlanId] = useState<string | null>(null);
+  const [ratePlanLoadError, setRatePlanLoadError] = useState<string | null>(null);
+  // Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+  // visibility fix — rate/nights/amount for the currently selected
+  // plan, per room, fetched from the same pricing function a real
+  // charge uses (GET .../rate-plans/price), never computed client-side.
+  const [roomPricePreviews, setRoomPricePreviews] = useState<
+    Record<string, { status: 'loading' } | { status: 'error'; message: string } | { status: 'ok'; unitPrice: number; qty: number; amount: number }>
+  >({});
+  // Spec.md §13 decision 29: the client's own concern — a three-room
+  // booking drifting across plans unnoticed. Set when postRoomCharge's
+  // own POST 409s RATE_PLAN_MISMATCH; confirming retries the same call
+  // with confirmRatePlanMismatch: true.
+  const [pendingRatePlanMismatch, setPendingRatePlanMismatch] = useState<{ bookingUnitId: string; checkOutDate?: string; message: string } | null>(
+    null,
+  );
+
   // Spec.md §13 decision 25 (2026-11-14): no more billingNumberTyped —
   // the billing number is display-only now (previewData.
   // billingNumberPreview), never a cashier input. preparedByName still
@@ -462,6 +489,56 @@ export function BillingPage() {
     // auto-refetch on every keystroke.
   }, [bookingId]);
 
+  // Spec.md §13 decision 29 (2026-11-15): fetched once per booking, from
+  // whichever active room happens to be first — the suggestion (and the
+  // active-plan list itself) isn't room-specific in any way that
+  // matters here, since one plan applies to the whole stay. Guarded by
+  // a ref, not just `selectedRatePlanId !== null`, so a booking with no
+  // plans at all yet (suggestedRatePlanId: null) doesn't keep refetching
+  // on every booking refresh.
+  const ratePlanOptionsFetchedOnce = useRef(false);
+  useEffect(() => {
+    if (!bookingId || booking === 'loading' || booking === 'error' || ratePlanOptionsFetchedOnce.current) return;
+    const firstActiveUnit = booking.units.find((u) => !u.releasedAt);
+    if (!firstActiveUnit) return;
+    ratePlanOptionsFetchedOnce.current = true;
+    const params = new URLSearchParams({ bookingUnitId: firstActiveUnit.id });
+    api
+      .get<{ ratePlans: { id: string; name: string }[]; suggestedRatePlanId: string | null }>(`/bookings/${bookingId}/rate-plans?${params}`)
+      .then((res) => {
+        setRatePlanOptions(res.ratePlans);
+        if (res.suggestedRatePlanId) setSelectedRatePlanId(res.suggestedRatePlanId);
+      })
+      .catch((err) => setRatePlanLoadError(err instanceof ApiRequestError ? err.message : 'Could not load rate plans.'));
+  }, [bookingId, booking]);
+
+  // Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+  // visibility fix — re-prices every not-yet-charged room whenever the
+  // selected plan changes (or a walk-up room's checkout date is typed),
+  // via the same pricing function a real charge uses.
+  useEffect(() => {
+    if (!bookingId || booking === 'loading' || booking === 'error' || !selectedRatePlanId) return;
+    const activeUnitsForPricing = booking.units.filter((u) => !u.releasedAt);
+    for (const bu of activeUnitsForPricing) {
+      const alreadyCharged = folioCharges.some((c) => c.source === 'ROOM' && c.sourceId === bu.id && c.status !== 'VOIDED');
+      if (alreadyCharged) continue;
+      const checkOutDate = bu.occupiedTo ? undefined : roomCheckOutDates[bu.id];
+      if (!bu.occupiedTo && !checkOutDate) continue; // nothing to price yet — the checkout-date field below still needs filling in
+      setRoomPricePreviews((prev) => ({ ...prev, [bu.id]: { status: 'loading' } }));
+      const params = new URLSearchParams({ bookingUnitId: bu.id, ratePlanId: selectedRatePlanId });
+      if (checkOutDate) params.set('checkOutDate', checkOutDate);
+      api
+        .get<{ unitPrice: number; qty: number; amount: number }>(`/bookings/${bookingId}/rate-plans/price?${params}`)
+        .then((res) => setRoomPricePreviews((prev) => ({ ...prev, [bu.id]: { status: 'ok', ...res } })))
+        .catch((err) =>
+          setRoomPricePreviews((prev) => ({
+            ...prev,
+            [bu.id]: { status: 'error', message: err instanceof ApiRequestError ? err.message : 'Could not price this room.' },
+          })),
+        );
+    }
+  }, [bookingId, booking, selectedRatePlanId, folioCharges, roomCheckOutDates]);
+
   async function handlePostCharge() {
     if (!bookingId) return;
     const qty = Number(chargeForm.qty);
@@ -560,14 +637,33 @@ export function BillingPage() {
   // this action's own trigger button lives in the Rooms section, which
   // renders roomActionError. A 422 from this call was being caught and
   // shown where the cashier wasn't looking, so the button looked dead.
-  async function postRoomCharge(bookingUnitId: string, description: string, checkOutDate?: string) {
-    if (!bookingId) return;
+  //
+  // Spec.md §13 decision 29 (2026-11-15): description is no longer a
+  // parameter here — the server builds it, naming the selected plan.
+  // ratePlanId is the cashier's current picker selection; a
+  // RATE_PLAN_MISMATCH 409 is caught here (not left to roomActionError)
+  // specifically so it can offer a confirm, not just report a failure —
+  // confirmed is set true only on the retry after the cashier accepts
+  // the warning dialog below.
+  async function postRoomCharge(bookingUnitId: string, checkOutDate?: string, confirmed = false) {
+    if (!bookingId || !selectedRatePlanId) return;
     setRoomActionError(null);
     try {
-      await api.post(`/bookings/${bookingId}/folio-charges`, { source: 'ROOM', sourceId: bookingUnitId, description, checkOutDate });
+      await api.post(`/bookings/${bookingId}/folio-charges`, {
+        source: 'ROOM',
+        sourceId: bookingUnitId,
+        ratePlanId: selectedRatePlanId,
+        checkOutDate,
+        confirmRatePlanMismatch: confirmed,
+      });
+      setPendingRatePlanMismatch(null);
       refetchFolio();
       void runPreview();
     } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'RATE_PLAN_MISMATCH') {
+        setPendingRatePlanMismatch({ bookingUnitId, checkOutDate, message: err.message });
+        return;
+      }
       setRoomActionError(err instanceof ApiRequestError ? err.message : 'Could not post the room charge.');
     }
   }
@@ -1027,6 +1123,37 @@ export function BillingPage() {
                     {BOOKING_STATUS_LABELS[booking.status]}
                   </StatusBadge>
                 </div>
+                {/* Spec.md §13 decision 29 (2026-11-15): the client's own
+                    words — "very noteworthy which is selected on the
+                    top" — this is the single biggest determinant of
+                    what the guest pays, so it sits beside "Amount due,"
+                    not tucked inside Manage rooms (which only ever
+                    consumes this same selection). One plan for the
+                    whole booking, not per room. */}
+                {ratePlanOptions.length > 0 && (
+                  <div className="flex flex-col gap-1 rounded-lg border-2 border-brand-300 bg-brand-50 p-3">
+                    <label htmlFor="rate-plan-select" className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+                      Rate plan
+                    </label>
+                    <select
+                      id="rate-plan-select"
+                      className={INPUT_CLASSES}
+                      value={selectedRatePlanId ?? ''}
+                      onChange={(e) => setSelectedRatePlanId(e.target.value || null)}
+                    >
+                      {ratePlanOptions.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {ratePlanLoadError && (
+                  <p role="alert" className="text-sm font-medium text-danger-600">
+                    {ratePlanLoadError}
+                  </p>
+                )}
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-ink-secondary">Amount due</p>
                   <p className="text-4xl font-bold text-ink">{formatPeso(preview.outstandingBalance)}</p>
@@ -1403,7 +1530,11 @@ export function BillingPage() {
                     // the charge can be priced. A pre-arrival room (occupiedTo
                     // already set at booking time) never shows this field.
                     const needsCheckOutDate = !bu.occupiedTo;
-                    const description = `${bu.unit.unitTypeName} (${bu.unit.code})`;
+                    // Spec.md §13 decision 31 (2026-11-16): the rate-
+                    // visibility fix — null while there's nothing to
+                    // price yet (a walk-up room's checkout date not
+                    // typed in, or no plan selected at all).
+                    const pricePreview = roomPricePreviews[bu.id];
                     // Spec.md §13 decision 19 (2026-11-06): pulled forward
                     // from the rate-rules stage — the client hit a double-
                     // posted room charge live, and this is what stops it from
@@ -1446,31 +1577,59 @@ export function BillingPage() {
                                 )}
                               </>
                             ) : (
-                              <>
-                                {needsCheckOutDate && (
-                                  <Field label="Checkout date (walk-up — not on file)">
-                                    <input
-                                      type="date"
-                                      className={INPUT_CLASSES}
-                                      value={roomCheckOutDates[bu.id] ?? ''}
-                                      onChange={(e) => setRoomCheckOutDates((d) => ({ ...d, [bu.id]: e.target.value }))}
-                                    />
-                                  </Field>
+                              <div className="flex flex-col gap-2">
+                                <div className="flex flex-wrap items-end gap-2">
+                                  {needsCheckOutDate && (
+                                    <Field label="Checkout date (walk-up — not on file)">
+                                      <input
+                                        type="date"
+                                        className={INPUT_CLASSES}
+                                        value={roomCheckOutDates[bu.id] ?? ''}
+                                        onChange={(e) => setRoomCheckOutDates((d) => ({ ...d, [bu.id]: e.target.value }))}
+                                      />
+                                    </Field>
+                                  )}
+                                  {/* Relabeled 2026-11-06 (item 4's fix): the
+                                      client read "Add room" (which only assigns a
+                                      unit, addUnitToBooking below) as the way to
+                                      add this room's own cost — "Charge room to
+                                      folio" is the action that actually bills it. */}
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => void postRoomCharge(bu.id, roomCheckOutDates[bu.id] || undefined)}
+                                    disabled={(needsCheckOutDate && !roomCheckOutDates[bu.id]) || !selectedRatePlanId || pricePreview?.status === 'error'}
+                                  >
+                                    Charge room to folio
+                                  </Button>
+                                </div>
+                                {/* Spec.md §13 decision 31 (2026-11-16): the
+                                    Rooms-section rate-visibility fix — rate,
+                                    nights, and the resulting amount, before
+                                    the charge is posted, from the same
+                                    pricing function the real charge uses. A
+                                    failure here (RATE_PLAN_INACTIVE/
+                                    RATE_PLAN_RATE_MISSING) renders right
+                                    where the cashier is already looking, not
+                                    only after they try to charge anyway. */}
+                                {!selectedRatePlanId && (
+                                  <p className="text-xs text-ink-secondary">Pick a rate plan above before charging this room.</p>
                                 )}
-                                {/* Relabeled 2026-11-06 (item 4's fix): the
-                                    client read "Add room" (which only assigns a
-                                    unit, addUnitToBooking below) as the way to
-                                    add this room's own cost — "Charge room to
-                                    folio" is the action that actually bills it. */}
-                                <Button
-                                  type="button"
-                                  variant="secondary"
-                                  onClick={() => void postRoomCharge(bu.id, description, roomCheckOutDates[bu.id] || undefined)}
-                                  disabled={needsCheckOutDate && !roomCheckOutDates[bu.id]}
-                                >
-                                  Charge room to folio
-                                </Button>
-                              </>
+                                {selectedRatePlanId && pricePreview?.status === 'loading' && (
+                                  <p className="text-xs text-ink-secondary">Pricing…</p>
+                                )}
+                                {selectedRatePlanId && pricePreview?.status === 'error' && (
+                                  <p role="alert" className="text-xs font-medium text-danger-600">
+                                    {pricePreview.message}
+                                  </p>
+                                )}
+                                {selectedRatePlanId && pricePreview?.status === 'ok' && (
+                                  <p className="text-xs text-ink-secondary">
+                                    {formatPeso(pricePreview.unitPrice)} × {pricePreview.qty} night{pricePreview.qty === 1 ? '' : 's'} ={' '}
+                                    <span className="font-medium text-ink">{formatPeso(pricePreview.amount)}</span>
+                                  </p>
+                                )}
+                              </div>
                             )}
                             <Button
                               type="button"
@@ -1502,6 +1661,26 @@ export function BillingPage() {
                     );
                   })}
                 </ul>
+                {/* Spec.md §13 decision 29 (2026-11-15): the client's own
+                    concern — a three-room booking drifting across plans
+                    without anyone noticing. Same confirm-and-bypass shape
+                    as issueReceipt's own duplicate-billing-number warning. */}
+                {pendingRatePlanMismatch && (
+                  <div className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                    <p className="text-sm font-medium text-amber-800">{pendingRatePlanMismatch.message}</p>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        onClick={() => void postRoomCharge(pendingRatePlanMismatch.bookingUnitId, pendingRatePlanMismatch.checkOutDate, true)}
+                      >
+                        Confirm anyway
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={() => setPendingRatePlanMismatch(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {roomActionError && (
                   <p role="alert" className="text-sm font-medium text-danger-600">
                     {roomActionError}

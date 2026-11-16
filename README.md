@@ -8581,3 +8581,46 @@ covering the plan-named description, both failure modes, and the
 mismatch warn-and-confirm, 6 new tests for the suggestion endpoint's
 four reasons). `apps/web`/`packages/shared` unchanged, still
 220/220 and 96/96.
+
+**Rate plans: the UI, built in one pass, plus a real gap caught
+verifying an existing booking still charges (spec.md §13 decision 31),
+2026-11-16.** Decision 30 stopped at the schema/service layer by
+instruction, which left room charging 422ing from the live UI — the
+client's own call was to finish the UI in one pass rather than leave
+that broken while under active testing. Setup Rates UI (`UnitsPage.tsx`,
+alongside Setup: Rooms): create/name a plan, set a rate per room type,
+activate/deactivate. The picker on `BillingPage.tsx`: one selection for
+the whole booking, rendered beside "Amount due" in the hero card —
+"very noteworthy which is selected on the top," the client's own
+words — pre-selected from the suggestion endpoint, never re-clobbered
+by a later refetch. A `RATE_PLAN_MISMATCH` 409 renders as an inline
+confirm, same shape as the duplicate-billing-number warning. The
+Rooms-section rate-visibility fix needed a new read-only endpoint
+(`GET /bookings/:bookingId/rate-plans/price`) that calls the exact same
+pricing function a real charge uses — Manage Rooms now shows rate ×
+nights = amount before the charge is posted. `RATE_PLAN_INACTIVE`/
+`RATE_PLAN_RATE_MISSING` render inline, per room, where the cashier is
+already looking.
+
+**Real bug caught doing exactly what was asked** — "confirm an existing
+booking can still be charged end to end after the migration." The
+Standard-plan seed only ever walked the handful of hardcoded placeholder
+room types `seed.ts` itself creates, not every `UnitType` actually in
+the database — meaning any room type a real property created through
+the Setup: Rooms admin UI before this feature shipped would have no
+Standard rate at all, and its first cashier to charge it would hit
+`RATE_PLAN_RATE_MISSING`. Caught empirically against a real local
+Postgres (inserted a `UnitType` outside the seed list, ran the seed,
+confirmed the gap, fixed the loop to walk every `UnitType` row instead,
+re-ran and confirmed the fix, re-ran twice more to confirm idempotency
+and that a manually-edited rate survives a re-run) before this shipped,
+not left for the client to find.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 764/764 (3 unrelated pre-existing skips; 4 new
+tests for the price-preview endpoint). `apps/web` 228/228 (4 new tests
+in `UnitsPage.test.tsx` for the Rate Plans section, 4 new tests in
+`BillingPage.test.tsx` for the picker, the rate-visibility fix, inline
+failure-mode surfacing, and the mismatch confirm). `packages/shared`
+unchanged, 96/96. Screenshotted at 1600px with a plan selected and a
+room charge showing its rate and nights before posting.

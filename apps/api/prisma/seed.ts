@@ -279,29 +279,41 @@ async function main() {
     unitTypeIdByKey.set(seed.key, unitType.id);
   }
 
-  // Spec.md §13 decision 29 (2026-11-15): every booking needs a rate
-  // plan from day one, so the seed migrates each UnitType's own
-  // baseRate into a single named "Standard" plan rather than leaving
-  // priceRoomCharge with nothing to resolve. `name` is this plan's own
-  // idempotency key, same pattern as UnitType/AmenityItem above.
-  // Create-if-missing only for both the plan and each of its rates —
-  // once a cashier or admin has actually edited a Standard rate through
-  // the Setup Rates UI, a re-run of this seed must not clobber that
-  // back to whatever UnitType.baseRate happens to hold today.
-  console.warn('Seeding the "Standard" rate plan from existing UnitType.baseRate values...');
+  // Spec.md §13 decision 29 (2026-11-15), corrected 2026-11-16 (caught
+  // verifying "an existing booking can still be charged end to end
+  // after the migration" — the real scenario a live property hits
+  // first): every booking needs a rate plan from day one, so the seed
+  // migrates each UnitType's own baseRate into a single named
+  // "Standard" plan rather than leaving priceRoomCharge with nothing to
+  // resolve. The first version of this loop only walked
+  // UNIT_TYPE_SEEDS — the two hardcoded placeholder room types this
+  // script itself creates — which covers a brand-new database but
+  // silently skips every UnitType a real property already created
+  // through the Setup: Rooms admin UI before this feature shipped.
+  // Those are exactly the room types an already-running resort's actual
+  // bookings reference, so charging any of them under "Standard" would
+  // 422 RATE_PLAN_RATE_MISSING the first time a cashier tried, on a
+  // live property, mid-stay — the failure this verification step
+  // exists to catch before it reaches one. Fixed: queries every
+  // existing, non-deleted UnitType row directly, not the seed list.
+  // `name` is the plan's own idempotency key, same pattern as
+  // UnitType/AmenityItem above. Create-if-missing only for both the
+  // plan and each of its rates — once a cashier or admin has actually
+  // edited a Standard rate through the Setup Rates UI, a re-run of this
+  // seed must not clobber that back to whatever UnitType.baseRate
+  // happens to hold today.
+  console.warn('Seeding the "Standard" rate plan from every existing UnitType.baseRate...');
   const standardPlan =
     (await prisma.ratePlan.findFirst({ where: { name: 'Standard', deletedAt: null } })) ??
     (await prisma.ratePlan.create({ data: { name: 'Standard', createdById: systemAdminUserId } }));
-  for (const seed of UNIT_TYPE_SEEDS) {
-    const unitTypeId = unitTypeIdByKey.get(seed.key);
-    if (!unitTypeId) throw new Error(`Unit type ${seed.key} was not seeded`);
+  const allUnitTypes = await prisma.unitType.findMany({ where: { deletedAt: null } });
+  for (const unitType of allUnitTypes) {
     const existingRate = await prisma.ratePlanRate.findUnique({
-      where: { ratePlanId_unitTypeId: { ratePlanId: standardPlan.id, unitTypeId } },
+      where: { ratePlanId_unitTypeId: { ratePlanId: standardPlan.id, unitTypeId: unitType.id } },
     });
     if (existingRate) continue;
-    const unitType = await prisma.unitType.findFirstOrThrow({ where: { id: unitTypeId } });
     await prisma.ratePlanRate.create({
-      data: { ratePlanId: standardPlan.id, unitTypeId, rate: unitType.baseRate },
+      data: { ratePlanId: standardPlan.id, unitTypeId: unitType.id, rate: unitType.baseRate },
     });
   }
 

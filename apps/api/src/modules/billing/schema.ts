@@ -106,6 +106,17 @@ export const listRatePlanOptionsQuerySchema = z.object({
 });
 export type ListRatePlanOptionsQuery = z.infer<typeof listRatePlanOptionsQuerySchema>;
 
+// Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+// visibility fix's own query — a chosen ratePlanId, unlike the
+// suggestion endpoint above, since this prices a specific choice
+// rather than suggesting one.
+export const previewRoomChargeQuerySchema = z.object({
+  bookingUnitId: z.string().min(1),
+  ratePlanId: z.string().min(1),
+  checkOutDate: z.string().date().optional(),
+});
+export type PreviewRoomChargeQuery = z.infer<typeof previewRoomChargeQuerySchema>;
+
 // Spec.md §13 decision 17 (2026-11-06): "any amount except the total
 // becomes cashier-editable, with a confirmation step" — overrides
 // unitPrice, not amount directly, so amount stays qty*unitPrice (the

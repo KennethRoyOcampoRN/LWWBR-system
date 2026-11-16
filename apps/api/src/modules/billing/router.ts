@@ -8,6 +8,7 @@ import {
   listRatePlanOptionsQuerySchema,
   overrideFolioChargeSchema,
   postFolioChargeSchema,
+  previewRoomChargeQuerySchema,
   receiptDraftSchema,
   submitPaymentSchema,
   voidReceiptSchema,
@@ -27,6 +28,7 @@ import {
   overrideFolioCharge,
   postFolioCharge,
   previewReceipt,
+  previewRoomCharge,
   submitPayment,
   voidReceipt,
 } from './service.js';
@@ -67,6 +69,20 @@ billingRouter.get(
   asyncHandler(async (req, res) => {
     const query = listRatePlanOptionsQuerySchema.parse(req.query);
     const result = await listRatePlanOptionsForBooking(req.params.bookingId as string, query.bookingUnitId, query.checkOutDate);
+    res.status(200).json(result);
+  }),
+);
+
+// Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+// visibility fix — prices a specific plan/room combination before the
+// cashier commits to charging it, via the exact same pricing function
+// the real charge uses. folio:charge-gated, same as the route above.
+billingRouter.get(
+  '/bookings/:bookingId/rate-plans/price',
+  requirePermission('folio:charge'),
+  asyncHandler(async (req, res) => {
+    const query = previewRoomChargeQuerySchema.parse(req.query);
+    const result = await previewRoomCharge(req.params.bookingId as string, query.bookingUnitId, query.ratePlanId, query.checkOutDate);
     res.status(200).json(result);
   }),
 );

@@ -125,13 +125,20 @@ describe('BillingPage', () => {
         expect(body.source).toBe('ROOM');
         expect(body).not.toHaveProperty('unitPrice');
         expect(body).not.toHaveProperty('qty');
-        // Item 4's fix: built from the unit and its type, not the old
-        // hardcoded "{code} room charge".
-        expect(body.description).toBe('Couple B (R01)');
+        expect(body).not.toHaveProperty('description');
+        // Spec.md §13 decision 29: the cashier's rate-plan selection,
+        // sent explicitly rather than inferred.
+        expect(body.ratePlanId).toBe('plan_1');
         postedRoomCharge = true;
-        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...body } });
+        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...body, description: 'Couple B (R01)' } });
       }
       if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) {
+        return jsonResponse(200, { unitPrice: 1100, qty: 2, amount: 2200 });
+      }
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
       if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
         previewCallCount += 1;
         return jsonResponse(200, postedRoomCharge ? previewWithRoomCharge : emptyPreview);
@@ -153,6 +160,10 @@ describe('BillingPage', () => {
     // Spec.md §13 decision 22: room actions live behind "Manage rooms"
     // now, not always on screen.
     await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
+
+    // Spec.md §13 decision 29: disabled until the rate-plan suggestion
+    // (fetched async, the suggested plan pre-selected) resolves.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled());
 
     // Post the room charge — no unitPrice/qty field exists for this
     // action at all, since the server prices it automatically. Posting
@@ -197,6 +208,12 @@ describe('BillingPage', () => {
         return jsonResponse(422, { error: { code: 'ROOM_CHECKOUT_DATE_REQUIRED', message: 'Supply a checkout date to price this room.' } });
       }
       if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) {
+        return jsonResponse(200, { unitPrice: 1100, qty: 2, amount: 2200 });
+      }
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
       if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
         return jsonResponse(200, emptyPreview);
       }
@@ -209,7 +226,7 @@ describe('BillingPage', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
 
     const errorText = await screen.findByText('Supply a checkout date to price this room.');
@@ -247,9 +264,15 @@ describe('BillingPage', () => {
       }
       if (url.endsWith('/bookings/booking_1/folio-charges') && init?.method === 'POST') {
         postedBody = JSON.parse(init.body as string);
-        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...postedBody } });
+        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...postedBody, description: 'Couple B (R01)' } });
       }
       if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) {
+        return jsonResponse(200, { unitPrice: 1100, qty: 2, amount: 2200 });
+      }
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
       if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') {
         return jsonResponse(200, emptyPreview);
       }
@@ -263,13 +286,188 @@ describe('BillingPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
     await waitFor(() => expect(screen.getByLabelText('Checkout date (walk-up — not on file)')).toBeInTheDocument());
+    // Spec.md §13 decision 29: disabled for two independent reasons now
+    // — the missing checkout date (still true here) and no rate plan
+    // selected yet. Wait for the plan to resolve before asserting the
+    // date is still the blocker this test is actually about.
+    await waitFor(() => expect(screen.getAllByText('Standard').length).toBeGreaterThan(0));
     expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeDisabled();
 
     await user.type(screen.getByLabelText('Checkout date (walk-up — not on file)'), '2026-11-12');
-    expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
 
-    await waitFor(() => expect(postedBody).toMatchObject({ checkOutDate: '2026-11-12' }));
+    await waitFor(() => expect(postedBody).toMatchObject({ checkOutDate: '2026-11-12', ratePlanId: 'plan_1' }));
+  });
+
+  // Spec.md §13 decision 29 (2026-11-15): the picker itself — prominent,
+  // near the header's own "Amount due," pre-selected from the
+  // suggestion endpoint, and changeable by the cashier.
+  it('shows the rate plan picker near the header, pre-selected from the suggestion, and lets the cashier change it', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) return jsonResponse(200, { unitPrice: 2500, qty: 2, amount: 5000 });
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, {
+          ratePlans: [
+            { id: 'plan_1', name: 'Standard' },
+            { id: 'plan_xmas', name: 'December Xmas' },
+          ],
+          suggestedRatePlanId: 'plan_xmas',
+        });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    // Renders beside "Amount due," inside the same hero card — not
+    // behind "Manage rooms".
+    await waitFor(() => expect(screen.getByText('Rate plan')).toBeInTheDocument());
+    const select = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(select.value).toBe('plan_xmas');
+
+    await userEvent.setup().selectOptions(select, 'plan_1');
+    expect(select.value).toBe('plan_1');
+  });
+
+  // Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+  // visibility fix — rate, nights, and amount before the charge is
+  // posted, from the same pricing function the real charge uses.
+  it('shows rate × nights = amount in Manage rooms before charging, for the currently selected plan', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) return jsonResponse(200, { unitPrice: 1500, qty: 2, amount: 3000 });
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
+
+    await waitFor(() => expect(screen.getAllByText(/₱1,500\.00 × 2 nights/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText('₱3,000.00').length).toBeGreaterThan(0);
+  });
+
+  // Spec.md §13 decision 30/31: the client's own "fail loudly" failure
+  // modes, surfaced where the cashier is already looking — inside
+  // Manage rooms, next to the room being priced — not only after a
+  // failed POST.
+  it('surfaces RATE_PLAN_RATE_MISSING inline in Manage rooms when previewing the price', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) {
+        return jsonResponse(422, {
+          error: { code: 'RATE_PLAN_RATE_MISSING', message: '"Standard" has no rate set for this room type yet — set one in Rate Plans before charging a room under it.' },
+        });
+      }
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
+
+    const errorText = await screen.findByText(/has no rate set for this room type yet/);
+    const roomsSection = screen.getByText('Move').closest('section');
+    expect(roomsSection).toContainElement(errorText);
+    expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeDisabled();
+  });
+
+  // Spec.md §13 decision 29: the client's own concern — a three-room
+  // booking drifting across plans unnoticed. Same confirm-and-bypass
+  // shape as issueReceipt's duplicate-billing-number warning.
+  it('on a RATE_PLAN_MISMATCH 409, confirming reposts with confirmRatePlanMismatch: true', async () => {
+    const user = userEvent.setup();
+    let postCount = 0;
+    let lastBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: cashierUser });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/bookings/booking_1') && !init?.method) return jsonResponse(200, { booking: checkedInBooking });
+      if (url.endsWith('/bookings/booking_1/folio-charges') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { folioCharges: [] });
+      }
+      if (url.endsWith('/bookings/booking_1/folio-charges') && init?.method === 'POST') {
+        postCount += 1;
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        lastBody = body;
+        if (!body.confirmRatePlanMismatch) {
+          return jsonResponse(409, {
+            error: {
+              code: 'RATE_PLAN_MISMATCH',
+              message: 'This booking\'s other rooms were last charged under "December Xmas" — this charge would use "Standard" instead. Confirm to proceed anyway.',
+            },
+          });
+        }
+        return jsonResponse(201, { folioCharge: { id: 'charge_1', ...body, description: 'Couple B (R01)' } });
+      }
+      if (url.endsWith('/bookings/booking_1/unsettled-fnb-charges')) return jsonResponse(200, { charges: [] });
+      if (url.includes('/bookings/booking_1/rate-plans/price')) return jsonResponse(200, { unitPrice: 1500, qty: 2, amount: 3000 });
+      if (url.includes('/bookings/booking_1/rate-plans')) {
+        return jsonResponse(200, { ratePlans: [{ id: 'plan_1', name: 'Standard' }], suggestedRatePlanId: 'plan_1' });
+      }
+      if (url.endsWith('/bookings/booking_1/receipts/preview') && init?.method === 'POST') return jsonResponse(200, emptyPreview);
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/billing/booking_1');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Manage rooms' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Manage rooms' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Charge room to folio' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Charge room to folio' }));
+
+    const warning = await screen.findByText(/Confirm to proceed anyway/);
+    expect(warning).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm anyway' }));
+
+    await waitFor(() => expect(postCount).toBe(2));
+    expect(lastBody).toMatchObject({ confirmRatePlanMismatch: true });
   });
 
   it('on a duplicate-billing-number warning, confirming reissues with confirmDuplicateBillingNumber: true', async () => {

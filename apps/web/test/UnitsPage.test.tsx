@@ -511,3 +511,117 @@ describe('UnitsPage — Setup Rooms', () => {
     expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500 });
   });
 });
+
+// Spec.md §13 decision 29/30 (2026-11-15): the admin CRUD surface for
+// named rate plans, alongside Setup: Rooms since that's where room
+// pricing already lives. rateplan:manage, not unittype:manage — a
+// deliberately separate permission.
+describe('UnitsPage — Rate Plans', () => {
+  const standardRoom = {
+    id: 'type_1',
+    name: 'Standard Room',
+    description: null,
+    defaultCapacity: 2,
+    baseRate: 1500,
+    dayTourRate: null,
+    extraPersonRate: 300,
+    colorHex: null,
+    isActive: true,
+    sortOrder: 0,
+  };
+  const standardPlan = {
+    id: 'plan_1',
+    name: 'Standard',
+    startDate: null,
+    endDate: null,
+    weekdayMask: null,
+    isActive: true,
+    rates: [{ id: 'rate_1', unitTypeId: 'type_1', rate: 1500, unitType: { id: 'type_1', name: 'Standard Room' } }],
+  };
+
+  function stubFetch(
+    userFixture: typeof managerUser,
+    opts: { onCreatePlan?: (body: Record<string, unknown>) => void; onSetRate?: (body: Record<string, unknown>) => void } = {},
+  ) {
+    return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: userFixture });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [standardRoom] });
+      if (url.endsWith('/rate-plans') && (!init || init.method === undefined)) {
+        return jsonResponse(200, { ratePlans: [standardPlan] });
+      }
+      if (url.endsWith('/rate-plans') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        opts.onCreatePlan?.(body);
+        return jsonResponse(201, { ratePlan: { ...standardPlan, id: 'plan_2', ...body, rates: [] } });
+      }
+      if (url.includes('/rate-plans/plan_1/rates/') && init?.method === 'PUT') {
+        const body = JSON.parse(init.body as string);
+        opts.onSetRate?.(body);
+        return jsonResponse(200, { rate: { id: 'rate_1', ratePlanId: 'plan_1', unitTypeId: 'type_1', rate: body.rate } });
+      }
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+  }
+
+  it('shows the Rate Plans section for a rateplan:manage holder', async () => {
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithRatePlan));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Rate Plans')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Standard').length).toBeGreaterThan(0));
+  });
+
+  it('hides the Rate Plans section from a holder without rateplan:manage', async () => {
+    vi.stubGlobal('fetch', stubFetch(managerUser));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Units' })).toBeInTheDocument());
+    expect(screen.queryByText('Rate Plans')).not.toBeInTheDocument();
+  });
+
+  it('creates a rate plan with suggestion dates', async () => {
+    const user = userEvent.setup();
+    let createdBody: Record<string, unknown> | null = null;
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithRatePlan, { onCreatePlan: (body) => (createdBody = body) }));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Add a rate plan')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Name'), 'December Xmas');
+    await user.type(screen.getByLabelText('Suggest from (optional)'), '2026-12-01');
+    await user.type(screen.getByLabelText('Suggest to (optional)'), '2026-12-31');
+    await user.click(screen.getByRole('button', { name: 'Add rate plan' }));
+
+    await waitFor(() => expect(createdBody).not.toBeNull());
+    expect(createdBody).toMatchObject({ name: 'December Xmas', startDate: '2026-12-01', endDate: '2026-12-31' });
+  });
+
+  it('edits a rate for a room type under a plan', async () => {
+    const user = userEvent.setup();
+    let setRateBody: Record<string, unknown> | null = null;
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithRatePlan, { onSetRate: (body) => (setRateBody = body) }));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByText('Standard').length).toBeGreaterThan(0));
+    // DataTable's own responsive split renders both a desktop table row and
+    // a mobile card for the same data — same reason decision 22/23's own
+    // tests click the first match rather than assuming exactly one exists.
+    await user.click(screen.getAllByRole('button', { name: 'Edit rates' })[0]!);
+    await waitFor(() => expect(screen.getByText('Rates for "Standard"')).toBeInTheDocument());
+
+    const input = screen.getByLabelText('Standard Room');
+    await user.clear(input);
+    await user.type(input, '1800');
+    await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
+
+    await waitFor(() => expect(setRateBody).toEqual({ rate: 1800 }));
+  });
+});

@@ -230,6 +230,27 @@ async function priceRoomCharge(
   return { unitPrice: rate, qty: nights, description };
 }
 
+// Spec.md §13 decision 31 (2026-11-16): the Rooms-section rate-
+// visibility fix — a cashier charging a room had no on-screen number to
+// check against what they tell the guest until after the fact. Calls
+// the exact same pricing function postFolioCharge's ROOM branch does,
+// not a parallel reimplementation (the lesson decision 24 already
+// learned the hard way about client-side money arithmetic drifting
+// from the server's own) — the only difference from an actual charge is
+// that nothing is persisted as a FolioCharge here. The occupiedFrom/
+// occupiedTo backfill priceRoomCharge does as a side effect is harmless
+// to share with a preview call: it writes the same real dates a charge
+// would, never a guess that could be wrong.
+export async function previewRoomCharge(
+  bookingId: string,
+  bookingUnitId: string,
+  ratePlanId: string,
+  cashierCheckOutDate?: string,
+) {
+  const priced = await priceRoomCharge(bookingId, bookingUnitId, ratePlanId, cashierCheckOutDate);
+  return { ...priced, amount: roundMoney(priced.qty * priced.unitPrice) };
+}
+
 // Spec.md §13 decision 29 (2026-11-15): backs the cashier-facing picker
 // — GET /bookings/:bookingId/rate-plans, folio:charge-gated, same
 // permission required to actually post the room charge this informs.
