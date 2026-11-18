@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -104,7 +104,7 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
         units = [...units, created];
         return jsonResponse(201, { unit: created });
       }
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 }] });
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -133,7 +133,7 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [currentRoom] });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 }] });
       if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
       if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
       if (url.match(/\/units\/unit_1$/) && init?.method === 'PATCH') {
@@ -180,7 +180,7 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 }] });
       if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
       if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
       if (url.match(/\/units\/unit_1$/) && init?.method === 'DELETE') {
@@ -216,7 +216,7 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
       if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [inactiveRoom] });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room' }] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 }] });
       if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
       if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
       if (url.match(/\/units\/unit_1$/) && init?.method === 'DELETE') {
@@ -457,18 +457,27 @@ describe('UnitsPage — Setup Rooms', () => {
     sortOrder: 0,
   };
 
-  function stubFetch(userFixture: typeof managerUser, opts: { onCreate?: (body: Record<string, unknown>) => void } = {}) {
+  function stubFetch(
+    userFixture: typeof managerUser,
+    opts: { onCreate?: (body: Record<string, unknown>) => void; deleteError?: { code: string; message: string } } = {},
+  ) {
+    let deleted = false;
     return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: userFixture });
       if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
       if (url.endsWith('/unit-types') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { unitTypes: [standardRoom] });
+        return jsonResponse(200, { unitTypes: deleted ? [] : [standardRoom] });
       }
       if (url.endsWith('/unit-types') && init?.method === 'POST') {
         const body = JSON.parse(init.body as string);
         opts.onCreate?.(body);
         return jsonResponse(201, { unitType: { ...standardRoom, id: 'type_2', ...body } });
+      }
+      if (url.endsWith('/unit-types/type_1') && init?.method === 'DELETE') {
+        if (opts.deleteError) return jsonResponse(409, { error: opts.deleteError });
+        deleted = true;
+        return jsonResponse(204, {});
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -510,6 +519,44 @@ describe('UnitsPage — Setup Rooms', () => {
     await waitFor(() => expect(createdBody).not.toBeNull());
     expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500 });
   });
+
+  // Caught live, 2026-11-18: the client created a duplicate "Family
+  // Room" by accident with no way to remove it — only Deactivate
+  // existed. Same no-reason-required rule as deleting a never-
+  // receipted folio charge.
+  it('deletes a room type with a plain confirm, no reason required', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const managerWithUnitType = { ...managerUser, permissions: { ...managerUser.permissions, 'unittype:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithUnitType));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryAllByText('Standard Room').length).toBe(0));
+  });
+
+  it('shows the server-named room count when a room type is still in use', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const managerWithUnitType = { ...managerUser, permissions: { ...managerUser.permissions, 'unittype:manage': 'ALL' } };
+    vi.stubGlobal(
+      'fetch',
+      stubFetch(managerWithUnitType, {
+        deleteError: { code: 'UNIT_TYPE_IN_USE', message: '3 rooms still use this room type — reassign them before deleting it.' },
+      }),
+    );
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
+
+    await screen.findByText('3 rooms still use this room type — reassign them before deleting it.');
+  });
 });
 
 // Spec.md §13 decision 29/30 (2026-11-15): the admin CRUD surface for
@@ -539,22 +586,47 @@ describe('UnitsPage — Rate Plans', () => {
     rates: [{ id: 'rate_1', unitTypeId: 'type_1', rate: 1500, unitType: { id: 'type_1', name: 'Standard Room' } }],
   };
 
+  const familyRoom = {
+    id: 'type_2',
+    name: 'Family Room',
+    description: null,
+    defaultCapacity: 4,
+    baseRate: 2500,
+    dayTourRate: null,
+    extraPersonRate: null,
+    colorHex: null,
+    isActive: true,
+    sortOrder: 1,
+  };
+
   function stubFetch(
     userFixture: typeof managerUser,
-    opts: { onCreatePlan?: (body: Record<string, unknown>) => void; onSetRate?: (body: Record<string, unknown>) => void } = {},
+    opts: {
+      onCreatePlan?: (body: Record<string, unknown>) => void;
+      onSetRate?: (body: Record<string, unknown>) => void;
+      onToggleActive?: (body: Record<string, unknown>) => void;
+      unitTypes?: Record<string, unknown>[];
+      units?: Record<string, unknown>[];
+      ratePlans?: Record<string, unknown>[];
+    } = {},
   ) {
     return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: userFixture });
-      if (url.endsWith('/units')) return jsonResponse(200, { units: [] });
-      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [standardRoom] });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: opts.units ?? [] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: opts.unitTypes ?? [standardRoom] });
       if (url.endsWith('/rate-plans') && (!init || init.method === undefined)) {
-        return jsonResponse(200, { ratePlans: [standardPlan] });
+        return jsonResponse(200, { ratePlans: opts.ratePlans ?? [standardPlan] });
       }
       if (url.endsWith('/rate-plans') && init?.method === 'POST') {
         const body = JSON.parse(init.body as string);
         opts.onCreatePlan?.(body);
         return jsonResponse(201, { ratePlan: { ...standardPlan, id: 'plan_2', ...body, rates: [] } });
+      }
+      if (url.endsWith('/rate-plans/plan_1') && init?.method === 'PATCH') {
+        const body = JSON.parse(init.body as string);
+        opts.onToggleActive?.(body);
+        return jsonResponse(200, { ratePlan: { ...standardPlan, ...body } });
       }
       if (url.includes('/rate-plans/plan_1/rates/') && init?.method === 'PUT') {
         const body = JSON.parse(init.body as string);
@@ -617,11 +689,92 @@ describe('UnitsPage — Rate Plans', () => {
     await user.click(screen.getAllByRole('button', { name: 'Edit rates' })[0]!);
     await waitFor(() => expect(screen.getByText('Rates for "Standard"')).toBeInTheDocument());
 
-    const input = screen.getByLabelText('Standard Room');
+    // Disambiguation label (capacity + base rate) — see
+    // unitTypeOptionLabel's own comment for why a bare name isn't used.
+    const input = screen.getByLabelText('Standard Room — 2 pax, ₱1,500.00');
     await user.clear(input);
     await user.type(input, '1800');
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
 
     await waitFor(() => expect(setRateBody).toEqual({ rate: 1800 }));
+  });
+
+  // Caught live, 2026-11-18: the client's own "WEEKDAYS" plan read
+  // "0 / 6 room types" set, but the editor itself gave no indication
+  // of which types those were until charging one actually failed.
+  it('flags a room type with no rate set in the rate editor', async () => {
+    const user = userEvent.setup();
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithRatePlan, { unitTypes: [standardRoom, familyRoom] }));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByText('Standard').length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Edit rates' })[0]!);
+    await waitFor(() => expect(screen.getByText('Rates for "Standard"')).toBeInTheDocument());
+
+    // Family Room has no rate under this plan (standardPlan.rates only
+    // covers type_1) — Standard Room does, and isn't flagged. Two
+    // levels up from the input: Field's own wrapper, then the row.
+    const familyRow = screen.getByLabelText('Family Room — 4 pax, ₱2,500.00').closest('div')!.parentElement!;
+    expect(within(familyRow).getByText('No rate set')).toBeInTheDocument();
+    const standardRow = screen.getByLabelText('Standard Room — 2 pax, ₱1,500.00').closest('div')!.parentElement!;
+    expect(within(standardRow).queryByText('No rate set')).not.toBeInTheDocument();
+  });
+
+  // Caught live, 2026-11-18: the client's own concern — a cashier
+  // hitting RATE_PLAN_RATE_MISSING at charge time because a room type
+  // with rooms actually assigned was never priced under the activated
+  // plan. Warn before activating, not after a failed charge.
+  it('warns before activating a plan that leaves an in-use room type unpriced, and can be cancelled', async () => {
+    const user = userEvent.setup();
+    let toggleBody: Record<string, unknown> | null = null;
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal(
+      'fetch',
+      stubFetch(managerWithRatePlan, {
+        unitTypes: [standardRoom, familyRoom],
+        units: [{ id: 'bu_1', code: 'F01', name: 'Family 1', unitTypeId: 'type_2', type: 'ROOM', capacity: 4, floor: null, status: 'READY', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null }],
+        ratePlans: [{ ...standardPlan, isActive: false }],
+        onToggleActive: (body) => (toggleBody = body),
+      }),
+    );
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Activate' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Activate' })[0]!);
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(confirmSpy.mock.calls[0]![0]).toContain('Family Room');
+    expect(toggleBody).toBeNull();
+
+    confirmSpy.mockReturnValue(true);
+    await user.click(screen.getAllByRole('button', { name: 'Activate' })[0]!);
+    await waitFor(() => expect(toggleBody).toEqual({ isActive: true }));
+  });
+
+  it('does not warn when every in-use room type already has a rate', async () => {
+    const user = userEvent.setup();
+    let toggleBody: Record<string, unknown> | null = null;
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal(
+      'fetch',
+      stubFetch(managerWithRatePlan, {
+        units: [{ id: 'bu_1', code: 'R01', name: 'Room 1', unitTypeId: 'type_1', type: 'ROOM', capacity: 2, floor: null, status: 'READY', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null }],
+        ratePlans: [{ ...standardPlan, isActive: false }],
+        onToggleActive: (body) => (toggleBody = body),
+      }),
+    );
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Activate' }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Activate' })[0]!);
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(toggleBody).toEqual({ isActive: true }));
   });
 });

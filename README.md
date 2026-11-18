@@ -8624,3 +8624,29 @@ in `UnitsPage.test.tsx` for the Rate Plans section, 4 new tests in
 failure-mode surfacing, and the mismatch confirm). `packages/shared`
 unchanged, 96/96. Screenshotted at 1600px with a plan selected and a
 room charge showing its rate and nights before posting.
+
+**Room type delete, duplicate-name prevention, and unpriced-type
+flagging — three client-testing findings on Setup Rates (spec.md §13
+decision 32), 2026-11-18.** The client created a duplicate "Family
+Room" by accident and had no way to remove it or tell the two apart.
+New `DELETE /unit-types/:id`, same rule as deleting a folio charge or a
+payment: delete when nothing depends on it (and clean up its
+`RatePlanRate` rows with it — a rate under a type that no longer exists
+is meaningless), 409 naming the room count when something does, no
+reason required. `createUnitType`/`updateUnitType` now reject a name an
+active type already uses, validated in the service layer rather than
+with a DB constraint — a unique index would fail to apply against the
+client's own existing duplicate, so it's deferred until that's cleaned
+up (worth adding then, not now). Every place a unit type is listed by
+name alone now shows capacity and base rate alongside it, so the
+existing duplicate stays manageable in the meantime. The Rate Plans
+editor now marks a room type "No rate set" directly, and activating a
+plan warns first if an in-use room type is still uncovered, rather than
+only the "0 / 6 room types" count implying a gap exists somewhere.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 771/771 (3 unrelated pre-existing skips; 7 new
+tests for delete and name-conflict rejection). `apps/web` 233/233 (5
+new tests: delete with a plain confirm, the in-use 409 message, the
+unpriced flag, the activation warning and its cancel path).
+`packages/shared` unchanged, 96/96.

@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrisma = {
   user: { findFirst: vi.fn() },
   unitType: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-  unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn() },
+  unit: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), count: vi.fn() },
+  ratePlanRate: { deleteMany: vi.fn() },
+  $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
   unitStatusEvent: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
   bookingUnit: { count: vi.fn(), findMany: vi.fn() },
   workOrder: { findMany: vi.fn(), count: vi.fn() },
@@ -249,7 +251,9 @@ describe('POST/PATCH /api/v1/unit-types', () => {
 
   it('updates an existing unit type', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1' });
+    // First call is the existing-type lookup; second is the new
+    // active-name-conflict check (null: no conflict for 'Deluxe Room').
+    mockPrisma.unitType.findFirst.mockResolvedValueOnce({ id: 'type_1', name: 'Standard Room' }).mockResolvedValueOnce(null);
     mockPrisma.unitType.update.mockResolvedValue({
       id: 'type_1',
       name: 'Deluxe Room',
@@ -270,6 +274,115 @@ describe('POST/PATCH /api/v1/unit-types', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.unitType.name).toBe('Deluxe Room');
+  });
+
+  // Caught live, 2026-11-18: UnitType.name has no uniqueness
+  // constraint, and the client created a duplicate "Family Room" by
+  // accident. Validated in the service layer, scoped to active types
+  // only — never a DB constraint, since the client's own data already
+  // has a duplicate a migration would fail against.
+  it('409s creating a unit type with the same name as an existing active one', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', name: 'Family Room', isActive: true });
+
+    const res = await request(createApp())
+      .post('/api/v1/unit-types')
+      .set('Cookie', authCookie())
+      .send({ name: 'Family Room', defaultCapacity: 4, baseRate: 2500 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_TYPE_NAME_TAKEN');
+    expect(mockPrisma.unitType.create).not.toHaveBeenCalled();
+  });
+
+  it('409s renaming a unit type to a name an existing active one already uses', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst
+      .mockResolvedValueOnce({ id: 'type_2', name: 'Deluxe Room' }) // the existing-type lookup
+      .mockResolvedValueOnce({ id: 'type_1', name: 'Family Room', isActive: true }); // the conflict check
+
+    const res = await request(createApp())
+      .patch('/api/v1/unit-types/type_2')
+      .set('Cookie', authCookie())
+      .send({ name: 'Family Room' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_TYPE_NAME_TAKEN');
+    expect(mockPrisma.unitType.update).not.toHaveBeenCalled();
+  });
+
+  it('does not conflict-check a rename that leaves the name unchanged', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValueOnce({ id: 'type_1', name: 'Family Room' });
+    mockPrisma.unitType.update.mockResolvedValue({
+      id: 'type_1',
+      name: 'Family Room',
+      description: null,
+      defaultCapacity: 5,
+      baseRate: { toString: () => '2500.00' },
+      dayTourRate: null,
+      extraPersonRate: null,
+      colorHex: null,
+      isActive: true,
+      sortOrder: 0,
+    });
+
+    const res = await request(createApp())
+      .patch('/api/v1/unit-types/type_1')
+      .set('Cookie', authCookie())
+      .send({ name: 'Family Room', defaultCapacity: 5 });
+
+    expect(res.status).toBe(200);
+    // Only one findFirst call — the existing-type lookup — since the
+    // name didn't actually change.
+    expect(mockPrisma.unitType.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  // Caught live, 2026-11-18: the client created a duplicate "Family
+  // Room" by accident with no way to remove it — only Deactivate
+  // existed. Same rule already used for a folio charge or a payment:
+  // delete when nothing depends on it, refuse clearly when it does.
+  describe('DELETE /api/v1/unit-types/:id', () => {
+    it('deletes a unit type no Unit references, and deletes its RatePlanRate rows with it', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', name: 'Family Room (dup)', deletedAt: null });
+      mockPrisma.unit.count.mockResolvedValue(0);
+
+      const res = await request(createApp()).delete('/api/v1/unit-types/type_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(204);
+      expect(mockPrisma.ratePlanRate.deleteMany).toHaveBeenCalledWith({ where: { unitTypeId: 'type_1' } });
+      expect(mockPrisma.unitType.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'type_1' }, data: { deletedAt: expect.any(Date) } }),
+      );
+    });
+
+    it('404s deleting an unknown unit type', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.unitType.findFirst.mockResolvedValue(null);
+      const res = await request(createApp()).delete('/api/v1/unit-types/missing').set('Cookie', authCookie());
+      expect(res.status).toBe(404);
+    });
+
+    it('409s deleting a unit type still used by rooms, naming the count, and deletes nothing', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+      mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', name: 'Standard Room', deletedAt: null });
+      mockPrisma.unit.count.mockResolvedValue(3);
+
+      const res = await request(createApp()).delete('/api/v1/unit-types/type_1').set('Cookie', authCookie());
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('UNIT_TYPE_IN_USE');
+      expect(res.body.error.message).toContain('3 rooms');
+      expect(mockPrisma.unitType.update).not.toHaveBeenCalled();
+      expect(mockPrisma.ratePlanRate.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses deleting without unittype:manage', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
+      const res = await request(createApp()).delete('/api/v1/unit-types/type_1').set('Cookie', authCookie());
+      expect(res.status).toBe(403);
+    });
   });
 });
 

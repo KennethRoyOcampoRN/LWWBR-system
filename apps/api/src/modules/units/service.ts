@@ -190,7 +190,33 @@ export async function listUnitTypes() {
   return unitTypes.map(unitTypeToJson);
 }
 
+// Caught live, 2026-11-18: UnitType.name has no uniqueness constraint,
+// and the client created a duplicate "Family Room" by accident — two
+// rows, indistinguishable by name alone everywhere one is listed.
+// Validated here, in the service layer, rather than with a DB
+// constraint: a unique index would fail to apply against the client's
+// own already-duplicated data, and a migration that can't run against
+// real data is worse than the duplicate it would have prevented. Once
+// that existing duplicate is cleaned up (one of the two renamed or
+// deleted), a partial unique index scoped to isActive — Postgres
+// supports a conditional unique index directly, e.g. `CREATE UNIQUE
+// INDEX ON "UnitType" (name) WHERE "isActive" AND "deletedAt" IS
+// NULL` — becomes worth adding as a second line of defense; not added
+// now because the data isn't clean yet. Scoped to active types only,
+// per the client's own instruction: a deactivated type can keep a name
+// an active one also uses without blocking anything, since it's never
+// offered for a new room again.
+async function assertUnitTypeNameAvailable(name: string, excludeId?: string): Promise<void> {
+  const conflict = await prisma.unitType.findFirst({
+    where: { name, isActive: true, deletedAt: null, ...(excludeId ? { id: { not: excludeId } } : {}) },
+  });
+  if (conflict) {
+    throw new ApiError(409, 'UNIT_TYPE_NAME_TAKEN', `An active room type named "${name}" already exists.`);
+  }
+}
+
 export async function createUnitType(input: CreateUnitTypeInput) {
+  await assertUnitTypeNameAvailable(input.name);
   const unitType = await prisma.unitType.create({ data: input });
   return unitTypeToJson(unitType);
 }
@@ -200,8 +226,46 @@ export async function updateUnitType(id: string, input: UpdateUnitTypeInput) {
   if (!existing) {
     throw new ApiError(404, 'NOT_FOUND', 'Unit type not found');
   }
+  if (input.name !== undefined && input.name !== existing.name) {
+    await assertUnitTypeNameAvailable(input.name, id);
+  }
   const unitType = await prisma.unitType.update({ where: { id }, data: input });
   return unitTypeToJson(unitType);
+}
+
+// Caught live, 2026-11-18: the client created a duplicate "Family
+// Room" by accident with no way to remove it — only Deactivate
+// existed. Same rule already used for a folio charge or a payment:
+// delete freely when nothing depends on it, refuse clearly when
+// something does. No reason required — correcting an accidental
+// duplicate is not a financial action the way voiding a charge is.
+// Deliberately does NOT require existing.isActive === false first
+// (unlike deleteUnit's own two-gate check) — the client's own rule was
+// just "no Unit points at the type," not "deactivate first," and this
+// mirrors that exactly rather than adding a gate not asked for.
+export async function deleteUnitType(id: string) {
+  const existing = await prisma.unitType.findFirst({ where: { id, deletedAt: null } });
+  if (!existing) {
+    throw new ApiError(404, 'NOT_FOUND', 'Unit type not found');
+  }
+  const unitCount = await prisma.unit.count({ where: { unitTypeId: id, deletedAt: null } });
+  if (unitCount > 0) {
+    throw new ApiError(
+      409,
+      'UNIT_TYPE_IN_USE',
+      `${unitCount} room${unitCount === 1 ? '' : 's'} still use this room type — reassign ${unitCount === 1 ? 'it' : 'them'} before deleting it.`,
+      { unitCount },
+    );
+  }
+  // RatePlanRate has no deletedAt of its own (never an audited
+  // document, just a pricing join row) — a rate under a type that no
+  // longer exists is meaningless, so this is a real delete, not a
+  // soft one, same as the model's own shape already implies.
+  await prisma.$transaction([
+    prisma.ratePlanRate.deleteMany({ where: { unitTypeId: id } }),
+    prisma.unitType.update({ where: { id }, data: { deletedAt: new Date() } }),
+  ]);
+  return { id };
 }
 
 export interface UnitSummary {

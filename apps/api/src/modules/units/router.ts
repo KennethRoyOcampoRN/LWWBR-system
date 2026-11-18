@@ -16,6 +16,7 @@ import {
   createUnit,
   createUnitType,
   deleteUnit,
+  deleteUnitType,
   forceUnitStatus,
   getUnitsDashboard,
   getUnitTimeline,
@@ -55,6 +56,18 @@ unitsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = updateUnitTypeSchema.parse(req.body);
     res.status(200).json({ unitType: await updateUnitType(req.params.id as string, body) });
+  }),
+);
+
+// Caught live, 2026-11-18: no way to remove an accidental duplicate
+// room type — only Deactivate existed. Same folio-charge/payment rule:
+// delete when nothing depends on it, 409 clearly when something does.
+unitsRouter.delete(
+  '/unit-types/:id',
+  requirePermission('unittype:manage'),
+  asyncHandler(async (req, res) => {
+    await deleteUnitType(req.params.id as string);
+    res.status(204).end();
   }),
 );
 

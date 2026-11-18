@@ -71,6 +71,17 @@ function formatPesoAmount(amount: number): string {
   return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+// Caught live, 2026-11-18: UnitType.name has no uniqueness constraint
+// (service layer rejects a new active duplicate going forward, but the
+// client's own existing "Family Room" pair predates that and still
+// exists) — anywhere a unit type is listed by name alone, two same-
+// named rows are indistinguishable. Capacity and base rate tell them
+// apart, per the client's own suggestion, so every such listing uses
+// this instead of a bare name.
+function unitTypeOptionLabel(t: UnitTypeRow): string {
+  return `${t.name} — ${t.defaultCapacity} pax, ${formatPesoAmount(t.baseRate)}`;
+}
+
 // Setup Rooms (client-directed feature, 2026-11-04): expanded from the
 // id/name shape the Check-in/Add-unit pickers only ever needed, to the
 // full UnitType record the new management section below lists and edits.
@@ -530,7 +541,7 @@ function UnitDetailDrawer({
                 >
                   {unitTypes.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.name}
+                      {unitTypeOptionLabel(t)}
                     </option>
                   ))}
                 </select>
@@ -1188,7 +1199,7 @@ function AddUnitForm({ unitTypes, onCreated }: { unitTypes: UnitTypeRow[]; onCre
             </option>
             {unitTypes.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.name}
+                {unitTypeOptionLabel(t)}
               </option>
             ))}
           </select>
@@ -1354,6 +1365,24 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
     onSaved();
   }
 
+  // Caught live, 2026-11-18: the client created a duplicate "Family
+  // Room" by accident with no way to remove it — only Deactivate
+  // existed. No reason prompt, same as deleting a never-receipted
+  // folio charge — correcting a mistake, not a financial action. The
+  // server 409s with the room count if any still use this type; that
+  // message is shown plainly rather than guessed at client-side.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  async function handleDelete(type: UnitTypeRow) {
+    if (!window.confirm(`Delete "${type.name}"? This cannot be undone.`)) return;
+    setDeleteError(null);
+    try {
+      await api.delete(`/unit-types/${type.id}`);
+      onSaved();
+    } catch (err) {
+      setDeleteError(err instanceof ApiRequestError ? err.message : 'Could not delete this room type.');
+    }
+  }
+
   const columns: DataTableColumn<UnitTypeRow>[] = [
     { key: 'name', header: 'Name', render: (t) => <span className="font-medium">{t.name}</span> },
     { key: 'capacity', header: 'Capacity', render: (t) => t.defaultCapacity },
@@ -1380,6 +1409,9 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
           <button type="button" onClick={() => void toggleActive(t)} className="text-xs font-medium text-brand-700 hover:underline">
             {t.isActive ? 'Deactivate' : 'Reactivate'}
           </button>
+          <button type="button" onClick={() => void handleDelete(t)} className="text-xs font-medium text-danger-600 hover:underline">
+            Delete
+          </button>
         </div>
       ),
     },
@@ -1388,6 +1420,11 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
   return (
     <Section title="Setup: Rooms" description="Room types and rates — printed and charged from here.">
       <div className="flex flex-col gap-4">
+        {deleteError && (
+          <p role="alert" className="text-sm font-medium text-danger-600">
+            {deleteError}
+          </p>
+        )}
         <DataTable
           columns={columns}
           rows={unitTypes}
@@ -1541,7 +1578,15 @@ function suggestionSummary(plan: RatePlanRow): string {
 
 const EMPTY_RATE_PLAN_FORM = { name: '', startDate: '', endDate: '', weekdays: new Set<number>() };
 
-function RatePlansSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; onSaved: () => void }) {
+function RatePlansSection({
+  unitTypes,
+  units,
+  onSaved,
+}: {
+  unitTypes: UnitTypeRow[];
+  units: UnitRow[];
+  onSaved: () => void;
+}) {
   const [ratePlans, setRatePlans] = useState<RatePlanRow[] | 'loading' | 'error'>('loading');
   const [addForm, setAddForm] = useState(EMPTY_RATE_PLAN_FORM);
   const [addError, setAddError] = useState<string | null>(null);
@@ -1587,8 +1632,26 @@ function RatePlansSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; on
     }
   }
 
+  // Caught live, 2026-11-18: the client's own "WEEKDAYS" plan read
+  // "0 / 6 room types" set — correct per the fail-loud design (any room
+  // charged under it 422s RATE_PLAN_RATE_MISSING), but nothing warned
+  // before activation, only after a cashier hit the gap. Scoped to
+  // unit types that actually have a room assigned — a type with zero
+  // rooms left unpriced doesn't matter operationally, so it shouldn't
+  // block activating an otherwise-ready plan.
   async function toggleActive(plan: RatePlanRow) {
-    await api.patch(`/rate-plans/${plan.id}`, { isActive: !plan.isActive });
+    const activating = !plan.isActive;
+    if (activating) {
+      const unitTypeIdsInUse = new Set(units.map((u) => u.unitTypeId));
+      const uncoveredInUse = unitTypes.filter((ut) => unitTypeIdsInUse.has(ut.id) && !plan.rates.some((r) => r.unitTypeId === ut.id));
+      if (uncoveredInUse.length > 0) {
+        const names = uncoveredInUse.map((ut) => ut.name).join(', ');
+        if (!window.confirm(`"${plan.name}" has no rate yet for: ${names}. A room of that type will fail to charge under this plan until one is set. Activate anyway?`)) {
+          return;
+        }
+      }
+    }
+    await api.patch(`/rate-plans/${plan.id}`, { isActive: activating });
     void fetchRatePlans();
     onSaved();
   }
@@ -1697,28 +1760,37 @@ function RatePlansSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; on
                 </p>
               )}
               <div className="flex flex-col gap-2">
-                {unitTypes.map((ut) => (
-                  <div key={ut.id} className="flex flex-wrap items-end gap-2">
-                    <Field label={ut.name}>
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        className={INPUT_CLASSES}
-                        value={rateDrafts[ut.id] ?? ''}
-                        onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: e.target.value }))}
-                      />
-                    </Field>
-                    <Button type="button" variant="secondary" onClick={() => void saveRate(editingPlan.id, ut.id)} disabled={savingRateFor === ut.id}>
-                      Save
-                    </Button>
-                    {editingPlan.rates.some((r) => r.unitTypeId === ut.id) && (
-                      <Button type="button" variant="secondary" onClick={() => void clearRate(editingPlan.id, ut.id)}>
-                        Clear
+                {unitTypes.map((ut) => {
+                  // Caught live, 2026-11-18: a room type with no rate
+                  // under the selected plan 422s RATE_PLAN_RATE_MISSING
+                  // at charge time — correct, but the setup screen
+                  // should show the gap before a cashier hits it, not
+                  // only let the count column imply one exists.
+                  const isUnpriced = !editingPlan.rates.some((r) => r.unitTypeId === ut.id);
+                  return (
+                    <div key={ut.id} className="flex flex-wrap items-end gap-2">
+                      <Field label={unitTypeOptionLabel(ut)}>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          className={INPUT_CLASSES}
+                          value={rateDrafts[ut.id] ?? ''}
+                          onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: e.target.value }))}
+                        />
+                      </Field>
+                      {isUnpriced && <span className="text-xs font-medium text-amber-700">No rate set</span>}
+                      <Button type="button" variant="secondary" onClick={() => void saveRate(editingPlan.id, ut.id)} disabled={savingRateFor === ut.id}>
+                        Save
                       </Button>
-                    )}
-                  </div>
-                ))}
+                      {!isUnpriced && (
+                        <Button type="button" variant="secondary" onClick={() => void clearRate(editingPlan.id, ut.id)}>
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <Button type="button" variant="secondary" onClick={() => setEditingId(null)} className="w-fit">
                 Done
@@ -1965,7 +2037,9 @@ export function UnitsPage() {
 
       {canManageUnitTypes && <SetupRoomsSection unitTypes={unitTypes} onSaved={() => void fetchUnitTypes()} />}
 
-      {canManageRatePlans && <RatePlansSection unitTypes={unitTypes} onSaved={() => void fetchUnitTypes()} />}
+      {canManageRatePlans && (
+        <RatePlansSection unitTypes={unitTypes} units={Array.isArray(units) ? units : []} onSaved={() => void fetchUnitTypes()} />
+      )}
 
       {/* New feature, 2026-08-24: check-in as a quick-action below the
           grid, gated on booking:checkin — same pattern as the Verify
