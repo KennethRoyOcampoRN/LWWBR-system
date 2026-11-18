@@ -778,3 +778,142 @@ describe('UnitsPage — Rate Plans', () => {
     await waitFor(() => expect(toggleBody).toEqual({ isActive: true }));
   });
 });
+
+// Spec.md §13 decision 34 (2026-11-18): bulk unit status change. Client's
+// real case — morning housekeeping, thirteen rooms Dirty, one person
+// clicking through drawers one at a time instead of in bulk.
+describe('UnitsPage — bulk status change', () => {
+  function dirtyRoom(id: string, code: string) {
+    return {
+      id, code, name: `Room ${code}`, unitTypeId: 't1', type: 'ROOM', capacity: 2, floor: null,
+      status: 'VACANT_DIRTY', version: 3, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null,
+    };
+  }
+  function cleanedRoom(id: string, code: string) {
+    return {
+      id, code, name: `Room ${code}`, unitTypeId: 't1', type: 'ROOM', capacity: 2, floor: null,
+      status: 'CLEANED', version: 1, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null,
+    };
+  }
+  function stubFetch(units: unknown[], onBulk?: (body: unknown) => void, bulkResponse?: unknown) {
+    return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units/bulk-status')) {
+        onBulk?.(init?.body ? JSON.parse(init.body as string) : null);
+        return jsonResponse(200, bulkResponse ?? { results: [], succeededCount: 0, failedCount: 0 });
+      }
+      if (url.endsWith('/units')) return jsonResponse(200, { units });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+  }
+
+  it('"select all Dirty" shows the count and selects only those rooms, offering the single legal next status', async () => {
+    const user = userEvent.setup();
+    const rooms = [dirtyRoom('u1', 'D01'), dirtyRoom('u2', 'D02'), cleanedRoom('u3', 'C01')];
+    vi.stubGlobal('fetch', stubFetch(rooms));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    const selectAllDirty = await screen.findByRole('button', { name: 'Select all Dirty (2)' });
+    await user.click(selectAllDirty);
+
+    expect(await screen.findByText('2 rooms selected')).toBeInTheDocument();
+    const select = screen.getByLabelText('Change selected rooms to');
+    expect(within(select).getByRole('option', { name: 'Cleaning' })).toBeInTheDocument();
+    // Only the one manual transition from VACANT_DIRTY exists.
+    expect(within(select).queryAllByRole('option')).toHaveLength(2); // placeholder + Cleaning
+  });
+
+  it('names the statuses in a mixed selection instead of just disabling the dropdown', async () => {
+    const user = userEvent.setup();
+    const rooms = [dirtyRoom('u1', 'D01'), cleanedRoom('u2', 'C01')];
+    vi.stubGlobal('fetch', stubFetch(rooms));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('D01')).toBeInTheDocument());
+    await user.click(screen.getByLabelText('Select room D01'));
+    await user.click(screen.getByLabelText('Select room C01'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Dirty');
+    expect(alert.textContent).toContain('Cleaned');
+    expect(screen.queryByLabelText('Change selected rooms to')).not.toBeInTheDocument();
+  });
+
+  it('reports a partial apply on the grid itself — summary line plus a per-card marker on the room that failed', async () => {
+    const user = userEvent.setup();
+    const rooms = [dirtyRoom('u1', 'D01'), dirtyRoom('u2', 'D02')];
+    let bulkBody: unknown = null;
+    vi.stubGlobal(
+      'fetch',
+      stubFetch(
+        rooms,
+        (body) => (bulkBody = body),
+        {
+          results: [
+            { unitId: 'u1', code: 'D01', status: 'OK' },
+            { unitId: 'u2', code: 'D02', status: 'FAILED', message: 'Version conflict — refresh and try again.' },
+          ],
+          succeededCount: 1,
+          failedCount: 1,
+        },
+      ),
+    );
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    const selectAllDirty = await screen.findByRole('button', { name: 'Select all Dirty (2)' });
+    await user.click(selectAllDirty);
+    await user.selectOptions(screen.getByLabelText('Change selected rooms to'), 'CLEANING');
+    await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+    expect(bulkBody).toEqual({ unitIds: ['u1', 'u2'], toStatus: 'CLEANING' });
+    await waitFor(() =>
+      expect(screen.getByText("1 of 2 rooms changed to Cleaning. 1 didn't — see below.")).toBeInTheDocument(),
+    );
+    // Visible right in the action bar's own result list, not a separate panel.
+    expect(screen.getByText(/D02: Version conflict/)).toBeInTheDocument();
+    // And on the specific card itself.
+    expect(screen.getByLabelText(/Could not change: Version conflict/)).toBeInTheDocument();
+  });
+
+  it('never offers Occupied as a bulk target — a Ready room alone offers no manual next status, since Occupied only happens via check-in', async () => {
+    const user = userEvent.setup();
+    const readyRoom = {
+      id: 'u1', code: 'R01', name: 'Room R01', unitTypeId: 't1', type: 'ROOM', capacity: 2, floor: null,
+      status: 'READY', version: 0, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null,
+    };
+    vi.stubGlobal('fetch', stubFetch([readyRoom]));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Select room R01')).toBeInTheDocument());
+    await user.click(screen.getByLabelText('Select room R01'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Ready');
+    expect(screen.queryByText('Occupied', { selector: 'option' })).not.toBeInTheDocument();
+  });
+
+  it('hides the selection checkboxes entirely for a user without any status-change permission', async () => {
+    const readOnlyUser = { ...managerUser, permissions: { 'unit:read': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch([dirtyRoom('u1', 'D01')]));
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: readOnlyUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units: [dirtyRoom('u1', 'D01')] });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('D01')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Select room D01')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Select all Dirty/ })).not.toBeInTheDocument();
+  });
+});

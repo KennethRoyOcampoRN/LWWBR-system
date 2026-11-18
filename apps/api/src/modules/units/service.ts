@@ -830,6 +830,64 @@ export async function changeUnitStatus(
   return { id: unitId, status: input.toStatus, version: newVersion };
 }
 
+export interface BulkUnitStatusResult {
+  unitId: string;
+  code: string | null;
+  status: 'OK' | 'FAILED';
+  message?: string;
+}
+
+// Spec.md §13 decision 34 (2026-11-18): morning housekeeping — thirteen
+// rooms VACANT_DIRTY, one person who'd otherwise click through thirteen
+// drawers one at a time. Deliberately reuses changeUnitStatus per room
+// rather than a parallel batch implementation — every version check,
+// transition check, per-transition permission check, and the automatic-
+// trigger override gate all keep working exactly as already tested,
+// with no new transition logic to get subtly wrong. That override gate
+// is also what guarantees this can never put a room into OCCUPIED
+// without a real booking: READY->OCCUPIED is trigger: 'automatic', so
+// changeUnitStatus itself refuses it for anyone without the SYSTEM_ADMIN
+// override — the same restriction the single-room path already has,
+// not a separate check bolted on here that could drift from it.
+//
+// No cross-room transaction, by the client's own explicit instruction:
+// one room's failure must never roll back the rest. Each room's current
+// version is read fresh, immediately before its own attempt — never
+// trusted from the request — so a genuinely concurrent edit 409s for
+// just that one room (reported in its own result) rather than racing a
+// version the grid loaded a while ago. Each successful call is its own
+// real prisma.unit.updateMany, so the audit extension (lib/
+// auditExtension.ts) already writes one row per room — nothing extra
+// needed for "each change still audits individually."
+export async function bulkChangeUnitStatus(
+  unitIds: string[],
+  toStatus: UnitStatusKey,
+  actor: { id: string; roles: readonly RoleKey[]; permissions: Partial<Record<PermissionKey, PermissionScope>> },
+  meta: { ip?: string | null; userAgent?: string | null } = {},
+): Promise<{ results: BulkUnitStatusResult[]; succeededCount: number; failedCount: number }> {
+  const results: BulkUnitStatusResult[] = [];
+  for (const unitId of unitIds) {
+    const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });
+    if (!unit) {
+      results.push({ unitId, code: null, status: 'FAILED', message: 'Unit not found' });
+      continue;
+    }
+    try {
+      await changeUnitStatus(unitId, { toStatus, version: unit.version }, actor, meta);
+      results.push({ unitId, code: unit.code, status: 'OK' });
+    } catch (err) {
+      results.push({
+        unitId,
+        code: unit.code,
+        status: 'FAILED',
+        message: err instanceof ApiError ? err.message : "Could not change this unit's status.",
+      });
+    }
+  }
+  const succeededCount = results.filter((r) => r.status === 'OK').length;
+  return { results, succeededCount, failedCount: results.length - succeededCount };
+}
+
 // Forced status correction (client decision, 2026-08-22): deliberately
 // distinct from changeUnitStatus above. Staff sometimes forget to update
 // the system in real time, and someone with `unit:force_status` needs to

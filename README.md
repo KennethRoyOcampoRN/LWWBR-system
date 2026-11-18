@@ -8650,3 +8650,77 @@ tests for delete and name-conflict rejection). `apps/web` 233/233 (5
 new tests: delete with a plain confirm, the in-use 409 message, the
 unpriced flag, the activation warning and its cancel path).
 `packages/shared` unchanged, 96/96.
+
+### Bulk unit status change (spec.md §13 decision 34), 2026-11-18
+
+Client's real case: morning housekeeping, every room `VACANT_DIRTY`,
+one person clicking through thirteen drawers one status at a time.
+Planned first (decision 33), then built on an explicit go-ahead that
+also praised one part of the plan as better than what was literally
+asked for — reusing `allowedManualTransitions` rather than a bolted-on
+"never Occupied" guard, since it excludes every automatic-trigger
+transition by construction instead of relying on someone to remember a
+separate check.
+
+New `POST /units/bulk-status` (`{unitIds: string[1..50], toStatus}`,
+`requireAuth` only — same reasoning as the single-room status route:
+which permission applies depends on the transition requested, so the
+service checks it per room). `bulkChangeUnitStatus` loops the *existing*
+`changeUnitStatus` per room rather than new batch logic — every
+version-conflict check, transition validation, and the automatic-
+override gate keep working exactly as already tested. Each room's
+current `version` is read fresh immediately before its own attempt,
+never trusted from the request (most of a real batch would be stale by
+the time Apply is clicked). No `$transaction` across rooms — one room's
+409 or 422 never blocks the rest, per the client's own "don't roll the
+whole batch back over one failure." Always 200, body
+`{results: {unitId, code, status: 'OK'|'FAILED', message?}[],
+succeededCount, failedCount}` — never a bare "success" when anything
+failed. Audit needs no special-casing: each room's own real
+`prisma.unit.update` is already intercepted individually by the
+existing audit extension.
+
+Three refinements from the go-ahead, each honored literally:
+
+- **"Selecting by status is the actual workflow, not select-all."** A
+  toolbar above the grid shows one button per status actually present
+  — "Select all Dirty (9)" — each a one-click full replace of the
+  selection, plus "All rooms (N)." No dead buttons for a status with
+  zero rooms.
+- **"Report partial results where the person is looking."** The action
+  bar's own summary ("8 of 9 rooms changed to Cleaning. 1 didn't — see
+  below.") sits directly above the grid it just acted on, with the
+  failed room's reason listed right under it — and, read literally
+  rather than treated as satisfied by the summary alone, each room that
+  failed gets a red ring and a small "!" badge on its own card (the
+  message in its tooltip), a green ring on every room that succeeded.
+  Both clear the moment the selection changes again. Failed rooms stay
+  selected after Apply so retrying is "pick a status, Apply again," not
+  hunting for the same four rooms by eye.
+- **"The empty-intersection case will happen often."** The message
+  names the statuses actually in the selection — "No status is valid
+  for every selected room — the selection mixes Dirty, Cleaned,
+  Occupied. Select rooms with the same current status to change them
+  together." — in place of the dropdown, which doesn't render at all
+  when there's nothing to offer.
+
+The whole feature renders for `unit:update_status` OR `unit:block` OR
+`unit:manage`, mirroring the single-room drawer's own "render the
+controls, let an empty allowed-list speak for itself" rather than
+hiding bulk behind one fixed permission.
+
+Verified empirically, not just by test: two 1600px screenshots — a
+four-room mixed selection (Dirty/Cleaned/Occupied) showing the
+empty-intersection message naming all three, and a nine-room "Select
+all Dirty" → Cleaning apply showing 8 green-ringed Cleaning cards next
+to 1 red-ringed still-Dirty card with its own "!" marker and version-
+conflict reason, both in the action bar and on the card's own tooltip.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 775/775 (3 unrelated pre-existing skips; 5 new
+tests for the bulk-status endpoint, including the double-fetch-per-room
+version check and the Occupied-safety case). `apps/web` 238/238 (5 new
+tests: select-all-by-status, the named-statuses empty-intersection
+message, a partial apply reported on the grid, Occupied-safety for a
+lone Ready room, and the feature hidden entirely from a `unit:read`-only
+holder). `packages/shared` unchanged, 96/96.

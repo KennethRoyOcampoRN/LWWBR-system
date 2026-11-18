@@ -4,6 +4,7 @@ import { requireAuth } from '../auth/middleware.js';
 import { requirePermission } from '../auth/requirePermission.js';
 import { getMe } from '../auth/service.js';
 import {
+  bulkChangeUnitStatusSchema,
   changeUnitStatusSchema,
   createUnitSchema,
   createUnitTypeSchema,
@@ -12,6 +13,7 @@ import {
   updateUnitTypeSchema,
 } from './schema.js';
 import {
+  bulkChangeUnitStatus,
   changeUnitStatus,
   createUnit,
   createUnitType,
@@ -180,6 +182,28 @@ unitsRouter.post(
     const result = await changeUnitStatus(
       req.params.id as string,
       body,
+      { id: me.id, roles: me.roles, permissions: me.permissions },
+      { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null },
+    );
+    res.status(200).json(result);
+  }),
+);
+
+// Spec.md §13 decision 34 (2026-11-18): bulk status change. Same
+// no-single-permission-gate reasoning as the single-room route above —
+// bulkChangeUnitStatus enforces the correct per-transition permission
+// per room via changeUnitStatus's own check. Always 200: a partial
+// result is still a successful call, reported in the body, never an
+// overall error code that would hide which rooms actually succeeded.
+unitsRouter.post(
+  '/units/bulk-status',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = bulkChangeUnitStatusSchema.parse(req.body);
+    const me = await getMe(req.userId as string);
+    const result = await bulkChangeUnitStatus(
+      body.unitIds,
+      body.toStatus,
       { id: me.id, roles: me.roles, permissions: me.permissions },
       { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null },
     );

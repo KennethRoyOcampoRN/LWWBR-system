@@ -799,6 +799,107 @@ describe('POST /api/v1/units/:id/status', () => {
   });
 });
 
+// Spec.md §13 decision 34 (2026-11-18): morning housekeeping — change
+// many rooms' status at once, reusing changeUnitStatus per room so
+// every transition/permission/version check already proven above
+// keeps working unchanged.
+describe('POST /api/v1/units/bulk-status', () => {
+  it('changes every selected room, reading each one\'s own current version fresh rather than trusting the request', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const unit1 = fakeUnit({ id: 'unit_1', code: 'R01', status: 'VACANT_DIRTY', version: 2 });
+    const unit2 = fakeUnit({ id: 'unit_2', code: 'R02', status: 'VACANT_DIRTY', version: 5 });
+    // Two findFirst calls per room: bulkChangeUnitStatus's own read (for
+    // the current version and the code to report), then
+    // changeUnitStatus's own internal read — nothing changes between
+    // them, so both see the same row.
+    mockPrisma.unit.findFirst
+      .mockResolvedValueOnce(unit1)
+      .mockResolvedValueOnce(unit1)
+      .mockResolvedValueOnce(unit2)
+      .mockResolvedValueOnce(unit2);
+    mockPrisma.unit.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/bulk-status')
+      .set('Cookie', authCookie())
+      .send({ unitIds: ['unit_1', 'unit_2'], toStatus: 'CLEANING' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.succeededCount).toBe(2);
+    expect(res.body.failedCount).toBe(0);
+    expect(res.body.results).toEqual([
+      { unitId: 'unit_1', code: 'R01', status: 'OK' },
+      { unitId: 'unit_2', code: 'R02', status: 'OK' },
+    ]);
+    expect(mockPrisma.unit.updateMany).toHaveBeenNthCalledWith(1, {
+      where: { id: 'unit_1', version: 2 },
+      data: { status: 'CLEANING', version: { increment: 1 } },
+    });
+    expect(mockPrisma.unit.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: 'unit_2', version: 5 },
+      data: { status: 'CLEANING', version: { increment: 1 } },
+    });
+  });
+
+  it('reports a partial result — one room succeeds, one 409s on a stale version, one 404s — without rolling back the rest', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const unit1 = fakeUnit({ id: 'unit_1', code: 'R01', status: 'VACANT_DIRTY', version: 2 });
+    const unit2 = fakeUnit({ id: 'unit_2', code: 'R02', status: 'VACANT_DIRTY', version: 2 });
+    mockPrisma.unit.findFirst
+      .mockResolvedValueOnce(unit1)
+      .mockResolvedValueOnce(unit1)
+      .mockResolvedValueOnce(unit2)
+      .mockResolvedValueOnce(unit2)
+      .mockResolvedValueOnce(null); // unit_3: bulk's own pre-check 404s before changeUnitStatus is even called
+    mockPrisma.unit.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+    const res = await request(createApp())
+      .post('/api/v1/units/bulk-status')
+      .set('Cookie', authCookie())
+      .send({ unitIds: ['unit_1', 'unit_2', 'unit_3'], toStatus: 'CLEANING' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.succeededCount).toBe(1);
+    expect(res.body.failedCount).toBe(2);
+    expect(res.body.results[0]).toEqual({ unitId: 'unit_1', code: 'R01', status: 'OK' });
+    expect(res.body.results[1]).toMatchObject({ unitId: 'unit_2', code: 'R02', status: 'FAILED' });
+    expect(res.body.results[1].message).toMatch(/refresh and try again/);
+    expect(res.body.results[2]).toEqual({ unitId: 'unit_3', code: null, status: 'FAILED', message: 'Unit not found' });
+    // unit_1's successful update is never undone by unit_2/unit_3's failures.
+    expect(mockPrisma.unit.updateMany).toHaveBeenCalledTimes(2);
+  });
+
+  // Spec.md §13 decision 34: the client's own closing concern — a bulk
+  // action must never put a room into OCCUPIED without a real booking.
+  // READY->OCCUPIED is trigger: 'automatic'; changeUnitStatus's own
+  // override gate (SYSTEM_ADMIN only) already refuses it for anyone
+  // else, and bulk inherits that unchanged rather than re-deciding it.
+  it('cannot bulk a READY room into OCCUPIED for a caller without the automatic-override role', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    const unit1 = fakeUnit({ id: 'unit_1', code: 'R01', status: 'READY', version: 1 });
+    mockPrisma.unit.findFirst.mockResolvedValueOnce(unit1).mockResolvedValueOnce(unit1);
+
+    const res = await request(createApp())
+      .post('/api/v1/units/bulk-status')
+      .set('Cookie', authCookie())
+      .send({ unitIds: ['unit_1'], toStatus: 'OCCUPIED' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.failedCount).toBe(1);
+    expect(res.body.results[0].message).toMatch(/happens automatically/);
+    expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('422s the whole call for more than 50 unitIds', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
+    const res = await request(createApp())
+      .post('/api/v1/units/bulk-status')
+      .set('Cookie', authCookie())
+      .send({ unitIds: Array.from({ length: 51 }, (_, i) => `unit_${i}`), toStatus: 'CLEANING' });
+    expect(res.status).toBe(422);
+  });
+});
+
 describe('POST /api/v1/units/:id/force-status', () => {
   it('rejects a caller without unit:force_status', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));

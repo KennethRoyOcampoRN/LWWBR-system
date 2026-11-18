@@ -1859,12 +1859,32 @@ function RatePlansSection({
   );
 }
 
+// Spec.md §13 decision 34 (2026-11-18): bulk status change — the API's
+// own BulkUnitStatusResult shape, duplicated here rather than imported
+// since it's an API response type, not a shared domain type.
+interface BulkUnitStatusResult {
+  unitId: string;
+  code: string | null;
+  status: 'OK' | 'FAILED';
+  message?: string;
+}
+
 export function UnitsPage() {
   const { user } = useAuth();
   const [units, setUnits] = useState<UnitRow[] | 'loading' | 'error'>('loading');
   const [unitTypes, setUnitTypes] = useState<UnitTypeRow[]>([]);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus>('connecting');
+  // Spec.md §13 decision 34: bulk status change selection + outcome.
+  // bulkOutcome is keyed by unitId and persists on the grid (client
+  // instruction: "report partial results where the person is looking...
+  // visible on the grid, not in a panel they'd scroll to") until the
+  // selection changes again or it's explicitly cleared.
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkTargetStatus, setBulkTargetStatus] = useState<UnitStatusKey | ''>('');
+  const [bulkApplying, setBulkApplying] = useState(false);
+  const [bulkOutcome, setBulkOutcome] = useState<Map<string, BulkUnitStatusResult> | null>(null);
+  const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   // Tracks whether the realtime channel has ever reached 'connected', so
   // the reconnecting banner only shows for an actual drop, not for the
   // brief 'connecting' state every page load starts in.
@@ -1935,12 +1955,110 @@ export function UnitsPage() {
     );
   }
 
+  // Spec.md §13 decision 34: toggling, or picking a new "select all" set,
+  // always drops the previous apply's on-grid outcome markers — client
+  // instruction was that results stay visible until the next action, not
+  // forever, and a changed selection is the clearest signal "the next
+  // action" has started.
+  function toggleBulkSelection(unitId: string) {
+    setBulkOutcome(null);
+    setBulkSummary(null);
+    setBulkSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(unitId)) next.delete(unitId);
+      else next.add(unitId);
+      return next;
+    });
+  }
+
+  function selectAllByStatus(status: AnyUnitStatusKey, unitIds: string[]) {
+    setBulkOutcome(null);
+    setBulkSummary(null);
+    setBulkTargetStatus('');
+    setBulkSelectedIds(new Set(unitIds));
+  }
+
+  function clearBulkSelection() {
+    setBulkSelectedIds(new Set());
+    setBulkTargetStatus('');
+    setBulkOutcome(null);
+    setBulkSummary(null);
+  }
+
+  async function handleBulkApply() {
+    if (!bulkTargetStatus || bulkSelectedIds.size === 0) return;
+    setBulkApplying(true);
+    try {
+      const result = await api.post<{
+        results: BulkUnitStatusResult[];
+        succeededCount: number;
+        failedCount: number;
+      }>('/units/bulk-status', {
+        unitIds: Array.from(bulkSelectedIds),
+        toStatus: bulkTargetStatus,
+      });
+      const outcome = new Map(result.results.map((r) => [r.unitId, r]));
+      setBulkOutcome(outcome);
+      setBulkSummary(
+        result.failedCount === 0
+          ? `All ${result.succeededCount} room${result.succeededCount === 1 ? '' : 's'} changed to ${UNIT_STATUS_LABELS[bulkTargetStatus]}.`
+          : `${result.succeededCount} of ${result.results.length} room${result.results.length === 1 ? '' : 's'} changed to ${UNIT_STATUS_LABELS[bulkTargetStatus]}. ${result.failedCount} didn't — see below.`,
+      );
+      // Only the rooms that actually changed come off the selection — the
+      // failed ones stay selected (and marked, per-card) so the person can
+      // see exactly what to retry without re-picking them.
+      setBulkSelectedIds(new Set(result.results.filter((r) => r.status === 'FAILED').map((r) => r.unitId)));
+      setBulkTargetStatus('');
+      void fetchUnits();
+    } catch (err) {
+      setBulkSummary(err instanceof ApiRequestError ? err.message : 'Could not change these rooms.');
+    } finally {
+      setBulkApplying(false);
+    }
+  }
+
   const unitTypeName = (id: string) => unitTypes.find((t) => t.id === id)?.name ?? 'Unknown type';
   const selectedUnit = Array.isArray(units)
     ? units.find((u) => u.id === selectedUnitId)
     : undefined;
   const showReconnecting = realtimeStatus === 'reconnecting' && hasConnectedOnce.current;
   const canManageUnits = Boolean(user?.permissions['unit:manage']);
+  // Spec.md §13 decision 34: shown to anyone who could change at least
+  // one status manually — same no-single-gate reasoning as the API route
+  // (which permission applies depends on the transition requested), so
+  // this mirrors the single-room drawer's own "render the controls, let
+  // an empty allowed-list speak for itself" approach rather than hiding
+  // the whole feature behind one permission.
+  const canBulkStatus =
+    Boolean(user?.permissions['unit:update_status']) ||
+    Boolean(user?.permissions['unit:block']) ||
+    Boolean(user?.permissions['unit:manage']);
+  const unitList = Array.isArray(units) ? units : [];
+  // Client refinement, 2026-11-18: "selecting by status is the actual
+  // workflow, not select-all" — one-click "select all Dirty" etc, each
+  // showing its own count, computed only from statuses actually present.
+  const presentStatusCounts: Array<{ status: AnyUnitStatusKey; count: number; unitIds: string[] }> = [];
+  for (const status of UNIT_STATUS_KEYS) {
+    const matching = unitList.filter((u) => u.status === status);
+    if (matching.length > 0) presentStatusCounts.push({ status, count: matching.length, unitIds: matching.map((u) => u.id) });
+  }
+  const bulkSelectedUnits = unitList.filter((u) => bulkSelectedIds.has(u.id));
+  const bulkSelectedStatuses = Array.from(new Set(bulkSelectedUnits.map((u) => u.status)));
+  // Intersection of allowedManualTransitions across every distinct status
+  // in the selection — this is what guarantees OCCUPIED can never be
+  // offered (it's reachable only via the automatic-trigger transition,
+  // which allowedManualTransitions excludes by construction) and what
+  // produces "no legal common target" rather than something that would
+  // half-fail.
+  let bulkCommonTargets: UnitStatusKey[] = [];
+  if (bulkSelectedStatuses.length > 0) {
+    bulkCommonTargets = bulkSelectedStatuses.every((s) => (UNIT_STATUS_KEYS as readonly string[]).includes(s))
+      ? bulkSelectedStatuses.reduce<UnitStatusKey[] | null>((acc, status) => {
+          const allowed = allowedManualTransitions(status as UnitStatusKey, user?.permissions ?? {});
+          return acc === null ? allowed : acc.filter((t) => allowed.includes(t));
+        }, null) ?? []
+      : [];
+  }
   const canManageUnitTypes = Boolean(user?.permissions['unittype:manage']);
   // Spec.md §13 decision 29/30 (2026-11-15): rateplan:manage, not
   // unittype:manage — a materially different, money-sensitive concern,
@@ -1970,6 +2088,85 @@ export function UnitsPage() {
       )}
       {units === 'error' && <p role="alert">Could not load units.</p>}
 
+      {/* Spec.md §13 decision 34 (2026-11-18): bulk status change toolbar.
+          Client refinement: "selecting by status is the actual workflow,
+          not select-all" — thirteen Dirty rooms every morning, one click
+          each to Cleaning then Ready. Each button is a full replace of
+          the selection (not an add), and shows its own count. */}
+      {canBulkStatus && Array.isArray(units) && units.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-gray-50 p-2">
+          <span className="text-xs font-medium text-gray-600">Select:</span>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => selectAllByStatus('VACANT_DIRTY', unitList.map((u) => u.id))}
+          >
+            All rooms ({unitList.length})
+          </Button>
+          {presentStatusCounts.map(({ status, count, unitIds }) => (
+            <Button key={status} type="button" variant="secondary" onClick={() => selectAllByStatus(status, unitIds)}>
+              Select all {UNIT_STATUS_LABELS[status]} ({count})
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* Action bar — appears once anything is selected, sits directly
+          above the grid it acts on (not a side panel/modal) so the
+          partial-result summary below lands exactly where the person is
+          already looking, per the client's explicit "we've been caught
+          by misplaced error states twice on the billing page." */}
+      {canBulkStatus && bulkSelectedIds.size > 0 && (
+        <div className="flex flex-col gap-2 rounded border border-brand-300 bg-brand-50 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium">{bulkSelectedIds.size} room{bulkSelectedIds.size === 1 ? '' : 's'} selected</span>
+            {bulkCommonTargets.length > 0 ? (
+              <select
+                className={INPUT_CLASSES}
+                value={bulkTargetStatus}
+                onChange={(e) => setBulkTargetStatus(e.target.value as UnitStatusKey)}
+                aria-label="Change selected rooms to"
+              >
+                <option value="">Change status to…</option>
+                {bulkCommonTargets.map((status) => (
+                  <option key={status} value={status}>
+                    {UNIT_STATUS_LABELS[status]}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              // Client refinement: the empty-intersection case will happen
+              // often (any mixed selection across statuses) — say *why*,
+              // naming the statuses actually in the selection, rather than
+              // just disabling the dropdown.
+              <span role="alert" className="text-sm text-amber-800">
+                No status is valid for every selected room — the selection mixes{' '}
+                {bulkSelectedStatuses.map((s) => UNIT_STATUS_LABELS[s as UnitStatusKey] ?? s).join(', ')}. Select rooms
+                with the same current status to change them together.
+              </span>
+            )}
+            <Button type="button" onClick={() => void handleBulkApply()} disabled={!bulkTargetStatus || bulkApplying}>
+              {bulkApplying ? 'Applying…' : 'Apply'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={clearBulkSelection}>
+              Clear
+            </Button>
+          </div>
+          {bulkSummary && <p className="text-sm font-medium">{bulkSummary}</p>}
+          {bulkOutcome && bulkOutcome.size > 0 && (
+            <ul className="flex flex-col gap-0.5 text-xs text-gray-700">
+              {Array.from(bulkOutcome.values())
+                .filter((r) => r.status === 'FAILED')
+                .map((r) => (
+                  <li key={r.unitId} className="text-red-700">
+                    {r.code ?? r.unitId}: {r.message ?? 'Could not change this room.'}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* Client decision, 2026-08-25: three-way grouping — Rooms &
           Cottages / Common areas / Facilities — used here and in the
           Add-unit form's own Type field below. Facilities renders even
@@ -1988,12 +2185,24 @@ export function UnitsPage() {
               {groupUnits.length === 0 && <EmptyState message="None yet." />}
               {groupUnits.length > 0 && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-                  {groupUnits.map((unit) => (
+                  {groupUnits.map((unit) => {
+                    const outcome = bulkOutcome?.get(unit.id);
+                    return (
                     <button
                       key={unit.id}
                       onClick={() => setSelectedUnitId(unit.id)}
-                      className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]} ${unit.isActive ? '' : 'opacity-50'}`}
+                      className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]} ${unit.isActive ? '' : 'opacity-50'} ${outcome?.status === 'FAILED' ? 'ring-2 ring-danger-600' : ''} ${outcome?.status === 'OK' ? 'ring-2 ring-green-600' : ''}`}
                     >
+                      {canBulkStatus && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select room ${unit.code}`}
+                          checked={bulkSelectedIds.has(unit.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleBulkSelection(unit.id)}
+                          className="absolute left-1.5 top-1.5 h-4 w-4"
+                        />
+                      )}
                       {unit.latestNote && (
                         <span
                           role="img"
@@ -2003,6 +2212,21 @@ export function UnitsPage() {
                           className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-[10px] font-bold leading-none text-white"
                         >
                           i
+                        </span>
+                      )}
+                      {/* Per-card outcome marker — the client's "report
+                          partial results where the person is looking"
+                          refinement applied literally: each room that
+                          just failed a bulk apply is flagged on its own
+                          card, not only in the summary line above. */}
+                      {outcome?.status === 'FAILED' && (
+                        <span
+                          role="img"
+                          aria-label={`Could not change: ${outcome.message ?? 'unknown error'}`}
+                          title={outcome.message ?? 'Could not change this room.'}
+                          className="absolute bottom-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger-600 text-[10px] font-bold leading-none text-white"
+                        >
+                          !
                         </span>
                       )}
                       <span className="font-semibold">{unit.code}</span>
@@ -2026,7 +2250,8 @@ export function UnitsPage() {
                         </span>
                       )}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

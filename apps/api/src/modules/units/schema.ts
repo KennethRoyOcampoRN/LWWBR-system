@@ -49,6 +49,21 @@ export const changeUnitStatusSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
+// Spec.md §13 decision 34 (2026-11-18): bulk status change — no
+// per-room version here, unlike changeUnitStatusSchema's own. A
+// client-supplied version would be stale for most of a batch by the
+// time Apply is clicked (the whole point of selecting many rooms at
+// once); bulkChangeUnitStatus reads each unit's current version itself,
+// immediately before attempting its own transition, so a genuinely
+// concurrent edit still 409s for that one room — reported in the
+// per-room results — without the rest of the batch needing to race a
+// snapshot taken when the grid first loaded. Capped at 50 — the whole
+// property is 23 units today, so this is headroom, not a real ceiling.
+export const bulkChangeUnitStatusSchema = z.object({
+  unitIds: z.array(z.string().min(1)).min(1).max(50),
+  toStatus: z.enum(UNIT_STATUS_KEYS),
+});
+
 // Forced status correction (client decision, 2026-08-22): jumps a unit
 // directly to any of the 8 statuses, bypassing the §7.1 transition table
 // entirely. The note is optional — client decision, 2026-08-22, reversing
@@ -59,6 +74,7 @@ export const forceUnitStatusSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
+export type BulkChangeUnitStatusInput = z.infer<typeof bulkChangeUnitStatusSchema>;
 export type CreateUnitTypeInput = z.infer<typeof createUnitTypeSchema>;
 export type UpdateUnitTypeInput = z.infer<typeof updateUnitTypeSchema>;
 export type CreateUnitInput = z.infer<typeof createUnitSchema>;
