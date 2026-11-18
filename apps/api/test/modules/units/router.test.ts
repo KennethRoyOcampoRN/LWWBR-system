@@ -505,15 +505,16 @@ describe('PATCH /api/v1/units/:id', () => {
   });
 });
 
-// Client decision, 2026-08-25: a real delete, but only for a unit with
-// zero real history ("I made a wrong room by mistake"). A unit that's
-// actually been used keeps Deactivate as the correct tool.
+// Spec.md §13 decision 36 (2026-11-19): a soft delete, reversing the
+// original 2026-08-25 hard-delete design. Client's own words: "i cannot
+// delete rooms with history. it should be able to delete but still on
+// reporting. the code cannot be reused for records purposes."
 describe('DELETE /api/v1/units/:id', () => {
   it('requires unit:manage', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('HOUSEKEEPING_STAFF'));
     const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
     expect(res.status).toBe(403);
-    expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.unit.update).not.toHaveBeenCalled();
   });
 
   it('returns 404 for an unknown unit', async () => {
@@ -529,46 +530,66 @@ describe('DELETE /api/v1/units/:id', () => {
     const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('UNIT_STILL_ACTIVE');
-    expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.unit.update).not.toHaveBeenCalled();
   });
 
-  it.each(['unitStatusEvent', 'bookingUnit', 'workOrder', 'amenityRequest', 'fnbOrder', 'inspection'] as const)(
-    'refuses to delete an inactive unit that has %s history',
-    async (relation) => {
-      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-      mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: false }));
-      mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
-      mockPrisma.bookingUnit.count.mockResolvedValue(0);
-      mockPrisma.workOrder.count.mockResolvedValue(0);
-      mockPrisma.amenityRequest.count.mockResolvedValue(0);
-      mockPrisma.fnbOrder.count.mockResolvedValue(0);
-      mockPrisma.inspection.count.mockResolvedValue(0);
-      mockPrisma[relation].count.mockResolvedValue(1);
-
-      const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
-
-      expect(res.status).toBe(409);
-      expect(res.body.error.code).toBe('UNIT_HAS_HISTORY');
-      expect(res.body.error.message).toContain('Deactivate');
-      expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
-    },
-  );
-
-  it('deletes an inactive unit with zero history', async () => {
+  // The question the client specifically asked to have answered: a unit
+  // with real history (bookings, work orders, status events — any of
+  // it) is no longer refused. It's never even counted any more — a soft
+  // delete has nothing for a history check to protect.
+  it('soft-deletes an inactive unit that has real history, without counting or querying any of it', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: false }));
-    mockPrisma.unitStatusEvent.count.mockResolvedValue(0);
-    mockPrisma.bookingUnit.count.mockResolvedValue(0);
-    mockPrisma.workOrder.count.mockResolvedValue(0);
-    mockPrisma.amenityRequest.count.mockResolvedValue(0);
-    mockPrisma.fnbOrder.count.mockResolvedValue(0);
-    mockPrisma.inspection.count.mockResolvedValue(0);
-    mockPrisma.unit.delete.mockResolvedValue(fakeUnit({ isActive: false }));
+    mockPrisma.unit.update.mockResolvedValue(fakeUnit({ isActive: false, deletedAt: new Date() }));
 
     const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
 
     expect(res.status).toBe(204);
-    expect(mockPrisma.unit.delete).toHaveBeenCalledWith({ where: { id: 'unit_1' } });
+    expect(mockPrisma.unit.update).toHaveBeenCalledWith({
+      where: { id: 'unit_1' },
+      data: { deletedAt: expect.any(Date) },
+    });
+    expect(mockPrisma.unit.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.unitStatusEvent.count).not.toHaveBeenCalled();
+    expect(mockPrisma.bookingUnit.count).not.toHaveBeenCalled();
+    expect(mockPrisma.workOrder.count).not.toHaveBeenCalled();
+    expect(mockPrisma.amenityRequest.count).not.toHaveBeenCalled();
+    expect(mockPrisma.fnbOrder.count).not.toHaveBeenCalled();
+    expect(mockPrisma.inspection.count).not.toHaveBeenCalled();
+  });
+
+  it('deletes an inactive unit with zero history the same way — soft delete, not removal', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ isActive: false }));
+    mockPrisma.unit.update.mockResolvedValue(fakeUnit({ isActive: false, deletedAt: new Date() }));
+
+    const res = await request(createApp()).delete('/api/v1/units/unit_1').set('Cookie', authCookie());
+
+    expect(res.status).toBe(204);
+    expect(mockPrisma.unit.update).toHaveBeenCalledWith({
+      where: { id: 'unit_1' },
+      data: { deletedAt: expect.any(Date) },
+    });
+  });
+
+  // The client's own third requirement, confirmed rather than assumed:
+  // a deleted unit's code must never become reusable. createUnit's own
+  // conflict check has no deletedAt filter, so it already matches a
+  // soft-deleted row too — this pins that behavior down as a test, not
+  // just a doc-comment claim.
+  it("a deleted unit's code is still rejected as taken on create", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
+    mockPrisma.unitType.findFirst.mockResolvedValue({ id: 'type_1', defaultCapacity: 2 });
+    mockPrisma.unit.findFirst.mockResolvedValue(fakeUnit({ code: 'R01', deletedAt: new Date() }));
+
+    const res = await request(createApp())
+      .post('/api/v1/units')
+      .set('Cookie', authCookie())
+      .send({ code: 'R01', name: 'Room 1', unitTypeId: 'type_1', type: 'ROOM' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIT_CODE_TAKEN');
+    expect(mockPrisma.unit.findFirst).toHaveBeenCalledWith({ where: { code: 'R01' } });
   });
 });
 
@@ -869,24 +890,26 @@ describe('POST /api/v1/units/bulk-status', () => {
     expect(mockPrisma.unit.updateMany).toHaveBeenCalledTimes(2);
   });
 
-  // Spec.md §13 decision 34: the client's own closing concern — a bulk
-  // action must never put a room into OCCUPIED without a real booking.
-  // READY->OCCUPIED is trigger: 'automatic'; changeUnitStatus's own
-  // override gate (SYSTEM_ADMIN only) already refuses it for anyone
-  // else, and bulk inherits that unchanged rather than re-deciding it.
-  it('cannot bulk a READY room into OCCUPIED for a caller without the automatic-override role', async () => {
-    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
-    const unit1 = fakeUnit({ id: 'unit_1', code: 'R01', status: 'READY', version: 1 });
-    mockPrisma.unit.findFirst.mockResolvedValueOnce(unit1).mockResolvedValueOnce(unit1);
+  // Spec.md §13 decision 35 (2026-11-19): the client's own closing
+  // concern — a bulk action must never put a room into OCCUPIED without
+  // a real booking — hardened at the service layer rather than left to
+  // depend on the frontend never sending it. Unlike the single-room
+  // route, a SYSTEM_ADMIN actor normally CAN override READY->OCCUPIED
+  // (changeUnitStatus's own automatic-trigger escape hatch) — bulk
+  // refuses OCCUPIED outright, before the loop even starts, independent
+  // of role, so that override can never fire across a whole batch.
+  it('refuses OCCUPIED as a bulk target outright, even for a SYSTEM_ADMIN who could override it on a single room', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
 
     const res = await request(createApp())
       .post('/api/v1/units/bulk-status')
       .set('Cookie', authCookie())
       .send({ unitIds: ['unit_1'], toStatus: 'OCCUPIED' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.failedCount).toBe(1);
-    expect(res.body.results[0].message).toMatch(/happens automatically/);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_TRANSITION');
+    expect(res.body.error.message).toMatch(/happens automatically/);
+    expect(mockPrisma.unit.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.unit.updateMany).not.toHaveBeenCalled();
   });
 

@@ -146,6 +146,28 @@ export function allowedManualTransitions(
     .map((t) => t.to);
 }
 
+// Spec.md §13 decision 35 (2026-11-19): the universe of targets the bulk
+// status-change dropdown offers — every status reachable via *some*
+// manual transition, from *any* `from` state, permission-independent
+// (a status a caller currently can't reach still appears, just with a
+// 0-of-N count — the client's own "selecting all rooms and change
+// status must show all options," not the intersection valid for every
+// selected room). Computed from the transition table itself, not
+// hand-listed, so a future transition change can never drift from what
+// this actually offers. OCCUPIED is absent by construction — nothing in
+// UNIT_STATUS_TRANSITIONS ever manually targets it, from any state —
+// which is what keeps bulk unable to reach OCCUPIED regardless of who's
+// asking, the same guarantee allowedManualTransitions already gave the
+// single-room button list, now extended to a dropdown that shows every
+// option instead of only the current selection's intersection.
+export const BULK_MANUAL_TARGET_STATUSES: UnitStatusKey[] = Array.from(
+  new Set(
+    UNIT_STATUS_KEYS.flatMap((from) =>
+      (UNIT_STATUS_TRANSITIONS[from] ?? []).filter((t) => t.trigger === 'manual').map((t) => t.to),
+    ),
+  ),
+);
+
 // Spec §5.1: "Do not hardcode role names in business logic... all
 // authorization checks are permission checks." Deliberate, narrow
 // exception, same reasoning as requiresTotp.ts: this isn't a resource

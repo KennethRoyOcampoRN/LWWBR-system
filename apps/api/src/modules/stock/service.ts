@@ -60,9 +60,10 @@ export async function updateStockItem(id: string, input: UpdateStockItemInput, _
 // need a schema change this feature doesn't call for. Soft-delete
 // sidesteps the problem entirely: the StockItem row never actually
 // leaves the table, so StockMovement.stockItemId never dangles —
-// deliberately NOT blocked on movement history existing (unlike
-// deleteUnit's UNIT_HAS_HISTORY hard-block), since nothing is actually
-// destroyed. Movements stay fully intact and listable, just orphaned
+// deliberately NOT blocked on movement history existing, since nothing
+// is actually destroyed (deleteUnit switched to this same soft-delete
+// shape for the same reason, spec.md §13 decision 36). Movements stay
+// fully intact and listable, just orphaned
 // from a now-invisible catalog item, exactly like every other
 // soft-deleted record with historical references in this app. Still
 // gated on isActive first (409 ITEM_STILL_ACTIVE), matching the

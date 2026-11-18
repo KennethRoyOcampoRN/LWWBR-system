@@ -8724,3 +8724,71 @@ tests: select-all-by-status, the named-statuses empty-intersection
 message, a partial apply reported on the grid, Occupied-safety for a
 lone Ready room, and the feature hidden entirely from a `unit:read`-only
 holder). `packages/shared` unchanged, 96/96.
+
+### Bulk status dropdown shows every option with counts, not the intersection; unit delete becomes a soft delete (spec.md §13 decisions 35–36), 2026-11-19
+
+Two client-reported fixes on what shipped the same day.
+
+**Bulk dropdown.** Client's own words: "selecting all rooms and change
+status must show all options." The intersection design from decision
+34 meant a real mixed selection — the client's actual end-of-day/
+start-of-day sweep across rooms in different states — almost always
+produced an empty dropdown. The fix drops the intersection entirely.
+New `BULK_MANUAL_TARGET_STATUSES` (`packages/shared`): every status
+reachable via *some* manual transition, from *any* state, computed from
+the transition table itself. `OCCUPIED` is absent by construction —
+nothing ever manually targets it — so the dropdown now always shows the
+same six statuses, each annotated with how many of the *current*
+selection can actually take it: "Cleaning (9 of 13)." A 0-of-N option
+is shown, not hidden — informative, not broken. The empty-intersection
+alert from decision 34 is gone; there's nothing left to message about.
+Apply is unchanged — the full selection is still sent, and an
+ineligible room still fails cleanly and gets reported, exactly as
+decision 34's per-room result handling already did.
+
+Showing every status, including ones only a `SYSTEM_ADMIN` can reach
+via the single-room automatic-trigger override, raised a question the
+intersection design had never needed to answer: could a bulk request
+for Occupied ride that per-room override across an entire batch of
+Ready rooms? It could have. `bulkChangeUnitStatus` now refuses
+`toStatus: 'OCCUPIED'` outright before the loop starts, independent of
+role — the one guarantee that must never depend on what the frontend
+happens to send, not just what it happens to offer.
+
+**Unit delete.** Client's own words: "i cannot delete rooms with
+history. it should be able to delete but still on reporting. the code
+cannot be reused for records purposes." The original design hard-
+deleted a unit and, correctly for a hard delete, refused one with any
+real history (bookings, work orders, status events) rather than FK-
+violate across six relations with no safe way to snapshot them. That
+was the right call for a hard delete and the wrong delete for what's
+needed. `deleteUnit` now sets `deletedAt` — same shape `deleteUnitType`
+already uses — and the history check is gone entirely, not bypassed; a
+soft delete has nothing left for it to protect. This satisfies all
+three requirements mechanically: the room disappears from the grid and
+every `deletedAt: null` query; nothing is removed, so every booking,
+work order, and receipt keeps its real foreign key and reports keep
+joining correctly; and `Unit.code` is `@unique` with no `deletedAt`
+scoping, so the database itself refuses a reused code forever —
+confirmed, not assumed, that `createUnit`'s own conflict check already
+had no `deletedAt: null` filter and was already catching this before
+the change. "Deactivate first" is unchanged. **Not restorable, from
+anywhere** — no restore path exists for this or any other soft-deleted
+model in this codebase, and Unit follows that same one-way convention
+rather than becoming the exception.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all three
+packages. `apps/api` 771/774 (3 unrelated pre-existing skips — net
+fewer tests than before since the six-case `UNIT_HAS_HISTORY` parametrized
+test is gone, replaced by three: soft-delete-with-history, soft-delete-
+with-none, and the deleted-code-stays-taken confirmation; plus one new
+test confirming the OCCUPIED bulk guard rejects a `SYSTEM_ADMIN` actor
+without a single `findFirst` call). `apps/web` 238/238 (bulk-status
+tests rewritten for the all-options dropdown; the unit-delete test
+rewritten to confirm a unit with history now deletes successfully
+instead of 409ing). `packages/shared` 96/96 (unchanged test count, new
+`BULK_MANUAL_TARGET_STATUSES` export). Verified empirically: a
+7-room mixed-status selection's dropdown read `["Cleaning (3 of 7)",
+"Out of order (0 of 7)", "Blocked (0 of 7)", "Cleaned (1 of 7)", "Ready
+(1 of 7)", "Dirty (0 of 7)"]` — every manually-reachable status present
+with correct counts, Occupied absent.

@@ -99,9 +99,9 @@ unitsRouter.patch(
   }),
 );
 
-// Client decision, 2026-08-25: genuine hard delete, but only for a unit
-// with zero real history — see deleteUnit's own doc comment for the full
-// reasoning. Not a deletedAt soft-hide; the row is actually removed.
+// Spec.md §13 decision 36 (2026-11-19): a soft delete (`deletedAt`) now,
+// reversing the original 2026-08-25 hard-delete design — see deleteUnit's
+// own doc comment for why. Still requires Deactivate first.
 unitsRouter.delete(
   '/units/:id',
   requirePermission('unit:manage'),

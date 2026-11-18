@@ -205,27 +205,31 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
     await waitFor(() => expect(screen.queryByText('R01')).not.toBeInTheDocument());
   });
 
-  it('shows the server\'s UNIT_HAS_HISTORY error rather than deleting a unit with real history', async () => {
+  // Spec.md §13 decision 36 (2026-11-19): UNIT_HAS_HISTORY can no longer
+  // happen — delete is a soft delete now, so a unit with real history
+  // (bookings, work orders, status events) deletes successfully, same
+  // as one with none. This is the client's own fix verified: "i cannot
+  // delete rooms with history... it should be able to delete."
+  it('deletes an inactive unit that has real history, same as one with none', async () => {
     window.history.pushState({}, '', '/units');
     const user = userEvent.setup();
     const inactiveRoom = { ...room, isActive: false };
+    let deleteCalled = false;
+    let units = [inactiveRoom];
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
-      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units: [inactiveRoom] });
+      if (url.endsWith('/units') && (!init || init.method === undefined)) return jsonResponse(200, { units });
       if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [{ id: 't1', name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 }] });
       if (url.match(/\/units\/unit_1\/timeline$/)) return jsonResponse(200, { events: [] });
       if (url.match(/\/units\/unit_1\/bookings$/)) return jsonResponse(200, { bookings: [] });
       if (url.match(/\/units\/unit_1$/) && init?.method === 'DELETE') {
-        return jsonResponse(409, {
-          error: {
-            code: 'UNIT_HAS_HISTORY',
-            message: 'This unit has real history (bookings, work orders, or status changes) and cannot be deleted. Deactivate it instead.',
-          },
-        });
+        deleteCalled = true;
+        units = [];
+        return jsonResponse(204, undefined);
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -238,9 +242,9 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
     await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Delete' }));
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('cannot be deleted'));
-    // Still shown — the unit was not removed from the grid.
-    expect(screen.getByText('Unit details')).toBeInTheDocument();
+    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Unit details')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('R01')).not.toBeInTheDocument());
   });
 });
 
@@ -809,7 +813,7 @@ describe('UnitsPage — bulk status change', () => {
     });
   }
 
-  it('"select all Dirty" shows the count and selects only those rooms, offering the single legal next status', async () => {
+  it('"select all Dirty" shows the count and offers every status, annotated with how many of the selection can take it', async () => {
     const user = userEvent.setup();
     const rooms = [dirtyRoom('u1', 'D01'), dirtyRoom('u2', 'D02'), cleanedRoom('u3', 'C01')];
     vi.stubGlobal('fetch', stubFetch(rooms));
@@ -821,12 +825,15 @@ describe('UnitsPage — bulk status change', () => {
 
     expect(await screen.findByText('2 rooms selected')).toBeInTheDocument();
     const select = screen.getByLabelText('Change selected rooms to');
-    expect(within(select).getByRole('option', { name: 'Cleaning' })).toBeInTheDocument();
-    // Only the one manual transition from VACANT_DIRTY exists.
-    expect(within(select).queryAllByRole('option')).toHaveLength(2); // placeholder + Cleaning
+    // Client's own words: "selecting all rooms and change status must
+    // show all options" — every manually-reachable status shows, not
+    // only the one both Dirty rooms can actually take.
+    expect(within(select).getByRole('option', { name: 'Cleaning (2 of 2)' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Ready (0 of 2)' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Cleaned (0 of 2)' })).toBeInTheDocument();
   });
 
-  it('names the statuses in a mixed selection instead of just disabling the dropdown', async () => {
+  it('shows every status for a mixed selection too, each with its own count, instead of an empty-intersection message', async () => {
     const user = userEvent.setup();
     const rooms = [dirtyRoom('u1', 'D01'), cleanedRoom('u2', 'C01')];
     vi.stubGlobal('fetch', stubFetch(rooms));
@@ -837,10 +844,12 @@ describe('UnitsPage — bulk status change', () => {
     await user.click(screen.getByLabelText('Select room D01'));
     await user.click(screen.getByLabelText('Select room C01'));
 
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Dirty');
-    expect(alert.textContent).toContain('Cleaned');
-    expect(screen.queryByLabelText('Change selected rooms to')).not.toBeInTheDocument();
+    const select = await screen.findByLabelText('Change selected rooms to');
+    // D01 (Dirty) can go to Cleaning; C01 (Cleaned) can go to Ready —
+    // the old intersection would have offered neither.
+    expect(within(select).getByRole('option', { name: 'Cleaning (1 of 2)' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Ready (1 of 2)' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('reports a partial apply on the grid itself — summary line plus a per-card marker on the room that failed', async () => {
@@ -880,7 +889,7 @@ describe('UnitsPage — bulk status change', () => {
     expect(screen.getByLabelText(/Could not change: Version conflict/)).toBeInTheDocument();
   });
 
-  it('never offers Occupied as a bulk target — a Ready room alone offers no manual next status, since Occupied only happens via check-in', async () => {
+  it('never offers Occupied as a bulk target, even though every other status is shown', async () => {
     const user = userEvent.setup();
     const readyRoom = {
       id: 'u1', code: 'R01', name: 'Room R01', unitTypeId: 't1', type: 'ROOM', capacity: 2, floor: null,
@@ -893,9 +902,12 @@ describe('UnitsPage — bulk status change', () => {
     await waitFor(() => expect(screen.getByLabelText('Select room R01')).toBeInTheDocument());
     await user.click(screen.getByLabelText('Select room R01'));
 
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Ready');
-    expect(screen.queryByText('Occupied', { selector: 'option' })).not.toBeInTheDocument();
+    const select = await screen.findByLabelText('Change selected rooms to');
+    // Every manually-reachable status still shows (0 of 1 for all of
+    // them here, since this actor holds no unit:block) — Occupied is
+    // the one status that never appears, at any count, for anyone.
+    expect(within(select).getByRole('option', { name: 'Cleaning (0 of 1)' })).toBeInTheDocument();
+    expect(within(select).queryByText(/Occupied/i, { selector: 'option' })).not.toBeInTheDocument();
   });
 
   it('hides the selection checkboxes entirely for a user without any status-change permission', async () => {

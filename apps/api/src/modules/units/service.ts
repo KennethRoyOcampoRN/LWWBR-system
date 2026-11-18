@@ -421,22 +421,40 @@ export async function updateUnit(id: string, input: UpdateUnitInput) {
   return prisma.unit.update({ where: { id }, data: input });
 }
 
-// Client decision, 2026-08-25: a real delete, but only for a unit with
-// zero real history — "I made a wrong room by mistake." Same two-step
-// pattern as MenuItem/AmenityItem (deleteMenuItem/deleteAmenityItem):
-// must already be deactivated, so a currently-live unit can't be removed
-// in one click. Unlike those two, there's no name-snapshot escape hatch
-// here — a Unit that's actually been used has real history spread across
-// six different relations (none carry `onDelete: SetNull`, so a real
-// `unit.delete()` against any of them would fail at the DB with an
-// unhandled FK violation if not caught first), and none of those
-// historical rows can be made to survive the unit's own disappearance
-// the way an order-line name snapshot survives a deleted MenuItem — a
-// past booking or work order *is* a room-level record. So instead of
-// finding a way to make deletion safe, this refuses it outright whenever
-// any history exists, and directs the caller to Deactivate instead — the
-// correct tool for "we're decreasing our room count," since deleting a
-// room with real history would corrupt that history, not just this row.
+// Spec.md §13 decision 36 (2026-11-19), reversing the 2026-08-25 design
+// directly above this comment (kept only in git history now, not left
+// here to contradict this). Client's own words: "i cannot delete rooms
+// with history. it should be able to delete but still on reporting. the
+// code cannot be reused for records purposes." The original hard-delete
+// design refused deletion outright whenever any history existed,
+// reasoning that a real `unit.delete()` would FK-violate against six
+// relations with no `onDelete: SetNull` and no way to snapshot a room
+// the way an order line snapshots a deleted MenuItem's name. That
+// reasoning was correct about a *hard* delete; it simply isn't the
+// delete the client wants. A **soft** delete (`deletedAt`, same shape
+// `deleteUnitType` already uses) sidesteps the FK problem entirely —
+// nothing is removed, so there is nothing to violate — and satisfies
+// all three of the client's requirements at once: the room disappears
+// from the grid and from anything filtering `deletedAt: null`; every
+// booking/work order/receipt keeps its real foreign key, so reports
+// still join correctly; and `Unit.code` is `@unique` with no
+// `deletedAt` scoping on that index, so the code stays reserved at the
+// database level forever, regardless of history — confirmed, not
+// assumed: `createUnit`'s own `UNIT_CODE_TAKEN` check (`prisma.unit.
+// findFirst({ where: { code } })`, no `deletedAt: null` filter) already
+// matches a deleted row too, so a deleted room's code was never
+// reusable even before this change. The history check is gone
+// entirely — a soft delete has nothing left to protect it from. The
+// "deactivate first" guard stays: deleting a *live* room is still a
+// deliberate two-step action, unchanged from the original design.
+// **Not restorable, from anywhere** — no restore endpoint exists for
+// this or any other soft-deleted model in this codebase (UnitType,
+// RatePlan, FolioCharge, Payment, Geofence, Shift, StockItem all share
+// this same one-way `deletedAt` shape with no undo), and this follows
+// that same convention rather than inventing an exception for Unit. If
+// the client needs the room back, the path is creating a new unit —
+// the old code can never be reused for it, by design, which is exactly
+// what "reserved for records purposes" means.
 export async function deleteUnit(id: string) {
   const existing = await prisma.unit.findFirst({ where: { id, deletedAt: null } });
   if (!existing) {
@@ -446,25 +464,7 @@ export async function deleteUnit(id: string) {
     throw new ApiError(409, 'UNIT_STILL_ACTIVE', 'Deactivate the unit before deleting it.');
   }
 
-  const [statusEvents, bookingUnits, workOrders, amenityRequests, fnbOrders, inspections] = await Promise.all([
-    prisma.unitStatusEvent.count({ where: { unitId: id } }),
-    prisma.bookingUnit.count({ where: { unitId: id, deletedAt: null } }),
-    prisma.workOrder.count({ where: { unitId: id, deletedAt: null } }),
-    prisma.amenityRequest.count({ where: { unitId: id, deletedAt: null } }),
-    prisma.fnbOrder.count({ where: { unitId: id, deletedAt: null } }),
-    prisma.inspection.count({ where: { unitId: id, deletedAt: null } }),
-  ]);
-  const historyCount = statusEvents + bookingUnits + workOrders + amenityRequests + fnbOrders + inspections;
-  if (historyCount > 0) {
-    throw new ApiError(
-      409,
-      'UNIT_HAS_HISTORY',
-      'This unit has real history (bookings, work orders, or status changes) and cannot be deleted. Deactivate it instead.',
-      { statusEvents, bookingUnits, workOrders, amenityRequests, fnbOrders, inspections },
-    );
-  }
-
-  await prisma.unit.delete({ where: { id } });
+  await prisma.unit.update({ where: { id }, data: { deletedAt: new Date() } });
 }
 
 // Spec §8.2 attention queue: "rooms dirty >3h." SLA-breached work orders
@@ -865,6 +865,21 @@ export async function bulkChangeUnitStatus(
   actor: { id: string; roles: readonly RoleKey[]; permissions: Partial<Record<PermissionKey, PermissionScope>> },
   meta: { ip?: string | null; userAgent?: string | null } = {},
 ): Promise<{ results: BulkUnitStatusResult[]; succeededCount: number; failedCount: number }> {
+  // Spec.md §13 decision 35 (2026-11-19): hard guard, independent of
+  // the frontend. `changeUnitStatus` itself would let a SYSTEM_ADMIN
+  // override READY->OCCUPIED (the automatic-trigger escape hatch
+  // documented on `canOverrideAutomaticTransition`) — fine for a single
+  // deliberate correction, never fine for a batch, so bulk refuses
+  // OCCUPIED outright before the loop even starts rather than relying
+  // on the dropdown never offering it. This is the one thing that must
+  // never depend on what the client happens to send.
+  if (toStatus === 'OCCUPIED') {
+    throw new ApiError(
+      422,
+      'INVALID_TRANSITION',
+      'Occupied happens automatically at check-in — it cannot be set as a bulk status change.',
+    );
+  }
   const results: BulkUnitStatusResult[] = [];
   for (const unitId of unitIds) {
     const unit = await prisma.unit.findFirst({ where: { id: unitId, deletedAt: null } });

@@ -1,6 +1,7 @@
 import {
   allowedManualTransitions,
   allowedOverrideTransitions,
+  BULK_MANUAL_TARGET_STATUSES,
   isBookableUnitKind,
   UNIT_KIND_GROUP_KEYS,
   UNIT_KIND_GROUP_LABELS,
@@ -250,19 +251,22 @@ function UnitDetailDrawer({
     }
   };
 
-  // Client decision, 2026-08-25: a real delete, but only for a unit with
-  // zero real history ("I made a wrong room by mistake") — the server
-  // refuses (409 UNIT_HAS_HISTORY) otherwise, directing the caller to
-  // Deactivate instead, since a unit with real history (bookings, work
-  // orders, status changes) would have that history corrupted by a real
-  // delete. This button is also only offered once already deactivated,
-  // same two-step guard as MenuItem/AmenityItem — the server's own 409
-  // UNIT_STILL_ACTIVE is the real guard; this confirm dialog is a
-  // second, client-side one on top of it.
+  // Spec.md §13 decision 36 (2026-11-19): a soft delete now, reversing
+  // the original 2026-08-25 hard-delete design that refused a unit with
+  // any real history. The server no longer checks history at all — see
+  // deleteUnit's own doc comment in service.ts — so UNIT_HAS_HISTORY
+  // can no longer happen; the room disappears from this grid but every
+  // booking/work order/receipt that references it keeps working, and
+  // its code can never be reused. Still only offered once already
+  // deactivated, same two-step guard as MenuItem/AmenityItem — the
+  // server's own 409 UNIT_STILL_ACTIVE is the real guard; this confirm
+  // dialog is a second, client-side one on top of it. Not restorable
+  // from anywhere — no UI exists to undo this, matching every other
+  // soft-delete in this app.
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deleteUnit = async () => {
-    if (!window.confirm(`Permanently delete "${unit.code} — ${unit.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${unit.code} — ${unit.name}"? It will disappear from this grid, but its records stay (reports keep referencing it) and its code can never be reused. This cannot be undone.`)) return;
     setDeleteError(null);
     setDeleting(true);
     try {
@@ -476,12 +480,11 @@ function UnitDetailDrawer({
                 {unit.isActive ? 'Deactivate' : 'Reactivate'}
               </button>
               {/*
-                Client decision, 2026-08-25: only offered once already
-                inactive — matches the server's own 409 UNIT_STILL_ACTIVE
-                guard, so this never fires a request that's certain to
-                be refused. The server's separate 409 UNIT_HAS_HISTORY
-                guard still applies underneath and surfaces via
-                deleteError below.
+                Only offered once already inactive — matches the
+                server's own 409 UNIT_STILL_ACTIVE guard, so this never
+                fires a request that's certain to be refused. Spec.md
+                §13 decision 36: delete itself is a soft delete now, no
+                history check left underneath to surface via deleteError.
               */}
               {!unit.isActive && (
                 <button
@@ -2043,22 +2046,24 @@ export function UnitsPage() {
     if (matching.length > 0) presentStatusCounts.push({ status, count: matching.length, unitIds: matching.map((u) => u.id) });
   }
   const bulkSelectedUnits = unitList.filter((u) => bulkSelectedIds.has(u.id));
-  const bulkSelectedStatuses = Array.from(new Set(bulkSelectedUnits.map((u) => u.status)));
-  // Intersection of allowedManualTransitions across every distinct status
-  // in the selection — this is what guarantees OCCUPIED can never be
-  // offered (it's reachable only via the automatic-trigger transition,
-  // which allowedManualTransitions excludes by construction) and what
-  // produces "no legal common target" rather than something that would
-  // half-fail.
-  let bulkCommonTargets: UnitStatusKey[] = [];
-  if (bulkSelectedStatuses.length > 0) {
-    bulkCommonTargets = bulkSelectedStatuses.every((s) => (UNIT_STATUS_KEYS as readonly string[]).includes(s))
-      ? bulkSelectedStatuses.reduce<UnitStatusKey[] | null>((acc, status) => {
-          const allowed = allowedManualTransitions(status as UnitStatusKey, user?.permissions ?? {});
-          return acc === null ? allowed : acc.filter((t) => allowed.includes(t));
-        }, null) ?? []
-      : [];
-  }
+  // Spec.md §13 decision 35 (2026-11-19): client's own words, "selecting
+  // all rooms and change status must show all options" — the dropdown no
+  // longer narrows to the intersection valid for every selected room
+  // (which is empty for most real mixed selections, leaving the cashier
+  // stuck). Every status BULK_MANUAL_TARGET_STATUSES offers is shown,
+  // each annotated with how many of the *current* selection can actually
+  // take it — permission-independent eligibility, computed per room via
+  // the same allowedManualTransitions the single-room drawer already
+  // uses, so a 0-of-N option is informative, not broken. OCCUPIED is
+  // absent from BULK_MANUAL_TARGET_STATUSES by construction (see its own
+  // doc comment) — this is still the thing that keeps it unreachable via
+  // bulk, now backed up by a hard guard in bulkChangeUnitStatus itself.
+  const bulkStatusOptions = BULK_MANUAL_TARGET_STATUSES.map((status) => ({
+    status,
+    eligibleCount: bulkSelectedUnits.filter((u) =>
+      allowedManualTransitions(u.status as UnitStatusKey, user?.permissions ?? {}).includes(status),
+    ).length,
+  }));
   const canManageUnitTypes = Boolean(user?.permissions['unittype:manage']);
   // Spec.md §13 decision 29/30 (2026-11-15): rateplan:manage, not
   // unittype:manage — a materially different, money-sensitive concern,
@@ -2120,31 +2125,19 @@ export function UnitsPage() {
         <div className="flex flex-col gap-2 rounded border border-brand-300 bg-brand-50 p-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">{bulkSelectedIds.size} room{bulkSelectedIds.size === 1 ? '' : 's'} selected</span>
-            {bulkCommonTargets.length > 0 ? (
-              <select
-                className={INPUT_CLASSES}
-                value={bulkTargetStatus}
-                onChange={(e) => setBulkTargetStatus(e.target.value as UnitStatusKey)}
-                aria-label="Change selected rooms to"
-              >
-                <option value="">Change status to…</option>
-                {bulkCommonTargets.map((status) => (
-                  <option key={status} value={status}>
-                    {UNIT_STATUS_LABELS[status]}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              // Client refinement: the empty-intersection case will happen
-              // often (any mixed selection across statuses) — say *why*,
-              // naming the statuses actually in the selection, rather than
-              // just disabling the dropdown.
-              <span role="alert" className="text-sm text-amber-800">
-                No status is valid for every selected room — the selection mixes{' '}
-                {bulkSelectedStatuses.map((s) => UNIT_STATUS_LABELS[s as UnitStatusKey] ?? s).join(', ')}. Select rooms
-                with the same current status to change them together.
-              </span>
-            )}
+            <select
+              className={INPUT_CLASSES}
+              value={bulkTargetStatus}
+              onChange={(e) => setBulkTargetStatus(e.target.value as UnitStatusKey)}
+              aria-label="Change selected rooms to"
+            >
+              <option value="">Change status to…</option>
+              {bulkStatusOptions.map(({ status, eligibleCount }) => (
+                <option key={status} value={status}>
+                  {UNIT_STATUS_LABELS[status]} ({eligibleCount} of {bulkSelectedIds.size})
+                </option>
+              ))}
+            </select>
             <Button type="button" onClick={() => void handleBulkApply()} disabled={!bulkTargetStatus || bulkApplying}>
               {bulkApplying ? 'Applying…' : 'Apply'}
             </Button>

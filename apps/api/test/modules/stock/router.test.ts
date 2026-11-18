@@ -230,10 +230,10 @@ describe('DELETE /api/v1/stock-items/:id', () => {
   });
 
   // The question the client specifically asked to have tested: deleting
-  // an item with existing movement history is NOT blocked (deliberately
-  // the opposite of deleteUnit's UNIT_HAS_HISTORY hard-block) — this is
+  // an item with existing movement history is NOT blocked — this is
   // safe specifically because it's a soft-delete, not a real .delete()
-  // (see deleteStockItem's own comment). Confirms the delete itself
+  // (see deleteStockItem's own comment; deleteUnit now works the same
+  // way, spec.md §13 decision 36). Confirms the delete itself
   // succeeds and, separately, that the movement history genuinely
   // survives afterward by exercising listStockMovements too.
   it('allows deleting an inactive item that has existing movement history, and that history survives afterward', async () => {
