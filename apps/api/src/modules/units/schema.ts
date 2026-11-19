@@ -3,13 +3,17 @@ import { z } from 'zod';
 
 const UNIT_KINDS = ['ROOM', 'COTTAGE', 'COMMON_AREA', 'FACILITY'] as const;
 
+// Spec.md §13 decision 37 (2026-11-19): baseRate/dayTourRate/
+// extraPersonRate removed — a room type is identity and capacity now,
+// never a price. Pricing lives entirely on RatePlanRate (decisions
+// 29/30, extended by 37 to carry day-tour/extra-person rates too). The
+// three columns still physically exist on UnitType (see that model's
+// own schema.prisma comment on why they aren't dropped yet) but nothing
+// in this schema, or anywhere past it, reads or writes them again.
 export const createUnitTypeSchema = z.object({
   name: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).optional(),
   defaultCapacity: z.number().int().positive(),
-  baseRate: z.number().nonnegative(),
-  dayTourRate: z.number().nonnegative().optional(),
-  extraPersonRate: z.number().nonnegative().optional(),
   colorHex: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)

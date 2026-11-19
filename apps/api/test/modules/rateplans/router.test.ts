@@ -53,7 +53,17 @@ describe('Rate plans (admin CRUD)', () => {
         endDate: null,
         weekdayMask: null,
         isActive: true,
-        rates: [{ id: 'rate_1', ratePlanId: 'plan_1', unitTypeId: 'unittype_1', rate: 1500, unitType: { id: 'unittype_1', name: 'Family Room' } }],
+        rates: [
+          {
+            id: 'rate_1',
+            ratePlanId: 'plan_1',
+            unitTypeId: 'unittype_1',
+            rate: 1500,
+            dayTourRate: 1200,
+            extraPersonRate: null,
+            unitType: { id: 'unittype_1', name: 'Family Room' },
+          },
+        ],
       },
     ]);
 
@@ -62,6 +72,8 @@ describe('Rate plans (admin CRUD)', () => {
     expect(res.status).toBe(200);
     expect(res.body.ratePlans).toHaveLength(1);
     expect(res.body.ratePlans[0].rates[0].rate).toBe(1500);
+    expect(res.body.ratePlans[0].rates[0].dayTourRate).toBe(1200);
+    expect(res.body.ratePlans[0].rates[0].extraPersonRate).toBeNull();
     expect(res.body.ratePlans[0].rates[0].unitType.name).toBe('Family Room');
   });
 
@@ -174,7 +186,14 @@ describe('Rate plans (admin CRUD)', () => {
     it('upserts a rate for a unit type under a plan', async () => {
       mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
       mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_1', name: 'Weekend', deletedAt: null });
-      mockPrisma.ratePlanRate.upsert.mockResolvedValue({ id: 'rate_1', ratePlanId: 'plan_1', unitTypeId: 'unittype_1', rate: 1800 });
+      mockPrisma.ratePlanRate.upsert.mockResolvedValue({
+        id: 'rate_1',
+        ratePlanId: 'plan_1',
+        unitTypeId: 'unittype_1',
+        rate: 1800,
+        dayTourRate: null,
+        extraPersonRate: null,
+      });
 
       const res = await request(createApp())
         .put('/api/v1/rate-plans/plan_1/rates/unittype_1')
@@ -183,11 +202,44 @@ describe('Rate plans (admin CRUD)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.rate.rate).toBe(1800);
+      expect(res.body.rate.dayTourRate).toBeNull();
+      expect(res.body.rate.extraPersonRate).toBeNull();
       expect(mockPrisma.ratePlanRate.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { ratePlanId_unitTypeId: { ratePlanId: 'plan_1', unitTypeId: 'unittype_1' } },
-          create: { ratePlanId: 'plan_1', unitTypeId: 'unittype_1', rate: 1800 },
-          update: { rate: 1800 },
+          create: { ratePlanId: 'plan_1', unitTypeId: 'unittype_1', rate: 1800, dayTourRate: null, extraPersonRate: null },
+          update: { rate: 1800, dayTourRate: null, extraPersonRate: null },
+        }),
+      );
+    });
+
+    // Spec.md §13 decision 37 (2026-11-19): the client's own two live
+    // examples — a day-tour rate against a different overnight rate,
+    // and an extra-person rate — both now settable on the same row.
+    it('upserts dayTourRate and extraPersonRate alongside rate', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(userWithRole('SYSTEM_ADMIN'));
+      mockPrisma.ratePlan.findFirst.mockResolvedValue({ id: 'plan_1', name: 'Standard', deletedAt: null });
+      mockPrisma.ratePlanRate.upsert.mockResolvedValue({
+        id: 'rate_1',
+        ratePlanId: 'plan_1',
+        unitTypeId: 'unittype_1',
+        rate: 1800,
+        dayTourRate: 1200,
+        extraPersonRate: 299.99,
+      });
+
+      const res = await request(createApp())
+        .put('/api/v1/rate-plans/plan_1/rates/unittype_1')
+        .set('Cookie', authCookie())
+        .send({ rate: 1800, dayTourRate: 1200, extraPersonRate: 299.99 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.rate.dayTourRate).toBe(1200);
+      expect(res.body.rate.extraPersonRate).toBe(299.99);
+      expect(mockPrisma.ratePlanRate.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: { ratePlanId: 'plan_1', unitTypeId: 'unittype_1', rate: 1800, dayTourRate: 1200, extraPersonRate: 299.99 },
+          update: { rate: 1800, dayTourRate: 1200, extraPersonRate: 299.99 },
         }),
       );
     });

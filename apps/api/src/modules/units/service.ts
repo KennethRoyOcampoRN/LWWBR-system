@@ -171,18 +171,19 @@ export async function applyAutomaticUnitStatusChange(
   return { id: unitId, code: unit.code, fromStatus, toStatus, version: newVersion };
 }
 
-// Prisma's Decimal doesn't serialize to a plain JSON number on its own
-// (res.json() would emit its internal object shape) — every UnitType
-// response goes through this so the API surface is always plain numbers.
-function unitTypeToJson<T extends { baseRate: unknown; dayTourRate: unknown; extraPersonRate: unknown }>(
-  unitType: T,
-) {
-  return {
-    ...unitType,
-    baseRate: Number(unitType.baseRate),
-    dayTourRate: unitType.dayTourRate === null ? null : Number(unitType.dayTourRate),
-    extraPersonRate: unitType.extraPersonRate === null ? null : Number(unitType.extraPersonRate),
-  };
+// Spec.md §13 decision 37 (2026-11-19): baseRate/dayTourRate/
+// extraPersonRate are stripped out here rather than serialized —
+// they're dead (see UnitType's own schema.prisma comment on why the
+// columns still exist but nothing reads them), and leaking a Prisma
+// Decimal object into the response would be actively wrong, not just
+// unused: res.json() can't serialize Decimal's internal shape to a
+// plain number on its own the way every other UnitType field needs.
+function unitTypeToJson<T extends Record<string, unknown>>(unitType: T) {
+  const json: Record<string, unknown> = { ...unitType };
+  delete json.baseRate;
+  delete json.dayTourRate;
+  delete json.extraPersonRate;
+  return json;
 }
 
 export async function listUnitTypes() {

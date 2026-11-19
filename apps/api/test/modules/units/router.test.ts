@@ -186,7 +186,14 @@ describe('GET /api/v1/units and /unit-types', () => {
     expect(res.body.units[0].latestNote).toBe('staff forgot to mark this cleaned yesterday');
   });
 
-  it('serializes UnitType Decimal fields as plain numbers', async () => {
+  // Spec.md §13 decision 37 (2026-11-19): baseRate/dayTourRate/
+  // extraPersonRate are dead columns now — still physically on the
+  // UnitType row Prisma returns (see that model's own schema.prisma
+  // comment on why they aren't dropped yet), but this response must
+  // never leak one as a raw, unserializable Decimal object. Previously
+  // this test asserted they serialize to plain numbers; now it asserts
+  // they're stripped out entirely, which is the actual current contract.
+  it('strips the dead baseRate/dayTourRate/extraPersonRate fields from the UnitType response rather than serializing them', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('POC_HOUSEKEEPING'));
     mockPrisma.unitType.findMany.mockResolvedValue([
       {
@@ -205,9 +212,10 @@ describe('GET /api/v1/units and /unit-types', () => {
 
     const res = await request(createApp()).get('/api/v1/unit-types').set('Cookie', authCookie());
     expect(res.status).toBe(200);
-    expect(res.body.unitTypes[0].baseRate).toBe(1500);
-    expect(res.body.unitTypes[0].dayTourRate).toBeNull();
-    expect(res.body.unitTypes[0].extraPersonRate).toBe(200);
+    expect(res.body.unitTypes[0]).not.toHaveProperty('baseRate');
+    expect(res.body.unitTypes[0]).not.toHaveProperty('dayTourRate');
+    expect(res.body.unitTypes[0]).not.toHaveProperty('extraPersonRate');
+    expect(res.body.unitTypes[0].name).toBe('Standard Room');
   });
 });
 
@@ -221,18 +229,20 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .post('/api/v1/unit-types')
       .set('Cookie', authCookie())
-      .send({ name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 });
+      .send({ name: 'Standard Room', defaultCapacity: 2 });
     expect(res.status).toBe(403);
   });
 
-  it('creates a unit type', async () => {
+  // Spec.md §13 decision 37 (2026-11-19): no baseRate in the request at
+  // all now — a room type is identity and capacity, never a price.
+  it('creates a unit type with no price fields', async () => {
     mockPrisma.user.findFirst.mockResolvedValue(userWithRole('RESORT_MANAGER'));
     mockPrisma.unitType.create.mockResolvedValue({
       id: 'type_1',
       name: 'Standard Room',
       description: null,
       defaultCapacity: 2,
-      baseRate: { toString: () => '1500.00' },
+      baseRate: null,
       dayTourRate: null,
       extraPersonRate: null,
       colorHex: null,
@@ -243,10 +253,14 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .post('/api/v1/unit-types')
       .set('Cookie', authCookie())
-      .send({ name: 'Standard Room', defaultCapacity: 2, baseRate: 1500 });
+      .send({ name: 'Standard Room', defaultCapacity: 2 });
 
     expect(res.status).toBe(201);
-    expect(res.body.unitType.baseRate).toBe(1500);
+    expect(res.body.unitType.name).toBe('Standard Room');
+    expect(res.body.unitType).not.toHaveProperty('baseRate');
+    expect(mockPrisma.unitType.create).toHaveBeenCalledWith({
+      data: { name: 'Standard Room', defaultCapacity: 2 },
+    });
   });
 
   it('updates an existing unit type', async () => {
@@ -259,7 +273,7 @@ describe('POST/PATCH /api/v1/unit-types', () => {
       name: 'Deluxe Room',
       description: null,
       defaultCapacity: 2,
-      baseRate: { toString: () => '1800.00' },
+      baseRate: null,
       dayTourRate: null,
       extraPersonRate: null,
       colorHex: null,
@@ -270,7 +284,7 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .patch('/api/v1/unit-types/type_1')
       .set('Cookie', authCookie())
-      .send({ name: 'Deluxe Room', baseRate: 1800 });
+      .send({ name: 'Deluxe Room' });
 
     expect(res.status).toBe(200);
     expect(res.body.unitType.name).toBe('Deluxe Room');
@@ -288,7 +302,7 @@ describe('POST/PATCH /api/v1/unit-types', () => {
     const res = await request(createApp())
       .post('/api/v1/unit-types')
       .set('Cookie', authCookie())
-      .send({ name: 'Family Room', defaultCapacity: 4, baseRate: 2500 });
+      .send({ name: 'Family Room', defaultCapacity: 4 });
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('UNIT_TYPE_NAME_TAKEN');
@@ -319,7 +333,7 @@ describe('POST/PATCH /api/v1/unit-types', () => {
       name: 'Family Room',
       description: null,
       defaultCapacity: 5,
-      baseRate: { toString: () => '2500.00' },
+      baseRate: null,
       dayTourRate: null,
       extraPersonRate: null,
       colorHex: null,

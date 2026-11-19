@@ -8792,3 +8792,90 @@ instead of 409ing). `packages/shared` 96/96 (unchanged test count, new
 "Out of order (0 of 7)", "Blocked (0 of 7)", "Cleaned (1 of 7)", "Ready
 (1 of 7)", "Dirty (0 of 7)"]` — every manually-reachable status present
 with correct counts, Occupied absent.
+
+### Base rate/day tour rate/extra person rate removed from room setup; both moved onto rate plans (spec.md §13 decision 37), 2026-11-19
+
+Client spotted that Setup: Rooms still asked for Base rate, Day tour
+rate, and Extra person rate even though rate plans set prices now —
+correctly: all three were already dead, read only by the room-type
+form and its own JSON response, with nothing pricing a room from them
+since rate plans shipped. Removing them outright would have discarded
+two numbers the client actively uses: the Day Tour Cottage's ₱1,200
+day-tour rate against its ₱1,800 overnight rate, and the Family Room's
+₱299.99 extra-person rate.
+
+`RatePlanRate` now carries all three — the nightly `rate` (unchanged),
+plus new nullable `dayTourRate`/`extraPersonRate` — so a plan is a
+complete price list the way the client described it, and "December
+Xmas" can raise the day-tour price too, which a room-type-level field
+could never express. The Setup Rates editor gets two more optional
+inputs per room type row. The room-type form loses all three fields
+entirely — a room type is identity and capacity now, nothing else.
+
+**What happens to the two dead columns on the room type itself**: kept
+for now, not dropped — the question the client asked directly, so
+answered directly. This app deploys via `prisma db push`, not tracked
+migrations, so there's no guarantee a data-copy step runs before a
+schema change that would destroy what it needed to copy. Dropping the
+columns in this same change risks the very first `db push` erasing the
+client's own ₱1,200/₱299.99 before anything copies them anywhere. The
+safe order is two deploys: this one stops every read and write of the
+three fields and adds the new RatePlanRate columns; a short follow-up,
+once the migration below is confirmed run, actually drops the room-
+type columns and runs `db push` a second time.
+
+**Migration — extends the existing seed, plus a new one-off script**,
+per the client's own instruction. `seed.ts`'s Standard-plan loop (the
+one decision 29/30 already built) now copies `dayTourRate`/
+`extraPersonRate` too when it creates a brand-new rate row — but its
+own "only if missing" guard means that's a no-op for any property that
+has already run the seed once, which is every live property. New
+`scripts/backfillRatePlanDayTourAndExtraPersonRates.ts` (`npm run
+backfill:rateplan-daytour-extraperson-rates`) handles exactly that:
+fills a Standard-plan rate row's day-tour/extra-person price from the
+room type's own value if the plan row doesn't have one yet, never
+touches the nightly rate (already migrated when rate plans shipped),
+never overwrites a value already set, never invents one for a type
+that never had one, Standard plan only.
+
+**Verified against a real local Postgres, not assumed**: ran the seed
+fresh and confirmed the Day Tour Cottage's ₱1,200 landed on the
+Standard plan immediately; simulated an already-migrated property
+(wiped the plan row's two new columns, gave Family Room a live
+₱299.99 directly on the room type, as if just entered through the
+now-removed form) and confirmed the backfill script filled both
+correctly without touching the nightly rate; ran it again and
+confirmed nothing changed (idempotent); set a deliberately different
+stale value on the room type and ran it a third time, confirming the
+already-backfilled plan value was left alone. Also verified live
+through the API: created a room type with no price fields and
+confirmed the response has none of the three keys at all; sent a
+create request with a `baseRate` anyway and confirmed it's silently
+ignored, not an error; set all three rates through the real endpoint
+and confirmed they come back as plain numbers, never a raw Decimal.
+
+**Day-tour and extra-person pricing still aren't applied anywhere at
+charge time — said plainly, not left as an unread field for someone to
+discover later.** Moving the two rates onto the plan doesn't by itself
+make a charge use them; every room charge today prices identically by
+nights × the nightly rate regardless of whether the stay is a day
+tour. Two separate pieces of real work, proposed but deliberately not
+built here: pricing a day tour needs the charge logic to branch on the
+booking's own type and price a flat admission instead of nights, not
+just swap which number it reads; pricing extra people needs data this
+app doesn't capture anywhere yet — which specific room a guest count
+belongs to — plus an actual decision from the client on what happens
+when a room exceeds capacity under a plan with no extra-person rate
+set: fail the charge, or quietly charge the base rate only. That's a
+real choice with real revenue consequences, not a default to guess at.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/api` 772/775 (3 unrelated pre-existing skips;
+rewrote the tests whose whole premise changed — Decimal serialization
+became "these fields are stripped," create/update tests drop their
+price fields, plus a new test for setting day-tour/extra-person rates
+together). `apps/web` 239/239 (room-type form test rewritten to assert
+the three fields are gone and create sends no price field; rate-editor
+tests updated for the dropped price suffix in the disambiguation
+label; new test for editing day-tour/extra-person rates alongside the
+nightly rate). `packages/shared` unchanged, 96/96.

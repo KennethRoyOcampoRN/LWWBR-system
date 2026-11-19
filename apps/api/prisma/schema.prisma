@@ -254,7 +254,21 @@ model UnitType {
   name            String
   description     String?
   defaultCapacity Int
-  baseRate        Decimal   @db.Decimal(12, 2)
+  // Spec.md §13 decision 37 (2026-11-19): dead columns, deliberately
+  // kept for now rather than dropped. Pricing moved to RatePlanRate
+  // (decisions 29/30) and nothing has read these three since — not
+  // unitTypeToJson, not the create/update schema, not the Setup: Rooms
+  // form. Made nullable here (was baseRate's own NOT NULL) so a new
+  // UnitType can be created without ever supplying one. Still physically
+  // in the table because this app deploys via `prisma db push`, which
+  // has no migration ordering: dropping them in the same change that
+  // also needs a one-off script to copy their values into RatePlanRate
+  // risks the client running `db push` before that script, destroying
+  // the Day Tour Cottage's ₱1,200 and the Family Room's ₱299.99 before
+  // they're copied anywhere. The drop is a deliberate follow-up, once
+  // the client confirms (scripts/backfillRatePlanDayTourAndExtraPersonRates.ts
+  // has run and the Standard plan's rates look right) — see README.
+  baseRate        Decimal?  @db.Decimal(12, 2)
   dayTourRate     Decimal?  @db.Decimal(12, 2)
   extraPersonRate Decimal?  @db.Decimal(12, 2)
   colorHex        String?
@@ -280,9 +294,12 @@ model UnitType {
 // the three set (an "Off-season" catch-all, say) is never suggested
 // over anything, only ever chosen explicitly. No RateKind split, no
 // appliesToAll flag — a plan is unconditionally a full room-type price
-// list (one row per UnitType in RatePlanRate below), and extra-person/
-// day-tour pricing stay exactly where decision 14 already put them
-// (UnitType.extraPersonRate/dayTourRate), untouched.
+// list (one row per UnitType in RatePlanRate below). Decision 14's
+// extra-person/day-tour pricing lived on UnitType until decision 37
+// (2026-11-19) moved it onto RatePlanRate below instead — a plan is a
+// complete price list the way the client described it, and a plan like
+// "December Xmas" needs to be able to raise the day-tour price too,
+// which a UnitType-level field could never express.
 model RatePlan {
   id          String    @id @default(cuid())
   name        String // "Weekdays", "Weekend", "December Xmas" — client's own words; shown on the cashier screen and, when not "Standard", on the room charge description/printed receipt (see FolioCharge.ratePlanId below).
@@ -305,13 +322,28 @@ model RatePlan {
 // ("I'll setup Weekdays then set rate for each room type"). No
 // onDelete: Cascade on either FK — a plan or unit type is soft-deleted
 // (deletedAt), never hard-deleted, so there is nothing to cascade from.
+//
+// Spec.md §13 decision 37 (2026-11-19): dayTourRate/extraPersonRate
+// added here, moved off UnitType (see that model's own comment) — the
+// client's own two live examples: the Day Tour Cottage's ₱1,200 day-
+// tour rate against its ₱1,800 overnight `rate`, and the Family Room's
+// ₱299.99 extra-person rate. Both nullable, same "a plan can price a
+// room type without pricing every concept for it" shape `rate` doesn't
+// have the luxury of (a room type literally cannot be charged under a
+// plan with no nightly rate at all) but these two clearly can — not
+// every room type runs day tours, and plenty never charge for extra
+// guests. Nothing reads these two yet at charge time — see decision 37
+// for why that's a separate, larger piece of work, proposed but not
+// built here.
 model RatePlanRate {
-  id         String   @id @default(cuid())
-  ratePlanId String
-  unitTypeId String
-  rate       Decimal  @db.Decimal(12, 2)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id              String   @id @default(cuid())
+  ratePlanId      String
+  unitTypeId      String
+  rate            Decimal  @db.Decimal(12, 2)
+  dayTourRate     Decimal? @db.Decimal(12, 2)
+  extraPersonRate Decimal? @db.Decimal(12, 2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   ratePlan RatePlan @relation(fields: [ratePlanId], references: [id])
   unitType UnitType @relation(fields: [unitTypeId], references: [id])

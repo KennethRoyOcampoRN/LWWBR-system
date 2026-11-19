@@ -506,7 +506,12 @@ describe('UnitsPage — Setup Rooms', () => {
     expect(screen.queryByText('Setup: Rooms')).not.toBeInTheDocument();
   });
 
-  it('adds a room type, submitting the rate fields as numbers', async () => {
+  // Spec.md §13 decision 37 (2026-11-19): base rate/day tour rate/extra
+  // person rate removed from this form entirely — a room type is
+  // identity and capacity now, never a price (pricing moved onto
+  // RatePlanRate). Confirms both that the fields are gone from the form
+  // and that create submits no price field at all.
+  it('adds a room type with no price fields — identity and capacity only', async () => {
     const user = userEvent.setup();
     let createdBody: Record<string, unknown> | null = null;
     const managerWithUnitType = { ...managerUser, permissions: { ...managerUser.permissions, 'unittype:manage': 'ALL' } };
@@ -515,13 +520,14 @@ describe('UnitsPage — Setup Rooms', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText('Add a room type')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Base rate (₱)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Day tour rate/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Extra person rate/)).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Name'), 'Deluxe Room');
-    await user.clear(screen.getByLabelText('Base rate (₱)'));
-    await user.type(screen.getByLabelText('Base rate (₱)'), '2500');
     await user.click(screen.getByRole('button', { name: 'Add room type' }));
 
     await waitFor(() => expect(createdBody).not.toBeNull());
-    expect(createdBody).toMatchObject({ name: 'Deluxe Room', baseRate: 2500 });
+    expect(createdBody).toEqual({ name: 'Deluxe Room', defaultCapacity: 2 });
   });
 
   // Caught live, 2026-11-18: the client created a duplicate "Family
@@ -587,7 +593,16 @@ describe('UnitsPage — Rate Plans', () => {
     endDate: null,
     weekdayMask: null,
     isActive: true,
-    rates: [{ id: 'rate_1', unitTypeId: 'type_1', rate: 1500, unitType: { id: 'type_1', name: 'Standard Room' } }],
+    rates: [
+      {
+        id: 'rate_1',
+        unitTypeId: 'type_1',
+        rate: 1500,
+        dayTourRate: null,
+        extraPersonRate: null,
+        unitType: { id: 'type_1', name: 'Standard Room' },
+      },
+    ],
   };
 
   const familyRoom = {
@@ -635,7 +650,16 @@ describe('UnitsPage — Rate Plans', () => {
       if (url.includes('/rate-plans/plan_1/rates/') && init?.method === 'PUT') {
         const body = JSON.parse(init.body as string);
         opts.onSetRate?.(body);
-        return jsonResponse(200, { rate: { id: 'rate_1', ratePlanId: 'plan_1', unitTypeId: 'type_1', rate: body.rate } });
+        return jsonResponse(200, {
+          rate: {
+            id: 'rate_1',
+            ratePlanId: 'plan_1',
+            unitTypeId: 'type_1',
+            rate: body.rate,
+            dayTourRate: body.dayTourRate ?? null,
+            extraPersonRate: body.extraPersonRate ?? null,
+          },
+        });
       }
       return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
     });
@@ -693,14 +717,41 @@ describe('UnitsPage — Rate Plans', () => {
     await user.click(screen.getAllByRole('button', { name: 'Edit rates' })[0]!);
     await waitFor(() => expect(screen.getByText('Rates for "Standard"')).toBeInTheDocument());
 
-    // Disambiguation label (capacity + base rate) — see
-    // unitTypeOptionLabel's own comment for why a bare name isn't used.
-    const input = screen.getByLabelText('Standard Room — 2 pax, ₱1,500.00');
+    // Disambiguation label (capacity) — see unitTypeOptionLabel's own
+    // comment for why a bare name isn't used.
+    const input = screen.getByLabelText('Standard Room — 2 pax');
     await user.clear(input);
     await user.type(input, '1800');
     await user.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
 
-    await waitFor(() => expect(setRateBody).toEqual({ rate: 1800 }));
+    // Full replace, per decision 37 — day tour/extra person are sent
+    // as null (left blank in this row's draft), not omitted.
+    await waitFor(() => expect(setRateBody).toEqual({ rate: 1800, dayTourRate: null, extraPersonRate: null }));
+  });
+
+  // Spec.md §13 decision 37 (2026-11-19): the client's own two live
+  // examples — Day Tour Cottage's ₱1,200 day-tour rate against an
+  // ₱1,800 overnight rate, and Family Room's ₱299.99 extra-person
+  // rate — both now settable on the same RatePlanRate row, since a
+  // plan is a complete price list.
+  it('edits the day tour and extra person rates alongside the nightly rate', async () => {
+    const user = userEvent.setup();
+    let setRateBody: Record<string, unknown> | null = null;
+    const managerWithRatePlan = { ...managerUser, permissions: { ...managerUser.permissions, 'rateplan:manage': 'ALL' } };
+    vi.stubGlobal('fetch', stubFetch(managerWithRatePlan, { onSetRate: (body) => (setRateBody = body) }));
+    window.history.pushState({}, '', '/units');
+    render(<App />);
+
+    await waitFor(() => expect(screen.getAllByText('Standard').length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole('button', { name: 'Edit rates' })[0]!);
+    await waitFor(() => expect(screen.getByText('Rates for "Standard"')).toBeInTheDocument());
+
+    const row = screen.getByLabelText('Standard Room — 2 pax').closest('div')!.parentElement!;
+    await user.type(within(row).getByLabelText('Day tour (₱, optional)'), '1200');
+    await user.type(within(row).getByLabelText('Extra person (₱, optional)'), '299.99');
+    await user.click(within(row).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(setRateBody).toEqual({ rate: 1500, dayTourRate: 1200, extraPersonRate: 299.99 }));
   });
 
   // Caught live, 2026-11-18: the client's own "WEEKDAYS" plan read
@@ -720,9 +771,9 @@ describe('UnitsPage — Rate Plans', () => {
     // Family Room has no rate under this plan (standardPlan.rates only
     // covers type_1) — Standard Room does, and isn't flagged. Two
     // levels up from the input: Field's own wrapper, then the row.
-    const familyRow = screen.getByLabelText('Family Room — 4 pax, ₱2,500.00').closest('div')!.parentElement!;
+    const familyRow = screen.getByLabelText('Family Room — 4 pax').closest('div')!.parentElement!;
     expect(within(familyRow).getByText('No rate set')).toBeInTheDocument();
-    const standardRow = screen.getByLabelText('Standard Room — 2 pax, ₱1,500.00').closest('div')!.parentElement!;
+    const standardRow = screen.getByLabelText('Standard Room — 2 pax').closest('div')!.parentElement!;
     expect(within(standardRow).queryByText('No rate set')).not.toBeInTheDocument();
   });
 

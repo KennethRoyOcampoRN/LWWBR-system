@@ -302,18 +302,41 @@ async function main() {
   // edited a Standard rate through the Setup Rates UI, a re-run of this
   // seed must not clobber that back to whatever UnitType.baseRate
   // happens to hold today.
-  console.warn('Seeding the "Standard" rate plan from every existing UnitType.baseRate...');
+  //
+  // Spec.md §13 decision 37 (2026-11-19) extends this to dayTourRate/
+  // extraPersonRate — the client's own two live examples, Day Tour
+  // Cottage's ₱1,200 day-tour rate and Family Room's ₱299.99 extra-
+  // person rate, both still sitting on UnitType, now copied into the
+  // same Standard RatePlanRate row alongside rate rather than
+  // discarded. This only ever covers a RatePlanRate row created here,
+  // for the first time — a type with `baseRate === null` has no legacy
+  // value to migrate at all (it was created after decision 37, so it
+  // never had one), and is deliberately skipped rather than seeded at
+  // a wrong-but-present rate of 0; an admin sets its price through
+  // Setup Rates like any other plan gap. A type whose RatePlanRate row
+  // already exists (the `existingRate` branch below) needs a different
+  // tool — scripts/backfillRatePlanDayTourAndExtraPersonRates.ts, a
+  // one-off migration for exactly that case, since this loop's own
+  // create-if-missing guard means it will never touch an existing row.
+  console.warn('Seeding the "Standard" rate plan from every existing UnitType.baseRate/dayTourRate/extraPersonRate...');
   const standardPlan =
     (await prisma.ratePlan.findFirst({ where: { name: 'Standard', deletedAt: null } })) ??
     (await prisma.ratePlan.create({ data: { name: 'Standard', createdById: systemAdminUserId } }));
   const allUnitTypes = await prisma.unitType.findMany({ where: { deletedAt: null } });
   for (const unitType of allUnitTypes) {
+    if (unitType.baseRate === null) continue;
     const existingRate = await prisma.ratePlanRate.findUnique({
       where: { ratePlanId_unitTypeId: { ratePlanId: standardPlan.id, unitTypeId: unitType.id } },
     });
     if (existingRate) continue;
     await prisma.ratePlanRate.create({
-      data: { ratePlanId: standardPlan.id, unitTypeId: unitType.id, rate: unitType.baseRate },
+      data: {
+        ratePlanId: standardPlan.id,
+        unitTypeId: unitType.id,
+        rate: unitType.baseRate,
+        dayTourRate: unitType.dayTourRate,
+        extraPersonRate: unitType.extraPersonRate,
+      },
     });
   }
 

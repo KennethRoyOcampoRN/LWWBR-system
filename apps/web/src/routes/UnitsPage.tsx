@@ -68,19 +68,18 @@ interface UnitRow {
   currentBooking: { bookingId: string; referenceNo: string; guestName: string; status: BookingStatusKey } | null;
 }
 
-function formatPesoAmount(amount: number): string {
-  return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
 // Caught live, 2026-11-18: UnitType.name has no uniqueness constraint
 // (service layer rejects a new active duplicate going forward, but the
 // client's own existing "Family Room" pair predates that and still
 // exists) — anywhere a unit type is listed by name alone, two same-
-// named rows are indistinguishable. Capacity and base rate tell them
-// apart, per the client's own suggestion, so every such listing uses
-// this instead of a bare name.
+// named rows are indistinguishable. Capacity told them apart alongside
+// base rate until decision 37 (2026-11-19) removed base rate from
+// UnitType entirely — capacity alone now, which no longer disambiguates
+// two same-named, same-capacity types (the client's own actual case),
+// but that pair is a mistake meant to be fixed via Delete (decision 32),
+// not a shape this label needs to keep solving for indefinitely.
 function unitTypeOptionLabel(t: UnitTypeRow): string {
-  return `${t.name} — ${t.defaultCapacity} pax, ${formatPesoAmount(t.baseRate)}`;
+  return `${t.name} — ${t.defaultCapacity} pax`;
 }
 
 // Setup Rooms (client-directed feature, 2026-11-04): expanded from the
@@ -88,14 +87,14 @@ function unitTypeOptionLabel(t: UnitTypeRow): string {
 // full UnitType record the new management section below lists and edits.
 // No photo field — client decision, 2026-11-05: item photos on UnitType
 // are unnecessary (unlike AmenityItem/MenuItem, which keep theirs).
+// Spec.md §13 decision 37 (2026-11-19): baseRate/dayTourRate/
+// extraPersonRate removed — a room type is identity and capacity now,
+// never a price (see RatePlanRateRow below for where pricing moved).
 interface UnitTypeRow {
   id: string;
   name: string;
   description: string | null;
   defaultCapacity: number;
-  baseRate: number;
-  dayTourRate: number | null;
-  extraPersonRate: number | null;
   colorHex: string | null;
   isActive: boolean;
   sortOrder: number;
@@ -1261,13 +1260,15 @@ function AddUnitForm({ unitTypes, onCreated }: { unitTypes: UnitTypeRow[]; onCre
   );
 }
 
+// Spec.md §13 decision 37 (2026-11-19): baseRate/dayTourRate/
+// extraPersonRate removed from this form entirely — a room type is
+// identity and capacity now, never a price. Pricing moves to the Rate
+// Plans rate editor below (RatePlanRateRow), the only place a price is
+// entered anywhere in this app from now on.
 interface UnitTypeFormState {
   name: string;
   description: string;
   defaultCapacity: string;
-  baseRate: string;
-  dayTourRate: string;
-  extraPersonRate: string;
   colorHex: string;
 }
 
@@ -1275,9 +1276,6 @@ const EMPTY_UNIT_TYPE_FORM: UnitTypeFormState = {
   name: '',
   description: '',
   defaultCapacity: '2',
-  baseRate: '',
-  dayTourRate: '',
-  extraPersonRate: '',
   colorHex: '',
 };
 
@@ -1286,9 +1284,6 @@ function unitTypeFormToBody(form: UnitTypeFormState) {
     name: form.name.trim(),
     description: form.description.trim() || undefined,
     defaultCapacity: Number(form.defaultCapacity),
-    baseRate: Number(form.baseRate),
-    dayTourRate: form.dayTourRate.trim() === '' ? undefined : Number(form.dayTourRate),
-    extraPersonRate: form.extraPersonRate.trim() === '' ? undefined : Number(form.extraPersonRate),
     colorHex: form.colorHex.trim() || undefined,
   };
 }
@@ -1335,9 +1330,6 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
       name: type.name,
       description: type.description ?? '',
       defaultCapacity: String(type.defaultCapacity),
-      baseRate: String(type.baseRate),
-      dayTourRate: type.dayTourRate === null ? '' : String(type.dayTourRate),
-      extraPersonRate: type.extraPersonRate === null ? '' : String(type.extraPersonRate),
       colorHex: type.colorHex ?? '',
     });
     setEditError(null);
@@ -1389,13 +1381,6 @@ function SetupRoomsSection({ unitTypes, onSaved }: { unitTypes: UnitTypeRow[]; o
   const columns: DataTableColumn<UnitTypeRow>[] = [
     { key: 'name', header: 'Name', render: (t) => <span className="font-medium">{t.name}</span> },
     { key: 'capacity', header: 'Capacity', render: (t) => t.defaultCapacity },
-    { key: 'baseRate', header: 'Base rate', render: (t) => formatPesoAmount(t.baseRate) },
-    { key: 'dayTourRate', header: 'Day tour', render: (t) => (t.dayTourRate === null ? '—' : formatPesoAmount(t.dayTourRate)) },
-    {
-      key: 'extraPersonRate',
-      header: 'Extra person',
-      render: (t) => (t.extraPersonRate === null ? '—' : formatPesoAmount(t.extraPersonRate)),
-    },
     {
       key: 'status',
       header: 'Status',
@@ -1491,37 +1476,6 @@ function UnitTypeFormFields({
             onChange={(e) => setForm((f) => ({ ...f, defaultCapacity: e.target.value }))}
           />
         </Field>
-        <Field label="Base rate (₱)">
-          <input
-            required
-            type="number"
-            min={0}
-            step="0.01"
-            className={INPUT_CLASSES}
-            value={form.baseRate}
-            onChange={(e) => setForm((f) => ({ ...f, baseRate: e.target.value }))}
-          />
-        </Field>
-        <Field label="Day tour rate (₱, optional)">
-          <input
-            type="number"
-            min={0}
-            step="0.01"
-            className={INPUT_CLASSES}
-            value={form.dayTourRate}
-            onChange={(e) => setForm((f) => ({ ...f, dayTourRate: e.target.value }))}
-          />
-        </Field>
-        <Field label="Extra person rate (₱, optional)">
-          <input
-            type="number"
-            min={0}
-            step="0.01"
-            className={INPUT_CLASSES}
-            value={form.extraPersonRate}
-            onChange={(e) => setForm((f) => ({ ...f, extraPersonRate: e.target.value }))}
-          />
-        </Field>
         <Field label="Color (optional)">
           <input type="color" className={INPUT_CLASSES} value={form.colorHex || '#64748b'} onChange={(e) => setForm((f) => ({ ...f, colorHex: e.target.value }))} />
         </Field>
@@ -1538,10 +1492,14 @@ function UnitTypeFormFields({
 // range/weekday rule engine. This is the admin CRUD surface for it —
 // Setup: Rates, alongside Setup: Rooms (RatePlansSection above), since
 // that's where room pricing already lives.
+// Spec.md §13 decision 37 (2026-11-19): dayTourRate/extraPersonRate
+// moved here from UnitType — nullable, same as on the model itself.
 interface RatePlanRateRow {
   id: string;
   unitTypeId: string;
   rate: number;
+  dayTourRate: number | null;
+  extraPersonRate: number | null;
   unitType: { id: string; name: string };
 }
 
@@ -1581,6 +1539,15 @@ function suggestionSummary(plan: RatePlanRow): string {
 
 const EMPTY_RATE_PLAN_FORM = { name: '', startDate: '', endDate: '', weekdays: new Set<number>() };
 
+// Spec.md §13 decision 37 (2026-11-19): one draft per unit type in the
+// rate editor now carries all three prices, not just the nightly rate.
+interface RateDraft {
+  rate: string;
+  dayTourRate: string;
+  extraPersonRate: string;
+}
+const EMPTY_RATE_DRAFT: RateDraft = { rate: '', dayTourRate: '', extraPersonRate: '' };
+
 function RatePlansSection({
   unitTypes,
   units,
@@ -1597,7 +1564,7 @@ function RatePlansSection({
   // Single-open-editor pattern, same as SetupRoomsSection's own
   // editingId above — only one plan's rates are being edited at a time.
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
+  const [rateDrafts, setRateDrafts] = useState<Record<string, RateDraft>>({});
   const [rateError, setRateError] = useState<string | null>(null);
   const [savingRateFor, setSavingRateFor] = useState<string | null>(null);
 
@@ -1670,25 +1637,45 @@ function RatePlansSection({
   function startEditingRates(plan: RatePlanRow) {
     setEditingId(plan.id);
     setRateError(null);
-    const drafts: Record<string, string> = {};
+    const drafts: Record<string, RateDraft> = {};
     for (const ut of unitTypes) {
       const existing = plan.rates.find((r) => r.unitTypeId === ut.id);
-      drafts[ut.id] = existing ? String(existing.rate) : '';
+      drafts[ut.id] = existing
+        ? {
+            rate: String(existing.rate),
+            dayTourRate: existing.dayTourRate === null ? '' : String(existing.dayTourRate),
+            extraPersonRate: existing.extraPersonRate === null ? '' : String(existing.extraPersonRate),
+          }
+        : { ...EMPTY_RATE_DRAFT };
     }
     setRateDrafts(drafts);
   }
 
+  // Spec.md §13 decision 37 (2026-11-19): dayTourRate/extraPersonRate
+  // save as a full replace alongside rate on every call, matching the
+  // API's own schema — there's no separate "just the day tour field"
+  // save button, so there's nothing to leave partially applied.
   async function saveRate(planId: string, unitTypeId: string) {
-    const raw = rateDrafts[unitTypeId];
-    const rate = Number(raw);
-    if (!raw || !(rate >= 0)) {
-      setRateError('Enter a non-negative rate before saving.');
+    const draft = rateDrafts[unitTypeId] ?? EMPTY_RATE_DRAFT;
+    const rate = Number(draft.rate);
+    if (!draft.rate || !(rate >= 0)) {
+      setRateError('Enter a non-negative nightly rate before saving.');
+      return;
+    }
+    const dayTourRate = draft.dayTourRate.trim() === '' ? null : Number(draft.dayTourRate);
+    if (dayTourRate !== null && !(dayTourRate >= 0)) {
+      setRateError('Day tour rate must be a non-negative number, or left blank.');
+      return;
+    }
+    const extraPersonRate = draft.extraPersonRate.trim() === '' ? null : Number(draft.extraPersonRate);
+    if (extraPersonRate !== null && !(extraPersonRate >= 0)) {
+      setRateError('Extra person rate must be a non-negative number, or left blank.');
       return;
     }
     setRateError(null);
     setSavingRateFor(unitTypeId);
     try {
-      await api.put(`/rate-plans/${planId}/rates/${unitTypeId}`, { rate });
+      await api.put(`/rate-plans/${planId}/rates/${unitTypeId}`, { rate, dayTourRate, extraPersonRate });
       void fetchRatePlans();
       onSaved();
     } catch (err) {
@@ -1701,11 +1688,12 @@ function RatePlansSection({
   // Spec.md §13 decision 30: the client's own "fail loudly" requirement
   // lives at the pricing layer, not here — this is just what makes that
   // reachable from Setup. Confirmed, not silent: removing a rate takes
-  // this room type out of what the plan can charge at all.
+  // this room type out of what the plan can charge at all — including,
+  // now, its day-tour and extra-person rates, since the whole row goes.
   async function clearRate(planId: string, unitTypeId: string) {
     if (!window.confirm('Remove this rate? This room type can no longer be charged under this plan until a rate is set again.')) return;
     await api.delete(`/rate-plans/${planId}/rates/${unitTypeId}`);
-    setRateDrafts((d) => ({ ...d, [unitTypeId]: '' }));
+    setRateDrafts((d) => ({ ...d, [unitTypeId]: { ...EMPTY_RATE_DRAFT } }));
     void fetchRatePlans();
     onSaved();
   }
@@ -1770,16 +1758,44 @@ function RatePlansSection({
                   // should show the gap before a cashier hits it, not
                   // only let the count column imply one exists.
                   const isUnpriced = !editingPlan.rates.some((r) => r.unitTypeId === ut.id);
+                  const draft = rateDrafts[ut.id] ?? EMPTY_RATE_DRAFT;
                   return (
-                    <div key={ut.id} className="flex flex-wrap items-end gap-2">
+                    <div key={ut.id} className="flex flex-wrap items-end gap-2 border-b border-gray-100 pb-2 last:border-b-0">
                       <Field label={unitTypeOptionLabel(ut)}>
                         <input
                           type="number"
                           min={0}
                           step="0.01"
                           className={INPUT_CLASSES}
-                          value={rateDrafts[ut.id] ?? ''}
-                          onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: e.target.value }))}
+                          value={draft.rate}
+                          onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: { ...draft, rate: e.target.value } }))}
+                        />
+                      </Field>
+                      {/* Spec.md §13 decision 37 (2026-11-19): dayTourRate/
+                          extraPersonRate moved here from the room-type
+                          form — a plan is a complete price list now, the
+                          client's own two live examples (Day Tour
+                          Cottage's ₱1,200, Family Room's ₱299.99). Both
+                          optional: not every room type runs day tours or
+                          charges for extra guests. */}
+                      <Field label="Day tour (₱, optional)">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          className={INPUT_CLASSES}
+                          value={draft.dayTourRate}
+                          onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: { ...draft, dayTourRate: e.target.value } }))}
+                        />
+                      </Field>
+                      <Field label="Extra person (₱, optional)">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          className={INPUT_CLASSES}
+                          value={draft.extraPersonRate}
+                          onChange={(e) => setRateDrafts((d) => ({ ...d, [ut.id]: { ...draft, extraPersonRate: e.target.value } }))}
                         />
                       </Field>
                       {isUnpriced && <span className="text-xs font-medium text-amber-700">No rate set</span>}

@@ -28,7 +28,17 @@ export const updateRatePlanSchema = z.object({
 });
 export type UpdateRatePlanInput = z.infer<typeof updateRatePlanSchema>;
 
+// Spec.md §13 decision 37 (2026-11-19): dayTourRate/extraPersonRate
+// moved here from UnitType — nullable and optional, same as on the
+// model itself, since not every room type runs day tours or charges
+// for extra guests. The Setup Rates editor always submits its current
+// full draft row (all three fields) on every Save, so the service
+// layer treats a missing value the same as an explicit null — a full
+// replace, not a partial update; there's no caller that would want
+// "leave it as whatever it was" semantics here.
 export const setRatePlanRateSchema = z.object({
   rate: z.number().nonnegative(),
+  dayTourRate: z.number().nonnegative().nullable().optional(),
+  extraPersonRate: z.number().nonnegative().nullable().optional(),
 });
 export type SetRatePlanRateInput = z.infer<typeof setRatePlanRateSchema>;

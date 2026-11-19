@@ -18,11 +18,16 @@ function resolveManilaDate(dateStr: string): Date {
   return new TZDate(year, month - 1, day, 0, 0, RESORT_TIMEZONE);
 }
 
-function ratePlanRateToJson<T extends { rate: unknown }>(rate: T) {
-  return { ...rate, rate: Number(rate.rate) };
+function ratePlanRateToJson<T extends { rate: unknown; dayTourRate: unknown; extraPersonRate: unknown }>(rate: T) {
+  return {
+    ...rate,
+    rate: Number(rate.rate),
+    dayTourRate: rate.dayTourRate === null ? null : Number(rate.dayTourRate),
+    extraPersonRate: rate.extraPersonRate === null ? null : Number(rate.extraPersonRate),
+  };
 }
 
-function ratePlanToJson<T extends { rates?: { rate: unknown }[] }>(plan: T) {
+function ratePlanToJson<T extends { rates?: { rate: unknown; dayTourRate: unknown; extraPersonRate: unknown }[] }>(plan: T) {
   return { ...plan, rates: plan.rates?.map(ratePlanRateToJson) };
 }
 
@@ -106,16 +111,22 @@ export async function deleteRatePlan(id: string, _actor: RatePlanActor) {
 // Upsert, not a plain update — the Setup UI's "fill in a rate for every
 // room type" flow calls this once per unit type, and the first call for
 // any given (plan, unitType) pair has no existing row to update yet.
+// Spec.md §13 decision 37: dayTourRate/extraPersonRate are a full
+// replace on every call (undefined treated the same as null), matching
+// the schema's own doc comment — the Setup Rates editor always submits
+// its whole current draft row, never a partial one.
 export async function setRatePlanRate(ratePlanId: string, unitTypeId: string, input: SetRatePlanRateInput, _actor: RatePlanActor) {
   await requireRatePlan(ratePlanId);
   const unitType = await prisma.unitType.findFirst({ where: { id: unitTypeId, deletedAt: null } });
   if (!unitType) {
     throw new ApiError(404, 'NOT_FOUND', 'Unit type not found');
   }
+  const dayTourRate = input.dayTourRate ?? null;
+  const extraPersonRate = input.extraPersonRate ?? null;
   const rate = await prisma.ratePlanRate.upsert({
     where: { ratePlanId_unitTypeId: { ratePlanId, unitTypeId } },
-    create: { ratePlanId, unitTypeId, rate: input.rate },
-    update: { rate: input.rate },
+    create: { ratePlanId, unitTypeId, rate: input.rate, dayTourRate, extraPersonRate },
+    update: { rate: input.rate, dayTourRate, extraPersonRate },
   });
   return ratePlanRateToJson(rate);
 }
