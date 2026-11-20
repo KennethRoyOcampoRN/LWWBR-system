@@ -8963,3 +8963,45 @@ realistic mixed board — several Dirty, two Occupied with guest info,
 one Out of order, one Blocked — plus an informal check of Command
 Center and Work Orders to confirm the system holds together outside
 the room board itself.
+
+### Visual redesign, round 2, follow-up: Command Center actually revisited (spec.md §13 decision 41), 2026-11-20
+
+Round 2's own claim to have "revisited Command Center for consistency"
+didn't hold up — the client looked and found two gradient-filled KPI
+tiles (Occupied, Open urgent work orders) still in place, the single
+most template-looking thing left in the app, surviving the exact pass
+that stripped the gradient wash from everywhere else. Fixed properly
+this time rather than carved out as an exception.
+
+Both gradient "hero" variants are gone; every KPI tile is now the same
+flat hairline card, and loudness is earned by the semantic colour token
+alone — the same rule the room board already runs on. Occupied, which
+used to be the loudest tile on the page in brand violet, is now
+deliberately the quietest — a plain, uncoloured figure — for the same
+reason Occupied is the quietest tile on the room board: a full house
+is not an alarm. Open urgent work orders keeps its danger colouring
+(the one tile here actually asking for action), just flat instead of
+gradient-filled.
+
+Also addressed, the same card-soup pattern the original brief named:
+the four room-status counts (Occupied/Ready/Dirty/Out of order) no
+longer render as four separate bordered tiles — they're one
+hairline-divided strip read as a single figure, with Dirty/Out of
+order still carrying their urgency colour on the number itself.
+Check-ins/check-outs today, a count scanned in passing rather than a
+decision, dropped from tiles to a plain inline stat pair. What remains
+as an actual clickable tile is reserved for numbers worth acting on:
+open urgent work orders, open F&B tickets, low-stock items. The two
+retired gradient tokens are removed from the Tailwind config now that
+nothing references them.
+
+The client also flagged a screenshot that still showed a violet wash
+behind content; checked `AppShell.tsx` and confirmed its flat grey
+background was already correct — the wash was the full-bleed gradient
+tile itself, not a separate bug, and a fresh screenshot after this fix
+shows flat grey throughout.
+
+Verification: `npm run typecheck`/`lint`/`build` clean, `apps/web`
+240/240 unchanged. Screenshotted Command Center at 1600px with
+realistic non-zero figures across every tile so the new hierarchy is
+actually visible.

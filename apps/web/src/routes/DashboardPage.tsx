@@ -113,97 +113,68 @@ function formatDuration(minutes: number): string {
   return `${hours}h ${mins}m`;
 }
 
-// Spec §11 M6 visual redesign (2026-08-31): 'hero-brand'/'hero-danger'
-// are the two gradient-filled accent cards for the property's headline
-// numbers (Occupied — the neutral "how full are we" metric — and Open
-// urgent work orders — the "needs attention now" metric). Deliberately
-// two different gradients, not one: flattening both into the same brand
-// violet would lose the good/neutral-vs-needs-attention distinction the
-// old color-coded cards had. Every other KPI is a soft-tinted card using
-// one of the semantic colors below, matched to what the number actually
-// means (success = good state, warning = needs eventual attention,
-// danger = needs attention now, info = neutral count, accent = a
-// distinct department color so it doesn't collide with info).
-type KpiVariant =
-  'hero-brand' | 'hero-danger' | 'success' | 'warning' | 'danger' | 'info' | 'accent';
+// Visual redesign, round 2 follow-up (spec.md §13 decision 40 addendum,
+// 2026-11-20), client-reported: this strip still had two gradient-filled
+// "hero" tiles (Occupied, Open urgent work orders) that survived the
+// round-2 pass untouched — the single most template-looking thing left
+// in the app, gradient wash spent as decoration on content that is just
+// a number. Removed. Every KPI now gets the same flat hairline treatment;
+// loudness is earned by the semantic token alone, same principle as the
+// room board. `neutral` is new — Occupied is a "how full are we" count,
+// not an alarm, for exactly the reason Occupied is the quietest tile on
+// the room board itself; it gets no colour at all, same as every other
+// KPI that isn't asking for action (success = good state, warning =
+// needs eventual attention, danger = needs attention now, info = neutral
+// count, accent = a distinct department color so it doesn't collide with
+// info).
+type KpiVariant = 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'accent';
 
-// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20): `card`
-// no longer carries a shadow (see Card.tsx's own comment — flat,
-// hairline-bordered content is the system now, elevation reserved for
-// something genuinely floating). `border` is new: the two `hero-*`
-// variants keep a borderless, full-bleed gradient fill — a deliberate,
-// content-level emphasis choice for the one or two tiles meant to read
-// as the headline of the strip, not the page-wide decorative wash the
-// client's brief was about — every other variant gets the same flat
-// hairline every other card in the app now uses.
 const KPI_VARIANT_CLASSES: Record<
   KpiVariant,
-  { card: string; border: string; iconBadge: string; value: string; label: string }
+  { iconBadge: string; value: string; label: string }
 > = {
-  'hero-brand': {
-    card: 'bg-brand-gradient',
-    border: 'border border-transparent',
-    iconBadge: 'bg-white/20 text-white',
-    value: 'text-white',
-    label: 'text-white/80',
-  },
-  'hero-danger': {
-    card: 'bg-danger-gradient',
-    border: 'border border-transparent',
-    iconBadge: 'bg-white/20 text-white',
-    value: 'text-white',
-    label: 'text-white/80',
+  neutral: {
+    iconBadge: 'bg-gray-100 text-ink-secondary',
+    value: 'text-ink',
+    label: 'text-ink-secondary',
   },
   success: {
-    card: 'bg-white',
-    border: 'border border-gray-200',
     iconBadge: 'bg-success-50 text-success-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   warning: {
-    card: 'bg-white',
-    border: 'border border-gray-200',
     iconBadge: 'bg-warning-50 text-warning-600',
-    value: 'text-ink',
+    value: 'text-warning-600',
     label: 'text-ink-secondary',
   },
   danger: {
-    card: 'bg-white',
-    border: 'border border-gray-200',
     iconBadge: 'bg-danger-50 text-danger-600',
-    value: 'text-ink',
+    value: 'text-danger-600',
     label: 'text-ink-secondary',
   },
   info: {
-    card: 'bg-white',
-    border: 'border border-gray-200',
     iconBadge: 'bg-info-50 text-info-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   accent: {
-    card: 'bg-white',
-    border: 'border border-gray-200',
     iconBadge: 'bg-accent-50 text-accent-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
 };
 
-// A KPI card for a real, computed count — spec §8.2's "Occupied / Ready /
-// Dirty / Out-of-order counts," the one quarter of the strip that has
-// data today. `icon` takes the component itself (not a pre-rendered
+// Only for a number worth a reader's decision — something to click into
+// or an unusual figure, per the client's own "not every figure deserves
+// a tile." `icon` takes the component itself (not a pre-rendered
 // element) so this is the one place that sizes it — every one of these
 // hand-rolled SVGs (icons.tsx) has no intrinsic width/height of its own,
 // so an icon rendered without an explicit size class falls back to the
 // browser's default SVG box (huge) and blows out the card layout.
 //
 // `to`, when given, makes the whole card a real `Link` (a genuine <a>,
-// keyboard-focusable) rather than a div with an onClick — only two KPIs
-// use this today (Open urgent work orders → /work-orders, Open F&B
-// tickets → /restaurant, both wired in CommandCenter below); the rest
-// stay plain, non-interactive cards.
+// keyboard-focusable) rather than a div with an onClick.
 function KpiCard({
   label,
   value,
@@ -226,18 +197,12 @@ function KpiCard({
         <Icon className="h-5 w-5" />
       </span>
       <div>
-        {/* Same figure treatment as NUMERIC_KPI (typography.ts) — mono,
-            tabular, semibold — without that constant's own baked-in
-            ink color, since a hero-variant tile needs white text over
-            its gradient fill; `classes.value` supplies the only color
-            utility here so it's never fighting an equal-specificity
-            class for which one wins. */}
         <p className={`font-mono text-2xl font-semibold tabular-nums ${classes.value}`}>{value}</p>
         <p className={`text-xs font-medium ${classes.label}`}>{label}</p>
       </div>
     </>
   );
-  const className = `flex flex-col gap-3 rounded-xl p-4 transition-colors ${classes.card} ${classes.border}`;
+  const className = 'flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 transition-colors';
   if (to) {
     return (
       <Link
@@ -249,6 +214,42 @@ function KpiCard({
     );
   }
   return <div className={className}>{content}</div>;
+}
+
+// The four room-status counts (Occupied/Ready/Dirty/Out of order): a
+// manager scans these as one figure, not four separate decisions, so
+// they share one hairline-bordered strip instead of four identical
+// tiles — the "eleven identical tiles" card-soup the client's follow-up
+// named. `gap-px bg-gray-200` on the wrapper plus `bg-white` on each
+// cell draws the dividers without a border on every cell. Urgency still
+// reads through colour alone: Occupied/Ready stay ink, Dirty/Out of
+// order pick up the same warning/danger tokens the room board itself
+// uses for those two statuses.
+function StatCell({
+  label,
+  value,
+  tone,
+  icon: Icon,
+}: {
+  label: string;
+  value: number;
+  tone: 'neutral' | 'success' | 'warning' | 'danger';
+  icon: (props: SVGProps<SVGSVGElement>) => ReactNode;
+}) {
+  const classes = KPI_VARIANT_CLASSES[tone];
+  return (
+    <div className="flex flex-col gap-3 bg-white p-4">
+      <span
+        className={`flex h-10 w-10 items-center justify-center rounded-full ${classes.iconBadge}`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <div>
+        <p className={`font-mono text-2xl font-semibold tabular-nums ${classes.value}`}>{value}</p>
+        <p className={`text-xs font-medium ${classes.label}`}>{label}</p>
+      </div>
+    </div>
+  );
 }
 
 export function CommandCenter() {
@@ -384,85 +385,88 @@ export function CommandCenter() {
           <h2 className="mb-3 text-sm font-semibold text-ink-secondary">Property status</h2>
           {dashboard === 'loading' && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              {Array.from({ length: 8 }, (_, i) => (
+              {Array.from({ length: 4 }, (_, i) => (
                 <SkeletonCard key={i} />
               ))}
             </div>
           )}
           {dashboard === 'error' && <p role="alert">Could not load the KPI strip.</p>}
           {typeof dashboard === 'object' && (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <KpiCard
-                label="Occupied"
-                value={dashboard.kpi.occupied}
-                variant="hero-brand"
-                icon={IconBed}
-              />
-              <KpiCard
-                label="Ready"
-                value={dashboard.kpi.ready}
-                variant="success"
-                icon={IconCheck}
-              />
-              <KpiCard
-                label="Dirty"
-                value={dashboard.kpi.dirty}
-                variant="warning"
-                icon={IconBroom}
-              />
-              <KpiCard
-                label="Out of order"
-                value={dashboard.kpi.outOfOrder}
-                variant="danger"
-                icon={IconAlertTriangle}
-              />
-              <KpiCard
-                label="Open urgent work orders"
-                value={dashboard.kpi.urgentOpenWorkOrders}
-                variant="hero-danger"
-                icon={IconAlertTriangle}
-                to="/work-orders"
-              />
-              <KpiCard
-                label="Check-ins today"
-                value={dashboard.kpi.checkinsToday}
-                variant="info"
-                icon={IconArrowIn}
-              />
-              <KpiCard
-                label="Check-outs today"
-                value={dashboard.kpi.checkoutsToday}
-                variant="info"
-                icon={IconArrowOut}
-              />
-              <KpiCard
-                label="Open F&B tickets"
-                value={dashboard.kpi.openFnbOrders}
-                variant="accent"
-                icon={IconUtensils}
-                to={canViewFnb ? '/restaurant' : undefined}
-              />
-              {/* Client decision, 2026-11-03: Pending payment
-                  verifications / Pending quotations KPI cards removed —
-                  a count linking to a page that no longer exists (see
-                  App.tsx's own route removal) is worse than no count.
-                  Backend computation untouched, see DashboardData's own
-                  comment above. */}
-              {/* Client-directed feature, 2026-08-31, same slice: always
-                  rendered, no permission check — deliberately the
-                  opposite of the two cards above. See
-                  kpi.lowStockItems's own comment. `?? 0`: a snapshot
-                  cached by dashboardCache.ts before this field existed
-                  won't have it — the cache has no schema version beyond
-                  its storage key, so an old offline snapshot is a real
-                  possibility, not just a defensive-coding nicety. */}
-              <KpiCard
-                label="Low stock items"
-                value={dashboard.kpi.lowStockItems ?? 0}
-                variant="warning"
-                icon={IconAlertTriangle}
-                to={canViewStock ? '/stock' : undefined}
-              />
+            <div className="flex flex-col gap-4">
+              {/* The four room-status counts, read as one figure rather
+                  than four separate tiles — see StatCell's own comment. */}
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-gray-200 bg-gray-200 sm:grid-cols-4">
+                <StatCell label="Occupied" value={dashboard.kpi.occupied} tone="neutral" icon={IconBed} />
+                <StatCell label="Ready" value={dashboard.kpi.ready} tone="success" icon={IconCheck} />
+                <StatCell label="Dirty" value={dashboard.kpi.dirty} tone="warning" icon={IconBroom} />
+                <StatCell
+                  label="Out of order"
+                  value={dashboard.kpi.outOfOrder}
+                  tone="danger"
+                  icon={IconAlertTriangle}
+                />
+              </div>
+
+              {/* Real tiles, reserved for a number worth clicking into or
+                  acting on — not every figure on this page earns one. */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <KpiCard
+                  label="Open urgent work orders"
+                  value={dashboard.kpi.urgentOpenWorkOrders}
+                  variant="danger"
+                  icon={IconAlertTriangle}
+                  to="/work-orders"
+                />
+                <KpiCard
+                  label="Open F&B tickets"
+                  value={dashboard.kpi.openFnbOrders}
+                  variant="accent"
+                  icon={IconUtensils}
+                  to={canViewFnb ? '/restaurant' : undefined}
+                />
+                {/* Client decision, 2026-11-03: Pending payment
+                    verifications / Pending quotations KPI cards removed —
+                    a count linking to a page that no longer exists (see
+                    App.tsx's own route removal) is worse than no count.
+                    Backend computation untouched, see DashboardData's own
+                    comment above. */}
+                {/* Client-directed feature, 2026-08-31, same slice: always
+                    rendered, no permission check — deliberately the
+                    opposite of the card above. See kpi.lowStockItems's
+                    own comment. `?? 0`: a snapshot cached by
+                    dashboardCache.ts before this field existed won't have
+                    it — the cache has no schema version beyond its
+                    storage key, so an old offline snapshot is a real
+                    possibility, not just a defensive-coding nicety. */}
+                <KpiCard
+                  label="Low stock items"
+                  value={dashboard.kpi.lowStockItems ?? 0}
+                  variant="warning"
+                  icon={IconAlertTriangle}
+                  to={canViewStock ? '/stock' : undefined}
+                />
+              </div>
+
+              {/* Check-ins/check-outs today: a neutral count a manager
+                  reads on the way past, not a decision — plain inline
+                  stats rather than a tile each, per the same "not every
+                  figure deserves a tile" principle. */}
+              <div className="flex gap-6 text-sm text-ink-secondary">
+                <span className="flex items-center gap-2">
+                  <IconArrowIn className="h-4 w-4 text-ink-muted" />
+                  Check-ins today{' '}
+                  <span className="font-mono font-semibold tabular-nums text-ink">
+                    {dashboard.kpi.checkinsToday}
+                  </span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <IconArrowOut className="h-4 w-4 text-ink-muted" />
+                  Check-outs today{' '}
+                  <span className="font-mono font-semibold tabular-nums text-ink">
+                    {dashboard.kpi.checkoutsToday}
+                  </span>
+                </span>
+              </div>
             </div>
           )}
         </section>

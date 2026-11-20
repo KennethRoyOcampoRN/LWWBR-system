@@ -89,16 +89,14 @@ export default {
         // one-off), holding through a mid stop before fading to white
         // much further down the page.
         'app-gradient': 'linear-gradient(160deg, #E8E3FC 0%, #F5F3FF 35%, #FFFFFF 75%)',
-        // Client feedback round 1: "widen the range... stronger contrast
-        // between the start/end stops" — was two adjacent shades of the
-        // same violet (#6C5CE7 to #7C6EF2, barely distinguishable). Now
-        // spans the brand scale's dark end to its light end (800 to
-        // 300) so the diagonal sweep is actually visible, not just
-        // technically a gradient.
-        'brand-gradient': 'linear-gradient(135deg, #4A3BB0 0%, #C4B5FD 100%)',
-        // Same widening, same reasoning, kept in the red/orange family
-        // so "urgent" doesn't drift toward pink.
-        'danger-gradient': 'linear-gradient(135deg, #9A1B2F 0%, #FF8A4C 100%)',
+        // 'brand-gradient'/'danger-gradient' retired (spec.md §13 decision
+        // 40 addendum, 2026-11-20): the two Command Center "hero" KPI
+        // tiles were the one place round 2 left a gradient fill on actual
+        // content rather than decoration, and the client called it out as
+        // the most template-looking thing left in the app. Both tokens
+        // are gone now that nothing references them — re-add only for a
+        // genuinely new, deliberate use, never as a default tile
+        // treatment.
       },
     },
   },
