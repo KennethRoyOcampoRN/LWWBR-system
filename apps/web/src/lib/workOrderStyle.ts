@@ -13,14 +13,24 @@ export const WORK_ORDER_STATUS_LABELS: Record<WorkOrderStatusKey, string> = {
   CANCELLED: 'Cancelled',
 };
 
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20): same
+// fix as UNIT_STATUS_CLASSES — remapped off raw, unvetted Tailwind hues
+// onto the five existing semantic tokens, by urgency rather than one
+// hue per status. OPEN (unassigned, needs someone to pick it up) and
+// REOPENED (failed verification, needs attention again) are the loud
+// ones; ASSIGNED/IN_PROGRESS share the same "in motion" info treatment;
+// DONE is a quieter success (awaiting verification, not fully closed);
+// VERIFIED is full success; CANCELLED is deliberately the quietest —
+// closed, nothing left to do, same reasoning as Occupied on the room
+// board.
 export const WORK_ORDER_STATUS_CLASSES: Record<WorkOrderStatusKey, string> = {
-  OPEN: 'bg-gray-100 text-gray-900 border-gray-300',
-  ASSIGNED: 'bg-blue-100 text-blue-900 border-blue-300',
-  IN_PROGRESS: 'bg-indigo-100 text-indigo-900 border-indigo-300',
-  DONE: 'bg-teal-100 text-teal-900 border-teal-300',
-  VERIFIED: 'bg-green-100 text-green-900 border-green-300',
-  REOPENED: 'bg-amber-100 text-amber-900 border-amber-300',
-  CANCELLED: 'bg-red-100 text-red-900 border-red-300',
+  OPEN: 'bg-warning-50 text-warning-600 border-warning-600',
+  ASSIGNED: 'bg-info-50 text-info-600 border-info-600',
+  IN_PROGRESS: 'bg-info-50 text-info-600 border-info-600',
+  DONE: 'bg-success-50/60 text-success-600 border-success-600/60',
+  VERIFIED: 'bg-success-50 text-success-600 border-success-600',
+  REOPENED: 'bg-danger-50 text-danger-600 border-danger-600',
+  CANCELLED: 'bg-gray-100 text-ink-secondary border-gray-300',
 };
 
 export const WORK_ORDER_TYPE_LABELS: Record<WorkOrderTypeKey, string> = {

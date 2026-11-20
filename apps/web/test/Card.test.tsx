@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { Card, Section } from '../src/components/Card.js';
 
 describe('Card', () => {
-  it('renders children inside the shadow-card surface', () => {
+  // Visual redesign round 2 (spec.md §13 decision 40): flat hairline
+  // border, not a shadow — elevation is reserved for a genuinely
+  // floating element now, not every static content surface.
+  it('renders children inside the flat, hairline-bordered surface', () => {
     const { container } = render(<Card>Hello</Card>);
     expect(screen.getByText('Hello')).toBeInTheDocument();
-    expect(container.firstElementChild).toHaveClass('shadow-card');
+    expect(container.firstElementChild).toHaveClass('border');
+    expect(container.firstElementChild).not.toHaveClass('shadow-card');
   });
 
   it('omits padding classes when padding="none"', () => {
@@ -38,7 +42,7 @@ describe('Section', () => {
 
   it('wraps content in the Card surface by default', () => {
     const { container } = render(<Section title="Catalog">content</Section>);
-    expect(container.querySelector('.shadow-card')).not.toBeNull();
+    expect(container.querySelector('.border-gray-200')).not.toBeNull();
   });
 
   it('skips the Card surface when surface={false}', () => {
@@ -47,7 +51,7 @@ describe('Section', () => {
         content
       </Section>,
     );
-    expect(container.querySelector('.shadow-card')).toBeNull();
+    expect(container.querySelector('.border-gray-200')).toBeNull();
   });
 
   it('renders with no title/actions header when neither is passed', () => {

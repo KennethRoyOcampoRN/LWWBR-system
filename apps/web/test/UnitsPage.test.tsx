@@ -248,6 +248,60 @@ describe('UnitsPage — unit management (real gap found live-testing, 2026-08-25
   });
 });
 
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20):
+// the client's own diagnosis — UNIT_STATUS_CLASSES used raw Tailwind
+// hues with no connection to the WCAG-measured semantic tokens, and
+// Occupied (bg-purple-100, the hue closest to brand violet) was the
+// loudest tile on the board for the state that needs no action at
+// all. Pinned down as tests, not just a doc-comment claim.
+describe('UnitsPage — room board status colour (visual redesign round 2)', () => {
+  function unitWithStatus(id: string, code: string, status: string) {
+    return {
+      id, code, name: `Room ${code}`, unitTypeId: 't1', type: 'ROOM', capacity: 2, floor: null,
+      status, version: 1, notes: null, isActive: true, sortOrder: 0, latestNote: null, currentBooking: null,
+    };
+  }
+
+  it('renders Occupied as the quietest tile and Dirty/Out of order as the loudest, both routed through the semantic tokens', async () => {
+    const units = [
+      unitWithStatus('u1', 'R01', 'VACANT_DIRTY'),
+      unitWithStatus('u2', 'R02', 'OCCUPIED'),
+      unitWithStatus('u3', 'R03', 'OUT_OF_ORDER'),
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/auth/me')) return jsonResponse(200, { user: managerUser });
+      if (url.endsWith('/units')) return jsonResponse(200, { units });
+      if (url.endsWith('/unit-types')) return jsonResponse(200, { unitTypes: [] });
+      return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.pushState({}, '', '/units');
+
+    render(<App />);
+
+    const dirtyCard = (await screen.findByText('R01')).closest('button')!;
+    const occupiedCard = screen.getByText('R02').closest('button')!;
+    const outOfOrderCard = screen.getByText('R03').closest('button')!;
+
+    // Dirty and Out of order are the semantic action-needed tokens —
+    // never a raw, unvetted Tailwind hue (amber-100/red-100 are the
+    // semantic warning-50/danger-50 tints, not a coincidence of name).
+    expect(dirtyCard.className).toContain('bg-warning-50');
+    expect(dirtyCard.className).toContain('text-warning-600');
+    expect(outOfOrderCard.className).toContain('bg-danger-50');
+    expect(outOfOrderCard.className).toContain('text-danger-600');
+
+    // Occupied is deliberately quiet — white background, ink-secondary
+    // text — never the loud purple it used to render as, and never a
+    // saturated semantic tint either (it's the one state with nothing
+    // to signal).
+    expect(occupiedCard.className).toContain('bg-white');
+    expect(occupiedCard.className).toContain('text-ink-secondary');
+    expect(occupiedCard.className).not.toMatch(/bg-(purple|warning|danger|info|success)-/);
+  });
+});
+
 // Build plan stage 4 (spec.md §13 decision 13, 2026-11-04): the one
 // entry point into billing — there's no standalone "pick a booking"
 // screen, so this link on a booking row (next to Check out) is the

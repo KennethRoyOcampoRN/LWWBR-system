@@ -2,8 +2,20 @@ import { REST_DAY_STATUS_LABELS, type RestDayStatusKey } from '@lwwbr/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonTableRows } from '../components/Skeleton.js';
+import { StatusBadge, type StatusBadgeVariant } from '../components/StatusBadge.js';
+import { PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
+
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20): rest-
+// day status rendered as plain text before this round — same
+// BOOKING_STATUS_BADGE_VARIANT convention (bookingStyle.ts), page-local
+// since nothing else in the app needs a rest-day status colour.
+const REST_DAY_STATUS_BADGE_VARIANT: Record<RestDayStatusKey, StatusBadgeVariant> = {
+  PENDING: 'warning',
+  APPROVED: 'success',
+  REJECTED: 'danger',
+};
 
 // Client-directed feature, 2026-09-18: DTR (time in/out with selfie +
 // geolocation capture) and rest-day requests, in one standalone page —
@@ -211,19 +223,19 @@ function TimeClockSection({ onLogsChanged }: { onLogsChanged: () => void }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">Time clock</h2>
-      <p className="text-sm text-gray-500">
+      <h2 className={SECTION_TITLE}>Time clock</h2>
+      <p className="text-sm text-ink-muted">
         Tap the button, take a selfie, and the time is recorded automatically — there's nothing to type. Location is
         captured automatically if your browser allows it, but it's never required to clock in or out.
       </p>
 
       {error && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {error}
         </p>
       )}
 
-      <div className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+      <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
         {openEntry ? (
           <>
             <p className="text-sm">Clocked in at {formatDateTime(openEntry.clockInAt)}</p>
@@ -302,7 +314,7 @@ function TimeClockSection({ onLogsChanged }: { onLogsChanged: () => void }) {
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
+              <tr className="border-b border-gray-200 text-ink-muted">
                 <th className="py-2 pr-4 font-medium">Clock in</th>
                 <th className="py-2 pr-4 font-medium">Clock out</th>
                 <th className="py-2 pr-4 font-medium">Status</th>
@@ -315,7 +327,7 @@ function TimeClockSection({ onLogsChanged }: { onLogsChanged: () => void }) {
                   <td className="py-2 pr-4">{log.clockOutAt ? formatDateTime(log.clockOutAt) : '—'}</td>
                   <td className="py-2 pr-4">
                     {log.clockInFlagged || log.clockOutFlagged ? (
-                      <span className="rounded border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">
+                      <span className="rounded border border-amber-300 bg-warning-50 px-2 py-0.5 text-xs font-semibold text-amber-900">
                         Flagged for review
                       </span>
                     ) : (
@@ -381,10 +393,10 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">Rest-day requests</h2>
+      <h2 className={SECTION_TITLE}>Rest-day requests</h2>
 
       {actionError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {actionError}
         </p>
       )}
@@ -402,7 +414,7 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
+              <tr className="border-b border-gray-200 text-ink-muted">
                 {canApprove && <th className="py-2 pr-4 font-medium">Employee</th>}
                 <th className="py-2 pr-4 font-medium">Requested date</th>
                 <th className="py-2 pr-4 font-medium">Reason</th>
@@ -416,7 +428,11 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
                   {canApprove && <td className="py-2 pr-4 font-medium">{req.user.fullName}</td>}
                   <td className="py-2 pr-4">{formatDate(req.requestedDate)}</td>
                   <td className="py-2 pr-4">{req.reason ?? '—'}</td>
-                  <td className="py-2 pr-4">{REST_DAY_STATUS_LABELS[req.status]}</td>
+                  <td className="py-2 pr-4">
+                    <StatusBadge variant={REST_DAY_STATUS_BADGE_VARIANT[req.status]}>
+                      {REST_DAY_STATUS_LABELS[req.status]}
+                    </StatusBadge>
+                  </td>
                   {canApprove && (
                     <td className="py-2">
                       {req.status === 'PENDING' && (
@@ -424,14 +440,14 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
                           <button
                             type="button"
                             onClick={() => void decide(req.id, 'APPROVED')}
-                            className="text-sm text-blue-700 hover:underline"
+                            className="text-sm text-brand-700 hover:underline"
                           >
                             Approve
                           </button>
                           <button
                             type="button"
                             onClick={() => void decide(req.id, 'REJECTED')}
-                            className="text-sm text-red-700 hover:underline"
+                            className="text-sm text-danger-600 hover:underline"
                           >
                             Reject
                           </button>
@@ -446,10 +462,10 @@ function RestDaySection({ canApprove }: { canApprove: boolean }) {
         </div>
       )}
 
-      <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+      <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
         <h3 className="text-sm font-semibold">Request a rest day</h3>
         {formError && (
-          <p role="alert" className="text-sm text-red-700">
+          <p role="alert" className="text-sm text-danger-600">
             {formError}
           </p>
         )}
@@ -519,14 +535,14 @@ function FlaggedEntriesSection({ refreshSignal }: { refreshSignal: number }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">Flagged time entries</h2>
-      <p className="text-sm text-gray-500">
+      <h2 className={SECTION_TITLE}>Flagged time entries</h2>
+      <p className="text-sm text-ink-muted">
         Clock-ins/outs outside the configured geofence, or with no location captured — never blocked, just held
         here for a look.
       </p>
 
       {actionError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {actionError}
         </p>
       )}
@@ -543,7 +559,7 @@ function FlaggedEntriesSection({ refreshSignal }: { refreshSignal: number }) {
       {Array.isArray(entries) && entries.length > 0 && (
         <div className="flex flex-col gap-3">
           {entries.map((entry) => (
-            <div key={entry.id} className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-4">
+            <div key={entry.id} className="flex flex-col gap-2 rounded border border-amber-300 bg-warning-50 p-4">
               <p className="text-sm font-medium">
                 {entry.user.fullName} — {formatDateTime(entry.clockInAt)}
                 {entry.clockOutAt ? ` to ${formatDateTime(entry.clockOutAt)}` : ' (still clocked in)'}
@@ -555,7 +571,7 @@ function FlaggedEntriesSection({ refreshSignal }: { refreshSignal: number }) {
                       Clock-in: {entry.clockInFlagReason ? FLAG_REASON_LABELS[entry.clockInFlagReason] : 'Flagged'}
                     </p>
                     {entry.clockInPhoto && (
-                      <a href={entry.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                      <a href={entry.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-brand-700 hover:underline">
                         View clock-in photo
                       </a>
                     )}
@@ -570,7 +586,7 @@ function FlaggedEntriesSection({ refreshSignal }: { refreshSignal: number }) {
                       Clock-out: {entry.clockOutFlagReason ? FLAG_REASON_LABELS[entry.clockOutFlagReason] : 'Flagged'}
                     </p>
                     {entry.clockOutPhoto && (
-                      <a href={entry.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                      <a href={entry.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-brand-700 hover:underline">
                         View clock-out photo
                       </a>
                     )}
@@ -685,15 +701,15 @@ function GeofenceManagementSection() {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">DTR work locations</h2>
-      <p className="text-sm text-gray-500">
+      <h2 className={SECTION_TITLE}>DTR work locations</h2>
+      <p className="text-sm text-ink-muted">
         A clock-in/out is only flagged if it falls outside every location below — any one of them counts, and it
         works the same for everyone, not tied to a specific employee. Leave this list empty to never flag for
         location reasons.
       </p>
 
       {actionError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {actionError}
         </p>
       )}
@@ -711,7 +727,7 @@ function GeofenceManagementSection() {
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
+              <tr className="border-b border-gray-200 text-ink-muted">
                 <th className="py-2 pr-4 font-medium">Name</th>
                 <th className="py-2 pr-4 font-medium">Latitude</th>
                 <th className="py-2 pr-4 font-medium">Longitude</th>
@@ -728,10 +744,10 @@ function GeofenceManagementSection() {
                   <td className="py-2 pr-4">{geofence.radiusMeters}</td>
                   <td className="py-2">
                     <div className="flex gap-3">
-                      <button type="button" onClick={() => startEdit(geofence)} className="text-sm text-blue-700 hover:underline">
+                      <button type="button" onClick={() => startEdit(geofence)} className="text-sm text-brand-700 hover:underline">
                         Edit
                       </button>
-                      <button type="button" onClick={() => void handleDelete(geofence)} className="text-sm text-red-700 hover:underline">
+                      <button type="button" onClick={() => void handleDelete(geofence)} className="text-sm text-danger-600 hover:underline">
                         Delete
                       </button>
                     </div>
@@ -743,10 +759,10 @@ function GeofenceManagementSection() {
         </div>
       )}
 
-      <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+      <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
         <h3 className="text-sm font-semibold">{editingId ? 'Edit work location' : 'Add a work location'}</h3>
         {formError && (
-          <p role="alert" className="text-sm text-red-700">
+          <p role="alert" className="text-sm text-danger-600">
             {formError}
           </p>
         )}
@@ -876,8 +892,8 @@ function AllTimeLogsSection({ refreshSignal }: { refreshSignal: number }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold">All time logs</h2>
-      <p className="text-sm text-gray-500">
+      <h2 className={SECTION_TITLE}>All time logs</h2>
+      <p className="text-sm text-ink-muted">
         Every clock-in/out in range, not just flagged ones — Flagged Entries above is for exceptions needing a
         decision; this is the full record, for a look at any time.
       </p>
@@ -919,7 +935,7 @@ function AllTimeLogsSection({ refreshSignal }: { refreshSignal: number }) {
       </div>
 
       {actionError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {actionError}
         </p>
       )}
@@ -938,29 +954,21 @@ function AllTimeLogsSection({ refreshSignal }: { refreshSignal: number }) {
           {logs.map((log) => {
             const isFlagged = log.clockInFlagged || log.clockOutFlagged;
             return (
-              <div key={log.id} className="flex flex-col gap-2 rounded border border-gray-200 p-4">
+              <div key={log.id} className="flex flex-col gap-2 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-medium">
                     {log.user.fullName} — {formatDateTime(log.clockInAt)}
                     {log.clockOutAt ? ` to ${formatDateTime(log.clockOutAt)}` : ' (still clocked in)'}
                   </p>
-                  <span
-                    className={
-                      !isFlagged
-                        ? 'rounded border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-700'
-                        : log.reviewedAt
-                          ? 'rounded border border-green-300 bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-900'
-                          : 'rounded border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900'
-                    }
-                  >
+                  <StatusBadge variant={!isFlagged ? 'neutral' : log.reviewedAt ? 'success' : 'warning'}>
                     {!isFlagged ? 'Normal' : log.reviewedAt ? 'Reviewed' : 'Flagged'}
-                  </span>
+                  </StatusBadge>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1">
-                    <p className="text-xs font-semibold text-gray-600">Clock-in</p>
+                    <p className="text-xs font-semibold text-ink-secondary">Clock-in</p>
                     {log.clockInPhoto && (
-                      <a href={log.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                      <a href={log.clockInPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-brand-700 hover:underline">
                         View photo
                       </a>
                     )}
@@ -971,9 +979,9 @@ function AllTimeLogsSection({ refreshSignal }: { refreshSignal: number }) {
                     )}
                   </div>
                   <div className="flex flex-col gap-1">
-                    <p className="text-xs font-semibold text-gray-600">Clock-out</p>
+                    <p className="text-xs font-semibold text-ink-secondary">Clock-out</p>
                     {log.clockOutPhoto && (
-                      <a href={log.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-blue-700 hover:underline">
+                      <a href={log.clockOutPhoto.url} target="_blank" rel="noreferrer" className="text-xs text-brand-700 hover:underline">
                         View photo
                       </a>
                     )}
@@ -1036,8 +1044,8 @@ export function ShiftsPage() {
   return (
     <div className="flex flex-col gap-10">
       <div>
-        <h1 className="text-lg font-semibold">Shifts & DTR</h1>
-        <p className="text-sm text-gray-500">Time in/out and rest-day requests.</p>
+        <h1 className={PAGE_TITLE}>Shifts & DTR</h1>
+        <p className="text-sm text-ink-muted">Time in/out and rest-day requests.</p>
       </div>
 
       {/* Client follow-up, 2026-09-12: Time Clock moved to the top — the

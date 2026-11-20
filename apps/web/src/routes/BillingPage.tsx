@@ -24,6 +24,7 @@ import { EmptyState } from '../components/EmptyState.js';
 import { Field, INPUT_CLASSES } from '../components/Field.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StatusBadge } from '../components/StatusBadge.js';
+import { CAPTION, NUMERIC_HERO } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_STATUS_BADGE_VARIANT, BOOKING_STATUS_LABELS } from '../lib/bookingStyle.js';
@@ -1155,8 +1156,14 @@ export function BillingPage() {
                   </p>
                 )}
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-ink-secondary">Amount due</p>
-                  <p className="text-4xl font-bold text-ink">{formatPeso(preview.outstandingBalance)}</p>
+                  <p className={`${CAPTION} font-medium uppercase tracking-wide`}>Amount due</p>
+                  {/* Visual redesign round 2 (spec.md §13 decision 40):
+                      the one hero figure on this page — NUMERIC_HERO,
+                      not a hand-typed text-4xl, so a future page can't
+                      invent a third number size the way this one and
+                      Command Center's KPI tiles already had before
+                      this round. */}
+                  <p className={NUMERIC_HERO}>{formatPeso(preview.outstandingBalance)}</p>
                 </div>
                 {/* Spec.md §13 decisions 23/24: the whole-account
                     bridge — reads the exact same server-computed
@@ -1169,19 +1176,19 @@ export function BillingPage() {
                 <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
                   <div className="flex justify-between">
                     <span>Charges</span>
-                    <span>{formatPeso(preview.chargesTotal)}</span>
+                    <span className="font-mono tabular-nums">{formatPeso(preview.chargesTotal)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Less payments</span>
-                    <span>-{formatPeso(preview.paymentsTotal)}</span>
+                    <span className="font-mono tabular-nums">-{formatPeso(preview.paymentsTotal)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Less discounts</span>
-                    <span>-{formatPeso(preview.discountsTotal)}</span>
+                    <span className="font-mono tabular-nums">-{formatPeso(preview.discountsTotal)}</span>
                   </div>
                   <div className="flex justify-between border-t border-gray-300 pt-1 text-base font-semibold text-ink">
                     <span>Amount due</span>
-                    <span>{formatPeso(preview.amountDue)}</span>
+                    <span className="font-mono tabular-nums">{formatPeso(preview.amountDue)}</span>
                   </div>
                 </div>
               </div>

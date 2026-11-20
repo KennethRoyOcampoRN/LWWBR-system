@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { DataTable, type DataTableColumn } from '../components/DataTable.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonTableRows } from '../components/Skeleton.js';
+import { PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { DEPARTMENT_LABELS } from '../lib/workOrderStyle.js';
@@ -296,12 +297,12 @@ export function ReportsPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-lg font-semibold">Reports</h1>
-        <p className="text-sm text-gray-500">Date-ranged reports, rendered on screen and exportable to CSV.</p>
+        <h1 className={PAGE_TITLE}>Reports</h1>
+        <p className="text-sm text-ink-muted">Date-ranged reports, rendered on screen and exportable to CSV.</p>
       </div>
 
       <form onSubmit={(e) => void runReport(e)} className="flex flex-wrap items-end gap-3 rounded border border-gray-200 p-4">
-        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+        <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
           Report
           <select
             value={reportKey}
@@ -318,7 +319,7 @@ export function ReportsPage() {
             ))}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+        <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
           From
           <input
             required
@@ -328,7 +329,7 @@ export function ReportsPage() {
             className="rounded border border-gray-300 px-2 py-1 text-sm"
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+        <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
           To
           <input
             required
@@ -342,7 +343,7 @@ export function ReportsPage() {
             DEPARTMENT-scoped report:view holder on that key) — this
             filter only makes sense for work-orders. */}
         {reportKey === 'work-orders' && (
-          <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
             Department (optional)
             <select
               value={department}
@@ -370,15 +371,15 @@ export function ReportsPage() {
             type="button"
             onClick={() => void exportCsv()}
             disabled={exporting}
-            className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 disabled:opacity-50"
+            className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-ink-secondary disabled:opacity-50"
           >
             {exporting ? 'Exporting…' : 'Export CSV'}
           </button>
         )}
       </form>
 
-      {loadError && <p role="alert" className="text-sm text-red-700">{loadError}</p>}
-      {exportError && <p role="alert" className="text-sm text-red-700">{exportError}</p>}
+      {loadError && <p role="alert" className="text-sm text-danger-600">{loadError}</p>}
+      {exportError && <p role="alert" className="text-sm text-danger-600">{exportError}</p>}
 
       {/* Real gap found in the loading/empty-state audit, 2026-08-26: this
           results pane previously had no loading indicator at all — only
@@ -440,13 +441,13 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Daily occupancy</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Daily occupancy</h2>
         {report.summary.byDay.length === 0 && <EmptyState message="No occupancy data in range." />}
         {report.summary.byDay.length > 0 && (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead>
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4">Date</th>
                   <th className="py-2 pr-4">Occupied</th>
                   <th className="py-2 pr-4">Total units</th>
@@ -469,13 +470,13 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Unit status history — by day, by unit</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Unit status history — by day, by unit</h2>
         {report.rows.length === 0 && <EmptyState message="No unit status history in range." />}
         {report.rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Date</th>
                   <th className="py-2 pr-4">Group</th>
                   <th className="py-2 pr-4">Unit</th>
@@ -486,7 +487,7 @@ function OccupancyReportView({ report }: { report: Extract<ReportResponse, { key
                 {report.rows.map((row) => (
                   <tr key={`${row.date}-${row.unitId}`}>
                     <td className="py-2 pr-4 pl-2">{row.date}</td>
-                    <td className="py-2 pr-4 text-xs text-gray-500">{row.group}</td>
+                    <td className="py-2 pr-4 text-xs text-ink-muted">{row.group}</td>
                     <td className="py-2 pr-4">
                       {row.unitCode} — {row.unitName}
                     </td>
@@ -508,22 +509,22 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Volume</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Volume</p>
           <p className="text-2xl font-semibold">{summary.totalVolume}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Avg. time to close</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Avg. time to close</p>
           <p className="text-2xl font-semibold">{formatMinutes(summary.avgTimeToCloseMinutes)}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">SLA breaches</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">SLA breaches</p>
           <p className="text-2xl font-semibold">{summary.slaBreachedCount}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">By type</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>By type</h2>
           {summary.byType.length === 0 && <EmptyState message="No tickets in range." />}
           {summary.byType.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -537,7 +538,7 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
           )}
         </div>
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">By department</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>By department</h2>
           {summary.byDepartment.length === 0 && <EmptyState message="No tickets in range." />}
           {summary.byDepartment.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -553,7 +554,7 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Top recurring units</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Top recurring units</h2>
         {summary.topRecurringUnits.length === 0 && <EmptyState message="No unit-linked tickets in range." />}
         {summary.topRecurringUnits.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
@@ -570,13 +571,13 @@ function WorkOrderReportView({ report }: { report: Extract<ReportResponse, { key
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Tickets in range</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Tickets in range</h2>
         {rows.length === 0 && <EmptyState message="No tickets in range." />}
         {rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Reference</th>
                   <th className="py-2 pr-4">Type</th>
                   <th className="py-2 pr-4">Department</th>
@@ -623,21 +624,21 @@ function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { 
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Rooms cleaned</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Rooms cleaned</p>
           <p className="text-2xl font-semibold">{summary.totalRoomsCleaned}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Avg. clean time</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Avg. clean time</p>
           <p className="text-2xl font-semibold">{formatMinutes(summary.avgCleanTimeMinutes)}</p>
         </div>
       </div>
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-ink-muted">
         QC pass rate isn't shown — housekeeping has no separate QC step to report on; the attendant who cleans a
         room marks it ready in the same motion.
       </p>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">By attendant</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>By attendant</h2>
         {summary.byAttendant.length === 0 && <EmptyState message="No completed cleans in range." />}
         {summary.byAttendant.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
@@ -654,13 +655,13 @@ function HousekeepingReportView({ report }: { report: Extract<ReportResponse, { 
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Cleans in range</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Cleans in range</h2>
         {rows.length === 0 && <EmptyState message="No completed cleans in range." />}
         {rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Unit</th>
                   <th className="py-2 pr-4">Attendant</th>
                   <th className="py-2 pr-4">Cleaning started</th>
@@ -718,12 +719,12 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded border border-gray-200 p-3 sm:w-64">
-        <p className="text-xs font-medium uppercase text-gray-500">Tickets</p>
+        <p className="text-xs font-medium uppercase text-ink-muted">Tickets</p>
         <p className="text-2xl font-semibold">{summary.totalTickets}</p>
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">By day</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>By day</h2>
         {summary.byDay.length === 0 && <EmptyState message="No maintenance tickets in range." />}
         {summary.byDay.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
@@ -738,7 +739,7 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Maintenance log</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Maintenance log</h2>
         <div className="flex flex-col gap-3">
           {rows.map((row) => (
             <div key={row.id} className="rounded border border-gray-200 p-3">
@@ -746,18 +747,18 @@ function MaintenanceLogReportView({ report }: { report: Extract<ReportResponse, 
                 <p className="text-sm font-medium">
                   {row.date} — {row.referenceNo}: {row.title}
                 </p>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-ink-muted">
                   {row.unitCode ? `${row.unitCode} — ${row.unitName} · ` : ''}
                   {row.status}
                 </p>
               </div>
               <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="mb-1 text-xs font-medium uppercase text-gray-500">Issue</p>
+                  <p className="mb-1 text-xs font-medium uppercase text-ink-muted">Issue</p>
                   <PhotoThumbnails photos={row.issuePhotos} emptyLabel="No issue photo" />
                 </div>
                 <div>
-                  <p className="mb-1 text-xs font-medium uppercase text-gray-500">Completion</p>
+                  <p className="mb-1 text-xs font-medium uppercase text-ink-muted">Completion</p>
                   <PhotoThumbnails photos={row.completionPhotos} emptyLabel="No completion photo yet" />
                 </div>
               </div>
@@ -785,25 +786,25 @@ function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key:
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Volume</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Volume</p>
           <p className="text-2xl font-semibold">{summary.totalVolume}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Revenue (listed value)</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Revenue (listed value)</p>
           <p className="text-2xl font-semibold">{formatPeso(summary.totalRevenue)}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Avg. prep time</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Avg. prep time</p>
           <p className="text-2xl font-semibold">{formatMinutes(summary.avgPrepTimeMinutes)}</p>
         </div>
       </div>
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-ink-muted">
         "Revenue" is the total listed value of what was ordered (cancelled orders excluded) — it does not mean
         payment was collected or verified; this app doesn't track that.
       </p>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Top items</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Top items</h2>
         {summary.topItems.length === 0 && <EmptyState message="No fulfilled orders in range." />}
         {summary.topItems.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
@@ -818,13 +819,13 @@ function FnbOrderReportView({ report }: { report: Extract<ReportResponse, { key:
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Orders in range</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Orders in range</h2>
         {rows.length === 0 && <EmptyState message="No orders in range." />}
         {rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Reference</th>
                   <th className="py-2 pr-4">Type</th>
                   <th className="py-2 pr-4">Status</th>
@@ -871,21 +872,21 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Requests</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Requests</p>
           <p className="text-2xl font-semibold">{summary.totalRequests}</p>
         </div>
         <div className="rounded border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase text-gray-500">Qty issued</p>
+          <p className="text-xs font-medium uppercase text-ink-muted">Qty issued</p>
           <p className="text-2xl font-semibold">{summary.totalQtyIssued}</p>
         </div>
-        <div className="rounded border border-red-200 bg-red-50 p-3">
-          <p className="text-xs font-medium uppercase text-red-700">Lost / damaged</p>
+        <div className="rounded border border-red-200 bg-danger-50 p-3">
+          <p className="text-xs font-medium uppercase text-danger-600">Lost / damaged</p>
           <p className="text-2xl font-semibold text-red-900">{summary.lostDamagedCount}</p>
         </div>
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">By item</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>By item</h2>
         {summary.byItem.length === 0 && <EmptyState message="No amenity requests in range." />}
         {summary.byItem.length > 0 && (
           <ul className="flex flex-col gap-1 text-sm">
@@ -903,13 +904,13 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Requests in range</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Requests in range</h2>
         {rows.length === 0 && <EmptyState message="No amenity requests in range." />}
         {rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Reference</th>
                   <th className="py-2 pr-4">Item</th>
                   <th className="py-2 pr-4">Unit</th>
@@ -921,7 +922,7 @@ function AmenityUtilisationReportView({ report }: { report: Extract<ReportRespon
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {rows.map((row) => (
-                  <tr key={row.id} className={row.status === 'LOST_DAMAGED' ? 'bg-red-50' : undefined}>
+                  <tr key={row.id} className={row.status === 'LOST_DAMAGED' ? 'bg-danger-50' : undefined}>
                     <td className="py-2 pr-4 pl-2 font-medium">{row.referenceNo}</td>
                     <td className="py-2 pr-4">{row.itemName}</td>
                     <td className="py-2 pr-4">{row.unitCode ?? '—'}</td>
@@ -952,13 +953,13 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded border border-gray-200 p-3 sm:w-64">
-        <p className="text-xs font-medium uppercase text-gray-500">Events</p>
+        <p className="text-xs font-medium uppercase text-ink-muted">Events</p>
         <p className="text-2xl font-semibold">{summary.totalEvents}</p>
       </div>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">By action</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>By action</h2>
           {summary.byAction.length === 0 && <EmptyState message="No events in range." />}
           {summary.byAction.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -972,7 +973,7 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
           )}
         </div>
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">By entity</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>By entity</h2>
           {summary.byEntity.length === 0 && <EmptyState message="No events in range." />}
           {summary.byEntity.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -986,7 +987,7 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
           )}
         </div>
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">Top actors</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>Top actors</h2>
           {summary.topActors.length === 0 && <EmptyState message="No events in range." />}
           {summary.topActors.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -1002,13 +1003,13 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Events in range</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Events in range</h2>
         {rows.length === 0 && <EmptyState message="No events in range." />}
         {rows.length > 0 && (
           <div className="max-h-96 overflow-auto rounded border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4 pl-2">Timestamp</th>
                   <th className="py-2 pr-4">Actor</th>
                   <th className="py-2 pr-4">Action</th>
@@ -1030,8 +1031,8 @@ function AuditExtractReportView({ report }: { report: Extract<ReportResponse, { 
                     <td className="py-2 pr-4">
                       {(row.before || row.after) && (
                         <details>
-                          <summary className="cursor-pointer text-xs text-blue-700">before/after</summary>
-                          <pre className="mt-1 max-w-xs overflow-auto whitespace-pre-wrap text-xs text-gray-600">
+                          <summary className="cursor-pointer text-xs text-brand-700">before/after</summary>
+                          <pre className="mt-1 max-w-xs overflow-auto whitespace-pre-wrap text-xs text-ink-secondary">
                             {row.before ? `before: ${row.before}\n` : ''}
                             {row.after ? `after: ${row.after}` : ''}
                           </pre>

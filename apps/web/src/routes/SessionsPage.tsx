@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
-import { SkeletonTableRows } from '../components/Skeleton.js';
+import { Button } from '../components/Button.js';
+import { DataTable, type DataTableColumn } from '../components/DataTable.js';
+import { PageHeader } from '../components/PageHeader.js';
+import { Section } from '../components/Card.js';
+import { SkeletonList } from '../components/Skeleton.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
 interface SessionRow {
@@ -15,6 +19,12 @@ interface SessionRow {
 // is already scoped to the caller's own rows server-side, so there's no
 // permission gate here the way Users/Roles have (every authenticated
 // user manages their own devices, nothing more).
+//
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20):
+// converted to DataTable (no responsive breakpoint at all before this —
+// a hand-rolled table that overflowed sideways on a phone) and
+// PageHeader/Section, same primitives every other page now routes
+// through.
 export function SessionsPage() {
   const [sessions, setSessions] = useState<SessionRow[] | 'loading' | 'error'>('loading');
   const [revokingId, setRevokingId] = useState<string | null>(null);
@@ -43,72 +53,57 @@ export function SessionsPage() {
     }
   }
 
+  const columns: DataTableColumn<SessionRow>[] = [
+    { key: 'ip', header: 'IP', render: (s) => s.ip ?? '—' },
+    {
+      key: 'device',
+      header: 'Device',
+      render: (s) => (
+        <span className="block max-w-xs truncate" title={s.userAgent ?? undefined}>
+          {s.userAgent ?? '—'}
+        </span>
+      ),
+    },
+    { key: 'createdAt', header: 'Signed in', render: (s) => new Date(s.createdAt).toLocaleString() },
+    { key: 'expiresAt', header: 'Expires', render: (s) => new Date(s.expiresAt).toLocaleString() },
+    {
+      key: 'actions',
+      header: '',
+      render: (s) => (
+        <Button type="button" variant="danger" onClick={() => void revoke(s.id)} disabled={revokingId === s.id}>
+          {revokingId === s.id ? 'Revoking…' : 'Revoke'}
+        </Button>
+      ),
+    },
+  ];
+
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">Sessions</h1>
-      <p className="text-sm text-gray-600">
-        Every device currently signed in as you. Revoking a session signs that device out immediately — its next
-        request is rejected and it has to log in again. The API has no way to tell which row is the one you're
-        using right now, so double-check the IP/device details before revoking.
-      </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Sessions"
+        description="Every device currently signed in as you. Revoking a session signs that device out immediately."
+      />
 
-      {sessions === 'loading' && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <tbody>
-              <SkeletonTableRows rows={2} columns={5} />
-            </tbody>
-          </table>
-        </div>
-      )}
-      {sessions === 'error' && <p role="alert">Could not load sessions.</p>}
-      {error && (
-        <p role="alert" className="text-sm text-red-600">
-          {error}
-        </p>
-      )}
-
-      {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
-          M6): this table had no overflow-x-auto wrapper — on a real
-          phone viewport the unbroken "Signed in"/"Expires" locale
-          datetime strings pushed the whole page 651px wide inside a
-          375px window instead of scrolling within its own bounds. */}
-      {Array.isArray(sessions) && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
-                <th className="py-2 pr-4 font-medium">IP</th>
-                <th className="py-2 pr-4 font-medium">Device</th>
-                <th className="py-2 pr-4 font-medium">Signed in</th>
-                <th className="py-2 pr-4 font-medium">Expires</th>
-                <th className="py-2 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((session) => (
-                <tr key={session.id} className="border-b border-gray-100">
-                  <td className="py-2 pr-4">{session.ip ?? '—'}</td>
-                  <td className="max-w-xs truncate py-2 pr-4" title={session.userAgent ?? undefined}>
-                    {session.userAgent ?? '—'}
-                  </td>
-                  <td className="whitespace-nowrap py-2 pr-4">{new Date(session.createdAt).toLocaleString()}</td>
-                  <td className="whitespace-nowrap py-2 pr-4">{new Date(session.expiresAt).toLocaleString()}</td>
-                  <td className="py-2">
-                    <button
-                      onClick={() => void revoke(session.id)}
-                      disabled={revokingId === session.id}
-                      className="text-sm text-red-700 hover:underline disabled:opacity-50"
-                    >
-                      {revokingId === session.id ? 'Revoking…' : 'Revoke'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <Section
+        description="The API has no way to tell which row is the one you're using right now, so double-check the IP/device details before revoking."
+      >
+        {error && (
+          <p role="alert" className="text-sm font-medium text-danger-600">
+            {error}
+          </p>
+        )}
+        {sessions === 'loading' && <SkeletonList items={2} />}
+        {sessions === 'error' && <p role="alert">Could not load sessions.</p>}
+        {Array.isArray(sessions) && (
+          <DataTable
+            columns={columns}
+            rows={sessions}
+            rowKey={(s) => s.id}
+            mobileTitle={(s) => s.ip ?? 'Unknown IP'}
+            emptyMessage="No active sessions."
+          />
+        )}
+      </Section>
     </div>
   );
 }

@@ -10,9 +10,11 @@ import {
 import { Fragment, useEffect, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList, SkeletonTableRows } from '../components/Skeleton.js';
+import { StatusBadge } from '../components/StatusBadge.js';
+import { PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
-import { FNB_ORDER_STATUS_LABELS, FNB_ORDER_TYPE_LABELS } from '../lib/fnbOrderStyle.js';
+import { FNB_ORDER_STATUS_BADGE_VARIANT, FNB_ORDER_STATUS_LABELS, FNB_ORDER_TYPE_LABELS } from '../lib/fnbOrderStyle.js';
 import { subscribeToFnbOrderChanges } from '../lib/realtime.js';
 
 interface MenuItemPhoto {
@@ -112,8 +114,8 @@ function orderUrgency(minutes: number): OrderUrgency {
 
 function urgencyClass(urgency: OrderUrgency): string {
   if (urgency === 'overdue') return 'border-red-600 bg-red-600 text-white animate-pulse';
-  if (urgency === 'approaching') return 'border-amber-400 bg-amber-50 text-amber-900 animate-pulse';
-  return 'border-red-300 bg-red-50 text-red-900';
+  if (urgency === 'approaching') return 'border-amber-400 bg-warning-50 text-amber-900 animate-pulse';
+  return 'border-danger-600/30 bg-danger-50 text-red-900';
 }
 
 // Restaurant menu + order/kitchen board — spec §6/§7.3, §8.2's F&B
@@ -406,12 +408,12 @@ export function FnbPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-lg font-semibold">Restaurant</h1>
-        <p className="text-sm text-gray-500">The menu, order placement, and the kitchen board.</p>
+        <h1 className={PAGE_TITLE}>Restaurant</h1>
+        <p className="text-sm text-ink-muted">The menu, order placement, and the kitchen board.</p>
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Kitchen board</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Kitchen board</h2>
 
         {orders === 'loading' && <SkeletonList />}
         {orders === 'error' && <p role="alert">Could not load orders.</p>}
@@ -423,7 +425,7 @@ export function FnbPage() {
                 .sort((a, b) => new Date(a.scheduledFor ?? a.createdAt).getTime() - new Date(b.scheduledFor ?? b.createdAt).getTime());
               return (
                 <div key={status} className="flex flex-col gap-2">
-                  <h3 className="text-xs font-semibold uppercase text-gray-500">
+                  <h3 className="text-xs font-semibold uppercase text-ink-muted">
                     {FNB_ORDER_STATUS_LABELS[status]} ({columnOrders.length})
                   </h3>
                   {columnOrders.length === 0 && <EmptyState message="No tickets." />}
@@ -438,13 +440,13 @@ export function FnbPage() {
                             {urgency === 'overdue' ? `OVERDUE · ${minutes}m` : `${minutes}m`}
                           </span>
                         </div>
-                        <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-gray-600'}`}>
+                        <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-ink-secondary'}`}>
                           {FNB_ORDER_TYPE_LABELS[order.type]}
                           {order.unit ? ` · ${order.unit.code}` : ''}
                           {order.guestName ? ` · ${order.guestName}` : ''}
                         </p>
                         {order.type === 'ADVANCE_ORDER' && order.scheduledFor && (
-                          <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-gray-600'}`}>
+                          <p className={`text-xs ${urgency === 'overdue' ? 'text-red-50' : 'text-ink-secondary'}`}>
                             Scheduled {new Date(order.scheduledFor).toLocaleString()}
                           </p>
                         )}
@@ -470,7 +472,7 @@ export function FnbPage() {
                                 <button
                                   type="button"
                                   onClick={() => startCancel(order)}
-                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
+                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-ink-secondary"
                                 >
                                   Cancel
                                 </button>
@@ -488,7 +490,7 @@ export function FnbPage() {
                                 <button
                                   type="button"
                                   onClick={() => startCancel(order)}
-                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
+                                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-ink-secondary"
                                 >
                                   Cancel
                                 </button>
@@ -507,8 +509,8 @@ export function FnbPage() {
                         )}
                         {cancellingOrderId === order.id && (
                           <div className="mt-2 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 text-gray-900">
-                            {cancelError && <p role="alert" className="text-xs text-red-700">{cancelError}</p>}
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            {cancelError && <p role="alert" className="text-xs text-danger-600">{cancelError}</p>}
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Cancellation reason (required)
                               <input
                                 required
@@ -529,7 +531,7 @@ export function FnbPage() {
                               <button
                                 type="button"
                                 onClick={() => setCancellingOrderId(null)}
-                                className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+                                className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-ink-secondary"
                               >
                                 Keep order
                               </button>
@@ -550,10 +552,10 @@ export function FnbPage() {
             onSubmit={(e) => void handleCreateOrder(e)}
             className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4"
           >
-            <h3 className="text-sm font-semibold text-gray-700">Place an order</h3>
-            {orderFormError && <p role="alert" className="text-sm text-red-700">{orderFormError}</p>}
+            <h3 className="text-sm font-semibold text-ink-secondary">Place an order</h3>
+            {orderFormError && <p role="alert" className="text-sm text-danger-600">{orderFormError}</p>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Type
                 <select
                   value={orderType}
@@ -567,7 +569,7 @@ export function FnbPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Settlement (informational only)
                 <select
                   value={settlement}
@@ -581,7 +583,7 @@ export function FnbPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Room {settlement === 'CHARGE_TO_ROOM' ? '(required, must be occupied)' : '(optional)'}
                 <select
                   required={settlement === 'CHARGE_TO_ROOM'}
@@ -611,7 +613,7 @@ export function FnbPage() {
                   (only occupied rooms can be selected; other rooms are shown but disabled)
                 </span>
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Guest name (optional)
                 <input
                   value={guestName}
@@ -620,7 +622,7 @@ export function FnbPage() {
                 />
               </label>
               {orderType === 'ADVANCE_ORDER' && (
-                <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                   Scheduled for
                   <input
                     required
@@ -634,7 +636,7 @@ export function FnbPage() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium text-gray-600">Items</span>
+              <span className="text-xs font-medium text-ink-secondary">Items</span>
               {lines.map((line, index) => (
                 <div key={index} className="flex flex-wrap items-center gap-2">
                   <select
@@ -664,14 +666,14 @@ export function FnbPage() {
                     <button
                       type="button"
                       onClick={() => removeLine(index)}
-                      className="text-xs font-medium text-red-700 hover:underline"
+                      className="text-xs font-medium text-danger-600 hover:underline"
                     >
                       Remove
                     </button>
                   )}
                 </div>
               ))}
-              <button type="button" onClick={addLine} className="w-fit text-xs font-medium text-blue-700 hover:underline">
+              <button type="button" onClick={addLine} className="w-fit text-xs font-medium text-brand-700 hover:underline">
                 + Add item
               </button>
             </div>
@@ -690,14 +692,14 @@ export function FnbPage() {
       </div>
 
       <div className="border-t border-gray-200 pt-6">
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Order history</h2>
-        <p className="mb-2 text-xs text-gray-500">
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Order history</h2>
+        <p className="mb-2 text-xs text-ink-muted">
           Every completed or cancelled order's full detail — items, room, guest, cancellation reason, timestamps. Once an
           order leaves the kitchen board, this is where it lives.
         </p>
 
         <div className="mb-3 flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
             Status
             <select
               value={historyStatusFilter}
@@ -709,7 +711,7 @@ export function FnbPage() {
               <option value="CANCELLED">Cancelled</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+          <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
             Search
             <input
               value={historySearch}
@@ -721,7 +723,7 @@ export function FnbPage() {
           <button
             type="button"
             onClick={() => setHistorySortAsc((prev) => !prev)}
-            className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700"
+            className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-ink-secondary"
           >
             Date: {historySortAsc ? 'Oldest first' : 'Newest first'}
           </button>
@@ -742,7 +744,7 @@ export function FnbPage() {
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead>
-                <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                   <th className="py-2 pr-4">Reference</th>
                   <th className="py-2 pr-4">Status</th>
                   <th className="py-2 pr-4">Placed</th>
@@ -756,7 +758,11 @@ export function FnbPage() {
                 {visibleHistory.map((order) => (
                   <tr key={order.id}>
                     <td className="py-2 pr-4 font-medium">{order.referenceNo}</td>
-                    <td className="py-2 pr-4">{FNB_ORDER_STATUS_LABELS[order.status]}</td>
+                    <td className="py-2 pr-4">
+                      <StatusBadge variant={FNB_ORDER_STATUS_BADGE_VARIANT[order.status]}>
+                        {FNB_ORDER_STATUS_LABELS[order.status]}
+                      </StatusBadge>
+                    </td>
                     <td className="py-2 pr-4">{new Date(order.createdAt).toLocaleString()}</td>
                     <td className="py-2 pr-4">
                       {order.unit ? order.unit.code : '—'}
@@ -772,7 +778,7 @@ export function FnbPage() {
                       </ul>
                     </td>
                     <td className="py-2 pr-4">{formatPeso(order.subtotal)}</td>
-                    <td className="py-2 pr-4 text-xs text-gray-600">
+                    <td className="py-2 pr-4 text-xs text-ink-secondary">
                       {order.status === 'CANCELLED' && (
                         <>
                           {order.cancelReason ?? 'No reason recorded'}
@@ -791,8 +797,8 @@ export function FnbPage() {
       </div>
 
       <div className="border-t border-gray-200 pt-6">
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Menu</h2>
-        {deleteError && <p role="alert" className="mb-2 text-sm text-red-700">{deleteError}</p>}
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Menu</h2>
+        {deleteError && <p role="alert" className="mb-2 text-sm text-danger-600">{deleteError}</p>}
 
         {items === 'loading' && (
           <div className="overflow-x-auto">
@@ -809,10 +815,10 @@ export function FnbPage() {
           <div className="flex flex-col gap-6">
             {menuCategories.map((cat) => (
               <div key={cat} className="overflow-x-auto">
-                <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">{cat}</h3>
+                <h3 className="mb-1 text-xs font-semibold uppercase text-ink-muted">{cat}</h3>
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
                   <thead>
-                    <tr className="text-left text-xs font-medium uppercase text-gray-500">
+                    <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                       <th className="py-2 pr-4" />
                       <th className="py-2 pr-4">Name</th>
                       <th className="py-2 pr-4">Price</th>
@@ -847,7 +853,7 @@ export function FnbPage() {
                                       setRowPhotoError(null);
                                       setEditingPhotoId(editingPhotoId === item.id ? null : item.id);
                                     }}
-                                    className="text-xs font-medium text-blue-700 hover:underline"
+                                    className="text-xs font-medium text-brand-700 hover:underline"
                                   >
                                     {editingPhotoId === item.id ? 'Close' : 'Edit photo'}
                                   </button>
@@ -856,7 +862,7 @@ export function FnbPage() {
                                   <button
                                     type="button"
                                     onClick={() => void toggleAvailable(item)}
-                                    className="text-xs font-medium text-blue-700 hover:underline"
+                                    className="text-xs font-medium text-brand-700 hover:underline"
                                   >
                                     {item.isAvailable ? 'Mark unavailable' : 'Mark available'}
                                   </button>
@@ -874,7 +880,7 @@ export function FnbPage() {
                                     <button
                                       type="button"
                                       onClick={() => void deleteItem(item)}
-                                      className="text-xs font-medium text-red-700 hover:underline"
+                                      className="text-xs font-medium text-danger-600 hover:underline"
                                     >
                                       Delete
                                     </button>
@@ -887,7 +893,7 @@ export function FnbPage() {
                             <tr>
                               <td colSpan={8} className="bg-gray-50 p-3">
                                 <div className="flex flex-col gap-2">
-                                  {rowPhotoError && <p role="alert" className="text-sm text-red-700">{rowPhotoError}</p>}
+                                  {rowPhotoError && <p role="alert" className="text-sm text-danger-600">{rowPhotoError}</p>}
                                   {item.photo && (
                                     <img src={item.photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />
                                   )}
@@ -909,7 +915,7 @@ export function FnbPage() {
                                       type="button"
                                       onClick={() => void saveRowPhoto(item, null)}
                                       disabled={rowPhotoUploading}
-                                      className="w-fit text-xs font-medium text-red-700 hover:underline"
+                                      className="w-fit text-xs font-medium text-danger-600 hover:underline"
                                     >
                                       Remove photo
                                     </button>
@@ -929,10 +935,10 @@ export function FnbPage() {
 
         {canManageMenu && (
           <form onSubmit={(e) => void handleCreate(e)} className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4">
-            <h3 className="text-sm font-semibold text-gray-700">Add a menu item</h3>
-            {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
+            <h3 className="text-sm font-semibold text-ink-secondary">Add a menu item</h3>
+            {formError && <p role="alert" className="text-sm text-danger-600">{formError}</p>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Name
                 <input
                   required
@@ -941,7 +947,7 @@ export function FnbPage() {
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Category
                 <input
                   required
@@ -951,7 +957,7 @@ export function FnbPage() {
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Price (₱)
                 <input
                   required
@@ -963,7 +969,7 @@ export function FnbPage() {
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Prep time in minutes (optional)
                 <input
                   type="number"
@@ -975,7 +981,7 @@ export function FnbPage() {
               </label>
             </div>
             <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium text-gray-600">Photo (optional)</span>
+              <span className="text-xs font-medium text-ink-secondary">Photo (optional)</span>
               {photo && <img src={photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
               <input
                 type="file"
@@ -992,7 +998,7 @@ export function FnbPage() {
                   type="button"
                   onClick={() => setPhoto(null)}
                   disabled={photoUploading}
-                  className="w-fit text-xs font-medium text-red-700 hover:underline"
+                  className="w-fit text-xs font-medium text-danger-600 hover:underline"
                 >
                   Remove photo
                 </button>

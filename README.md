@@ -8879,3 +8879,87 @@ the three fields are gone and create sends no price field; rate-editor
 tests updated for the dropped price suffix in the disambiguation
 label; new test for editing day-tour/extra-person rates alongside the
 nightly rate). `packages/shared` unchanged, 96/96.
+
+### Visual redesign, round 2: room board first, then the rest of the app (spec.md §13 decisions 39-40), 2026-11-20
+
+Client's diagnosis: the app read as the generic admin-template
+default — every block in an identical white rounded card, one soft
+grey shadow under everything, violet spent as decorative background
+wash instead of status meaning — and that this, not a palette
+problem, was the root of two weeks of "confusing" feedback. Planned
+first, reviewed, then built — nothing written until the plan was
+approved.
+
+Two things the plan found that nobody had flagged before: the room
+board's own status colours (`UNIT_STATUS_CLASSES`) were raw,
+unvetted Tailwind hues with zero connection to the five semantic,
+WCAG-measured tokens the rest of the app already had; and no webfont
+was loaded anywhere — the whole app ran on the browser's default
+system font. Client confirmed both, and pushed back on one choice:
+asked for a typeface with more character than Inter, justified from
+the subject rather than reached for by default.
+
+**Typeface: IBM Plex Sans + IBM Plex Mono, not Inter.** Plex was
+designed by IBM explicitly for legibility across technical/enterprise
+contexts, giving it real character a neutral grotesque doesn't have.
+Plex Mono — drawn as part of the same family, not a mismatched
+pairing — is reserved specifically for money and room codes, the two
+things in this app read at speed, where a monospace's tabular lining
+figures and unambiguous `1`/`l`/`I` earn their place. Self-hosted via
+`@fontsource` (woff2 files bundled as real build assets, confirmed in
+`dist/assets/` after a build) — never a Google Fonts link, since this
+app caches itself for offline use and a runtime font fetch would
+silently fail offline. The existing service worker already covers the
+font requests with no changes needed.
+
+**The room board, built first and given the most attention.** Client's
+own strongest call: Occupied used to render in `purple-100` — the hue
+closest to brand violet — making a fully-booked night the loudest the
+board ever looked and an empty one the calmest, backwards from what a
+status board should signal. `UNIT_STATUS_CLASSES` (and the same bug,
+found and fixed in two other files — work orders, amenity requests)
+now maps onto the five existing semantic tokens by *urgency*, not one
+hue per status: Dirty and Out-of-order/Blocked are the loudest tiles,
+Occupied is deliberately the quietest — plain white, no tint at all.
+The room code is now the dominant element, set in Plex Mono, bold,
+above section-title size, with a short bold status label directly
+under it and guest info demoted to caption weight. Grid density raised
+so sixteen room/cottage tiles fit two short rows on a normal front-desk
+monitor instead of three or four. The tile keeps a slightly larger
+radius than an ordinary card now — the one place this round spends
+boldness rather than flattening it away.
+
+**Everywhere else**: `Card`/`Section` dropped the three-layer violet
+shadow and one radius step down to a flat hairline border — elevation
+is reserved for something genuinely floating (a dropdown, a toast, a
+modal — none exist in this app yet), not every static block. The
+page-wide `bg-app-gradient` wash behind every screen is gone. A real
+type scale now has six named tiers (`typography.ts`), including two
+new ones (`NUMERIC_HERO`/`NUMERIC_KPI`) that replace hand-typed number
+sizes Billing's Amount Due and Command Center's KPI tiles each had
+independently invented. Command Center and Billing were revisited as
+named. The eight pages still on raw slate/gray with almost no
+responsive handling — Work Orders, Users, Roles, Amenities, F&B,
+Sessions, Reports, Shifts — are converted to the shared primitives;
+Sessions in particular went from zero responsive breakpoints and a
+hand-rolled table to the same `DataTable` component the rest of the
+app uses. Two status columns that rendered as plain, uncoloured text
+before this round (F&B order history, rest-day requests) got their
+first colour at all.
+
+Not touched, named so it isn't mistaken for complete coverage:
+Quotations/Payment Verification's own style files carry the identical
+raw-hue bug, but weren't in this round's named scope; tabular-numeral
+alignment was applied to Billing's own headline figures, not swept
+across every money figure in every table row across the app.
+
+Verification: `npm run typecheck`/`lint`/`build` clean across all
+three packages. `apps/web` 240/240 (one new test pinning the room-
+board colour claims down as assertions, not just a doc-comment claim —
+Dirty/Out-of-order render the semantic tokens, Occupied renders
+`bg-white`/`text-ink-secondary` and explicitly none of the five
+saturated tints). Screenshotted at 1600px and phone width with a
+realistic mixed board — several Dirty, two Occupied with guest info,
+one Out of order, one Blocked — plus an informal check of Command
+Center and Work Orders to confirm the system holds together outside
+the room board itself.

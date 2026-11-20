@@ -23,6 +23,7 @@ import { EmptyState } from '../components/EmptyState.js';
 import { Field, INPUT_CLASSES } from '../components/Field.js';
 import { Skeleton, SkeletonCard, SkeletonList } from '../components/Skeleton.js';
 import { StatusBadge } from '../components/StatusBadge.js';
+import { BODY, CAPTION, PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import { BOOKING_STATUS_BADGE_VARIANT, BOOKING_STATUS_LABELS, BOOKING_TYPE_LABELS } from '../lib/bookingStyle.js';
@@ -440,10 +441,10 @@ function UnitDetailDrawer({
     <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-sm flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">
+          <h2 className={PAGE_TITLE}>
             {unit.code} — {unit.name}
           </h2>
-          <p className="text-sm text-gray-500">
+          <p className={BODY}>
             {unitTypeName} · Capacity {unit.capacity}
             {unit.floor ? ` · Floor ${unit.floor}` : ''}
           </p>
@@ -1149,9 +1150,9 @@ function AddUnitForm({ unitTypes, onCreated }: { unitTypes: UnitTypeRow[]; onCre
   }
 
   return (
-    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
+    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">Add a unit</h2>
+        <h2 className={SECTION_TITLE}>Add a unit</h2>
         <button
           type="button"
           onClick={() => {
@@ -2089,12 +2090,9 @@ export function UnitsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold">Units</h1>
+        <h1 className={PAGE_TITLE}>Units</h1>
         {showReconnecting && (
-          <span
-            role="status"
-            className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
-          >
+          <span role="status" className="rounded-full bg-warning-50 px-2 py-0.5 text-xs font-medium text-warning-600">
             Reconnecting…
           </span>
         )}
@@ -2183,24 +2181,50 @@ export function UnitsPage() {
           confirmed against seed.ts — none are FACILITY today) so a
           future facility gets its own section automatically, no code
           change needed. */}
+      {/* Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20):
+          the room board is this app's signature element — sixteen
+          bookable units read by colour across a desk, scanned rather
+          than read — and it's the one place design effort is spent,
+          per the client's own brief. Three changes from round 1: (1)
+          `UNIT_STATUS_CLASSES` now maps onto the five existing
+          semantic tokens by urgency rather than one raw hue per
+          status, with Occupied deliberately the quietest tile on the
+          board (see that file's own comment for why — the client's own
+          diagnosis, purple being the hue closest to brand violet made
+          a full house look like the most urgent night of the month).
+          (2) the room code is the dominant element, set in the mono
+          face reserved for money and room codes specifically — the
+          two things in this app read at speed — sized above section-
+          title weight, since it's the actual scan target; status drops
+          directly under it in its own semantic colour, short and
+          bold; guest/booking info demotes to caption weight, shown
+          only when occupied. (3) density: columns scale further at
+          wider breakpoints than any other grid in this app (up to 8
+          across) specifically so sixteen room/cottage tiles fit two
+          short rows on a normal front-desk monitor without scrolling —
+          the literal promise of "read at a glance," not just a
+          restyle. A larger radius than Card's own (`rounded-2xl`, not
+          the flatter `rounded-xl` every ordinary content surface uses
+          now) is the one place this round spends that boldness rather
+          than flattening it away. */}
       {Array.isArray(units) &&
         UNIT_KIND_GROUP_KEYS.map((group) => {
           const groupUnits = units.filter((unit) => unitKindGroup(unit.type) === group);
           return (
             <div key={group} className="flex flex-col gap-2">
-              <h2 className="text-sm font-semibold text-gray-700">
+              <h2 className={SECTION_TITLE}>
                 {UNIT_KIND_GROUP_LABELS[group]} ({groupUnits.length})
               </h2>
               {groupUnits.length === 0 && <EmptyState message="None yet." />}
               {groupUnits.length > 0 && (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8">
                   {groupUnits.map((unit) => {
                     const outcome = bulkOutcome?.get(unit.id);
                     return (
                     <button
                       key={unit.id}
                       onClick={() => setSelectedUnitId(unit.id)}
-                      className={`relative flex flex-col items-start gap-1 rounded border p-3 text-left ${UNIT_STATUS_CLASSES[unit.status]} ${unit.isActive ? '' : 'opacity-50'} ${outcome?.status === 'FAILED' ? 'ring-2 ring-danger-600' : ''} ${outcome?.status === 'OK' ? 'ring-2 ring-green-600' : ''}`}
+                      className={`relative flex flex-col items-start gap-0.5 rounded-2xl border-2 p-3 text-left transition-colors ${UNIT_STATUS_CLASSES[unit.status]} ${unit.isActive ? '' : 'opacity-50'} ${outcome?.status === 'FAILED' ? 'ring-2 ring-danger-600' : ''} ${outcome?.status === 'OK' ? 'ring-2 ring-success-600' : ''}`}
                     >
                       {canBulkStatus && (
                         <input
@@ -2218,7 +2242,7 @@ export function UnitsPage() {
                           aria-label={`Note: ${unit.latestNote}`}
                           title={`Note: ${unit.latestNote}`}
                           tabIndex={0}
-                          className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-[10px] font-bold leading-none text-white"
+                          className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-ink text-[10px] font-bold leading-none text-white"
                         >
                           i
                         </span>
@@ -2238,11 +2262,18 @@ export function UnitsPage() {
                           !
                         </span>
                       )}
-                      <span className="font-semibold">{unit.code}</span>
-                      <span className="text-xs">{unit.name}</span>
-                      <span className="text-xs font-medium">
+                      {/* ml-5 reserves the checkbox's own absolute-
+                          positioned footprint (top-1.5 left-1.5, h-4
+                          w-4) — without it the bold mono code sits
+                          directly underneath, not beside, the
+                          checkbox. */}
+                      <span className={`font-mono text-xl font-bold leading-none ${canBulkStatus ? 'ml-5' : ''}`}>
+                        {unit.code}
+                      </span>
+                      <span className="text-sm font-semibold uppercase tracking-wide">
                         {unit.isActive ? UNIT_STATUS_LABELS[unit.status] : 'Inactive'}
                       </span>
+                      <span className={CAPTION}>{unit.name}</span>
                       {/* Cashier-tab plan, Stage C (2026-11-05): the one
                           thing that keeps an OCCUPIED-at-booking-time
                           room (CONFIRMED, nobody there yet) from looking
@@ -2250,7 +2281,7 @@ export function UnitsPage() {
                           decision 16's own stated mitigation for that
                           cost, finally wired up. */}
                       {unit.currentBooking && (
-                        <span className="flex flex-col items-start gap-0.5 text-[11px] leading-tight text-ink-secondary">
+                        <span className="mt-1 flex flex-col items-start gap-0.5 border-t border-current/20 pt-1 text-[11px] leading-tight text-ink-secondary">
                           <span className="font-medium text-ink">{unit.currentBooking.guestName}</span>
                           <span>Booking ID {unit.currentBooking.referenceNo}</span>
                           <StatusBadge variant={BOOKING_STATUS_BADGE_VARIANT[unit.currentBooking.status]}>

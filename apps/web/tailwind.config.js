@@ -3,6 +3,22 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20):
+      // self-hosted IBM Plex (see index.css's own comment on why
+      // self-hosted, not a Google Fonts <link>). `sans` carries every
+      // word on screen; `mono` is reserved for money and room codes
+      // specifically — the two things in this app read at speed, where
+      // tabular lining figures (aligned digits in a column of pesos)
+      // and unambiguous letterforms (a true monospace 1/l/I) earn their
+      // place. Deliberately not Inter: the client's own instruction was
+      // to justify a choice with more character than the default,
+      // rather than keep the most commonly reached-for interface
+      // typeface by default — see README's own writeup for the full
+      // reasoning.
+      fontFamily: {
+        sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+      },
       // Design token pass, spec §11 M6 (client-directed visual redesign,
       // 2026-08-31). First applied to Command Center + AppShell chrome
       // only — see README for the full token proposal and rollout scope.
@@ -51,13 +67,17 @@ export default {
         accent: { 50: '#FDE0C4', 600: '#B34A06' },
       },
       boxShadow: {
-        // Client feedback round 1: the original shadow (opacity .06/.10)
-        // was "too subtle... cards read closer to flat." Three stacked
-        // layers now — a tight ambient contact shadow, a mid-distance
-        // layer, and a soft far-diffuse layer — is what actually reads
-        // as "floating above the background" rather than a faint edge;
-        // one blurry layer at low opacity doesn't get there regardless
-        // of how far the blur radius is pushed.
+        // Round 1 (2026-08-31): this was applied to every content
+        // block on the page — every card, the nav, the KPI tiles —
+        // which is exactly the "identical soft shadow under everything"
+        // the client's round-2 brief named as part of why the app reads
+        // generic. Round 2 (spec.md §13 decision 40, 2026-11-20):
+        // ordinary content (Card/Section, list rows, KPI tiles) now
+        // gets a flat hairline border instead — see Card.tsx's own
+        // comment. This token is kept, unrenamed, for a genuinely
+        // *floating* element only (a dropdown menu, a toast, a modal —
+        // none exist in this app yet) once one is built; it is no
+        // longer the default surface treatment for static content.
         card: '0 2px 4px rgba(33,27,57,0.08), 0 6px 16px rgba(108,92,231,0.16), 0 20px 48px rgba(108,92,231,0.28)',
       },
       backgroundImage: {

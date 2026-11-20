@@ -15,6 +15,7 @@ import { useSearchParams } from 'react-router-dom';
 import { EmptyState } from '../components/EmptyState.js';
 import { ErrorBoundary, WidgetError } from '../components/ErrorBoundary.js';
 import { Skeleton, SkeletonList } from '../components/Skeleton.js';
+import { PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth, type CurrentUser } from '../context/AuthContext.js';
 import { api, ApiRequestError } from '../lib/api.js';
 import {
@@ -193,8 +194,8 @@ function NewWorkOrderForm({
   const needsIssuePhoto = requiresIssuePhoto(form.type);
 
   return (
-    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-      <h2 className="text-sm font-semibold">New ticket</h2>
+    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
+      <h2 className={SECTION_TITLE}>New ticket</h2>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1 text-sm">
@@ -281,11 +282,11 @@ function NewWorkOrderForm({
         />
       </label>
 
-      <div className="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3">
+      <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-gray-50 p-3">
         <p className="text-sm font-medium">
           Issue photos
-          {needsIssuePhoto && <span className="ml-1 text-red-600">Required for {WORK_ORDER_TYPE_LABELS[form.type]}</span>}
-          {!needsIssuePhoto && <span className="ml-1 text-xs font-normal text-gray-500">(optional for this type)</span>}
+          {needsIssuePhoto && <span className="ml-1 text-danger-600">Required for {WORK_ORDER_TYPE_LABELS[form.type]}</span>}
+          {!needsIssuePhoto && <span className="ml-1 text-xs font-normal text-ink-muted">(optional for this type)</span>}
         </p>
         <input
           type="file"
@@ -294,18 +295,18 @@ function NewWorkOrderForm({
           disabled={uploading}
           onChange={(e) => void handleFileChange(e)}
         />
-        {uploading && <p className="text-xs text-gray-500">Uploading…</p>}
+        {uploading && <p className="text-xs text-ink-muted">Uploading…</p>}
         {uploadError && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger-600">
             {uploadError}
           </p>
         )}
         {photos.length > 0 && (
           <ul className="flex flex-col gap-1">
             {photos.map((photo) => (
-              <li key={photo.fileId} className="flex items-center justify-between text-xs text-gray-700">
+              <li key={photo.fileId} className="flex items-center justify-between text-xs text-ink-secondary">
                 <span>{photo.filename}</span>
-                <button type="button" onClick={() => removePhoto(photo.fileId)} className="text-red-600 hover:underline">
+                <button type="button" onClick={() => removePhoto(photo.fileId)} className="text-danger-600 hover:underline">
                   Remove
                 </button>
               </li>
@@ -315,12 +316,12 @@ function NewWorkOrderForm({
       </div>
 
       {submitError && (
-        <p role="alert" className="text-sm text-red-600">
+        <p role="alert" className="text-sm text-danger-600">
           {submitError.message}
         </p>
       )}
       {successMessage && (
-        <p role="status" className="text-sm text-green-700">
+        <p role="status" className="text-sm text-success-600">
           {successMessage}
         </p>
       )}
@@ -328,7 +329,7 @@ function NewWorkOrderForm({
       <button
         type="submit"
         disabled={submitting || uploading}
-        className="w-fit rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="w-fit rounded bg-brand-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
         {submitting ? 'Creating…' : 'Create ticket'}
       </button>
@@ -476,7 +477,7 @@ function WorkOrderDetailDrawer({
     return (
       <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
         <p role="alert">Could not load this ticket.</p>
-        <button onClick={onClose} className="w-fit text-sm text-gray-500 hover:underline">
+        <button onClick={onClose} className="w-fit text-sm text-ink-muted hover:underline">
           Close
         </button>
       </div>
@@ -526,10 +527,10 @@ function WorkOrderDetailDrawer({
     <div className="fixed inset-y-0 right-0 z-10 flex w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-gray-200 bg-white p-4 shadow-lg">
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{workOrder.title}</h2>
-          <p className="text-xs font-mono text-gray-500">{workOrder.referenceNo}</p>
+          <h2 className={PAGE_TITLE}>{workOrder.title}</h2>
+          <p className="text-xs font-mono text-ink-muted">{workOrder.referenceNo}</p>
         </div>
-        <button onClick={onClose} className="text-sm text-gray-500 hover:underline">
+        <button onClick={onClose} className="text-sm text-ink-muted hover:underline">
           Close
         </button>
       </div>
@@ -543,51 +544,51 @@ function WorkOrderDetailDrawer({
 
       <div className="grid grid-cols-2 gap-2 text-sm">
         <div>
-          <p className="text-xs text-gray-500">Type</p>
+          <p className="text-xs text-ink-muted">Type</p>
           <p>{WORK_ORDER_TYPE_LABELS[workOrder.type]}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-500">Priority</p>
+          <p className="text-xs text-ink-muted">Priority</p>
           <p>{WORK_ORDER_PRIORITY_LABELS[workOrder.priority]}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-500">Department</p>
+          <p className="text-xs text-ink-muted">Department</p>
           <p>{DEPARTMENT_LABELS[workOrder.department]}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-500">Assigned to</p>
+          <p className="text-xs text-ink-muted">Assigned to</p>
           <p>{workOrder.assignedTo?.fullName ?? 'Unassigned'}</p>
         </div>
         {workOrder.unit && (
           <div>
-            <p className="text-xs text-gray-500">Unit</p>
+            <p className="text-xs text-ink-muted">Unit</p>
             <p>
               {workOrder.unit.code} — {workOrder.unit.name}
             </p>
           </div>
         )}
         <div>
-          <p className="text-xs text-gray-500">Created by</p>
+          <p className="text-xs text-ink-muted">Created by</p>
           <p>{workOrder.createdBy.fullName}</p>
         </div>
       </div>
 
       {workOrder.description && (
         <div>
-          <p className="text-xs text-gray-500">Description</p>
+          <p className="text-xs text-ink-muted">Description</p>
           <p className="whitespace-pre-wrap text-sm">{workOrder.description}</p>
         </div>
       )}
 
       <div>
-        <p className="mb-1 text-xs text-gray-500">Photos</p>
+        <p className="mb-1 text-xs text-ink-muted">Photos</p>
         {workOrder.photos.length === 0 && <EmptyState message="No photos attached." />}
         {workOrder.photos.length > 0 && (
           <div className="grid grid-cols-2 gap-2">
             {workOrder.photos.map((photo) => (
               <a key={photo.id} href={photo.url} target="_blank" rel="noreferrer" className="flex flex-col gap-1">
                 <img src={photo.url} alt={photo.caption ?? PHOTO_KIND_LABELS[photo.kind]} className="h-24 w-full rounded border border-gray-200 object-cover" />
-                <span className="text-xs text-gray-500">
+                <span className="text-xs text-ink-muted">
                   {PHOTO_KIND_LABELS[photo.kind]}
                   {photo.attemptNo > 1 ? ` · attempt ${photo.attemptNo}` : ''}
                 </span>
@@ -599,12 +600,12 @@ function WorkOrderDetailDrawer({
 
       {workOrder.notes.length > 0 && (
         <div>
-          <p className="mb-1 text-xs text-gray-500">Notes</p>
+          <p className="mb-1 text-xs text-ink-muted">Notes</p>
           <ul className="flex flex-col gap-2">
             {workOrder.notes.map((n) => (
               <li key={n.id} className="rounded border border-gray-200 p-2 text-sm">
                 <p className="whitespace-pre-wrap">{n.body}</p>
-                <p className="mt-1 text-xs text-gray-500">{n.author.fullName}</p>
+                <p className="mt-1 text-xs text-ink-muted">{n.author.fullName}</p>
               </li>
             ))}
           </ul>
@@ -612,12 +613,12 @@ function WorkOrderDetailDrawer({
       )}
 
       {canAssign && (
-        <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
+        <div className="flex flex-col gap-2 rounded-xl border border-gray-200 p-3">
           <p className="text-sm font-medium">{isReassignment ? 'Reassign' : 'Assign'}</p>
           {!assigning && (
             <button
               onClick={openAssignPicker}
-              className="w-fit rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
+              className="w-fit rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white"
             >
               {isReassignment ? 'Reassign ticket' : 'Assign ticket'}
             </button>
@@ -625,7 +626,7 @@ function WorkOrderDetailDrawer({
           {assigning && (
             <>
               {assignableUsers === 'loading' && <Skeleton className="h-7 w-40" />}
-              {assignableUsers === 'error' && <p role="alert" className="text-xs text-red-600">Could not load staff.</p>}
+              {assignableUsers === 'error' && <p role="alert" className="text-xs text-danger-600">Could not load staff.</p>}
               {Array.isArray(assignableUsers) && (
                 <select
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
@@ -647,7 +648,7 @@ function WorkOrderDetailDrawer({
                 </select>
               )}
               {assignError && (
-                <p role="alert" className="text-xs text-red-600">
+                <p role="alert" className="text-xs text-danger-600">
                   {assignError}
                 </p>
               )}
@@ -655,7 +656,7 @@ function WorkOrderDetailDrawer({
                 <button
                   onClick={() => void confirmAssign()}
                   disabled={!selectedAssignee || assignSubmitting}
-                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                  className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 >
                   {assignSubmitting ? 'Assigning…' : 'Confirm'}
                 </button>
@@ -676,7 +677,7 @@ function WorkOrderDetailDrawer({
       )}
 
       {allowedTransitions.length > 0 && (
-        <div className="flex flex-col gap-2 rounded border border-gray-200 p-3">
+        <div className="flex flex-col gap-2 rounded-xl border border-gray-200 p-3">
           <p className="text-sm font-medium">Change status</p>
           <div className="flex flex-wrap gap-2">
             {allowedTransitions.map((to) => (
@@ -686,7 +687,7 @@ function WorkOrderDetailDrawer({
                   setPendingTransition(to);
                   setTransitionError(null);
                 }}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white"
+                className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white"
               >
                 {TRANSITION_BUTTON_LABELS[to] ?? `Mark ${WORK_ORDER_STATUS_LABELS[to]}`}
               </button>
@@ -694,7 +695,7 @@ function WorkOrderDetailDrawer({
           </div>
 
           {pendingTransition && (
-            <div className="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3">
+            <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-gray-50 p-3">
               <p className="text-sm font-medium">
                 {TRANSITION_BUTTON_LABELS[pendingTransition] ?? `Mark ${WORK_ORDER_STATUS_LABELS[pendingTransition]}`}
               </p>
@@ -713,7 +714,7 @@ function WorkOrderDetailDrawer({
                 <div className="flex flex-col gap-2">
                   <p className="text-xs font-medium">
                     Completion photos
-                    {needsCompletionPhoto && <span className="ml-1 text-red-600">Required for {WORK_ORDER_TYPE_LABELS[workOrder.type]}</span>}
+                    {needsCompletionPhoto && <span className="ml-1 text-danger-600">Required for {WORK_ORDER_TYPE_LABELS[workOrder.type]}</span>}
                   </p>
                   <input
                     type="file"
@@ -722,16 +723,16 @@ function WorkOrderDetailDrawer({
                     disabled={transitionUploading}
                     onChange={(e) => void handleTransitionFileChange(e)}
                   />
-                  {transitionUploading && <p className="text-xs text-gray-500">Uploading…</p>}
+                  {transitionUploading && <p className="text-xs text-ink-muted">Uploading…</p>}
                   {transitionPhotos.length > 0 && (
                     <ul className="flex flex-col gap-1">
                       {transitionPhotos.map((photo) => (
-                        <li key={photo.fileId} className="flex items-center justify-between text-xs text-gray-700">
+                        <li key={photo.fileId} className="flex items-center justify-between text-xs text-ink-secondary">
                           <span>{photo.filename}</span>
                           <button
                             type="button"
                             onClick={() => setTransitionPhotos((prev) => prev.filter((p) => p.fileId !== photo.fileId))}
-                            className="text-red-600 hover:underline"
+                            className="text-danger-600 hover:underline"
                           >
                             Remove
                           </button>
@@ -743,7 +744,7 @@ function WorkOrderDetailDrawer({
               )}
 
               {transitionError && (
-                <p role="alert" className="text-sm text-red-600">
+                <p role="alert" className="text-sm text-danger-600">
                   {transitionError.message}
                 </p>
               )}
@@ -756,7 +757,7 @@ function WorkOrderDetailDrawer({
                     transitionUploading ||
                     (pendingTransition === 'REOPENED' && transitionNote.trim().length === 0)
                   }
-                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                  className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 >
                   {transitionSubmitting ? 'Saving…' : 'Confirm'}
                 </button>
@@ -815,18 +816,18 @@ function WorkOrderListRow({ wo, onSelect }: { wo: WorkOrderRow; onSelect: (id: s
       <button
         type="button"
         onClick={() => onSelect(wo.id)}
-        className="flex w-full flex-wrap items-center gap-2 rounded border border-gray-200 p-3 text-left hover:border-blue-400"
+        className="flex w-full flex-wrap items-center gap-2 rounded-xl border border-gray-200 p-3 text-left hover:border-brand-400"
       >
         <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${WORK_ORDER_STATUS_CLASSES[wo.status]}`}>
           {WORK_ORDER_STATUS_LABELS[wo.status]}
         </span>
-        <span className="text-xs font-mono text-gray-500">{wo.referenceNo}</span>
+        <span className="text-xs font-mono text-ink-muted">{wo.referenceNo}</span>
         <span className="text-sm font-medium">{wo.title}</span>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-ink-muted">
           {WORK_ORDER_TYPE_LABELS[wo.type]} · {DEPARTMENT_LABELS[wo.department]} · {WORK_ORDER_PRIORITY_LABELS[wo.priority]}
         </span>
-        {wo.unit && <span className="text-xs text-gray-500">Unit {wo.unit.code}</span>}
-        {wo.assignedTo && <span className="text-xs text-gray-500">Assigned: {wo.assignedTo.fullName}</span>}
+        {wo.unit && <span className="text-xs text-ink-muted">Unit {wo.unit.code}</span>}
+        {wo.assignedTo && <span className="text-xs text-ink-muted">Assigned: {wo.assignedTo.fullName}</span>}
       </button>
     </li>
   );
@@ -945,11 +946,11 @@ export function WorkOrdersPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-lg font-semibold">{heading}</h1>
+      <h1 className={PAGE_TITLE}>{heading}</h1>
 
       {mode === 'MY_TASKS' && (
-        <details className="rounded border border-gray-200 p-3">
-          <summary className="cursor-pointer text-sm font-semibold text-gray-700">Report an issue / new ticket</summary>
+        <details className="rounded-xl border border-gray-200 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-ink-secondary">Report an issue / new ticket</summary>
           <div className="mt-3">
             {user?.permissions['workorder:create'] && <NewWorkOrderForm units={units} onCreated={handleCreated} />}
           </div>
@@ -964,7 +965,7 @@ export function WorkOrdersPage() {
 
       {Array.isArray(workOrders) && mode === 'MY_TASKS' && (
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>Assigned to you</h2>
           <WorkOrderList
             workOrders={sortForMyTasks(workOrders)}
             onSelect={setSelectedId}
@@ -975,7 +976,7 @@ export function WorkOrdersPage() {
 
       {(mode === 'FULL_LIST' || mode === 'DEPARTMENT_QUEUE') && (
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">Assigned to you</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>Assigned to you</h2>
           {myWorkOrders === 'loading' && <SkeletonList />}
           {myWorkOrders === 'error' && <p role="alert">Could not load your assigned tickets.</p>}
           {Array.isArray(myWorkOrders) && (
@@ -995,8 +996,8 @@ export function WorkOrdersPage() {
             if (group.key === 'closed' && grouped.length === 0) return null;
             return (
               <section key={group.key}>
-                <h2 className="mb-2 text-sm font-semibold text-gray-700">
-                  {group.label} <span className="font-normal text-gray-400">({grouped.length})</span>
+                <h2 className={`mb-2 ${SECTION_TITLE}`}>
+                  {group.label} <span className="font-normal text-ink-muted">({grouped.length})</span>
                 </h2>
                 <WorkOrderList workOrders={grouped} onSelect={setSelectedId} emptyMessage="Nothing here right now." />
               </section>
@@ -1007,7 +1008,7 @@ export function WorkOrdersPage() {
 
       {Array.isArray(workOrders) && mode === 'FULL_LIST' && (
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-gray-700">Tickets</h2>
+          <h2 className={`mb-2 ${SECTION_TITLE}`}>Tickets</h2>
           <WorkOrderList workOrders={workOrders} onSelect={setSelectedId} emptyMessage="No tickets yet." />
         </section>
       )}

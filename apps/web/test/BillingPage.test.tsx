@@ -1302,7 +1302,7 @@ describe('BillingPage', () => {
 
     await waitFor(() => expect(screen.getByText('83887-11142026-01')).toBeInTheDocument());
     const heading = screen.getByText('83887-11142026-01');
-    const card = heading.closest('.rounded-2xl') as HTMLElement;
+    const card = heading.closest('.rounded-xl') as HTMLElement;
     expect(within(card).getByText('Grand Total')).toBeInTheDocument();
     expect(within(card).queryByText('Total Amount Due')).not.toBeInTheDocument();
     const grandTotalRow = within(card).getByText('Grand Total').closest('div');

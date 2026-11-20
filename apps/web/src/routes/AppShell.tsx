@@ -115,15 +115,15 @@ export function AppShell() {
   }
 
   return (
-    // Visual redesign pass, spec §11 M6 (client-directed, 2026-08-31) —
-    // token proposal approved before this landed; see README for the
-    // full token set. This background gradient and the nav below are
-    // shared chrome, not Dashboard-specific, so the visual change here
-    // is visible on every screen even though only Command Center's own
-    // content got redesigned in this first pass — that's intentional
-    // scope, not a half-finished rollout (flagged and approved ahead of
-    // time, see README).
-    <div className="flex min-h-screen flex-col bg-app-gradient print:bg-none md:flex-row">
+    // Round 1 (2026-08-31): a violet gradient wash behind every screen,
+    // shared chrome rather than Dashboard-specific. Round 2 (spec.md
+    // §13 decision 40, 2026-11-20), client-reported: that gradient
+    // behind every piece of live content was exactly the "violet spent
+    // as decoration, not meaning" the client's brief named — it's gone
+    // from the shell entirely. `app-gradient` the token is kept, for a
+    // genuinely empty state to use deliberately (nothing does yet), not
+    // as standing wallpaper behind every screen regardless of content.
+    <div className="flex min-h-screen flex-col bg-gray-50 print:bg-none md:flex-row">
       {/* Real bug found live-testing, 2026-08-31 (mobile pass, spec §11
           M6): on an actual phone viewport this used to render every nav
           item as one horizontal row of text links with no wrap control —
@@ -139,7 +139,7 @@ export function AppShell() {
           chrome has no reason to appear on a printed page, here or
           anywhere else, so it's hidden globally rather than only on
           the billing page. */}
-      <nav className="flex shrink-0 flex-col bg-white shadow-card md:w-56 print:hidden">
+      <nav className="flex shrink-0 flex-col border-b border-gray-200 bg-white md:w-56 md:border-b-0 md:border-r print:hidden">
         <div className="flex items-center justify-between gap-2 p-2 md:p-4 md:pb-2">
           <p className="px-2 text-sm font-semibold text-ink-secondary">Lucky Waku-Waku</p>
           <div className="flex items-center gap-2">
@@ -176,7 +176,7 @@ export function AppShell() {
               onClick={closeMobileNav}
               className={({ isActive }) =>
                 `rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive ? 'bg-brand-600 text-white shadow-card' : 'text-ink-secondary hover:bg-brand-50 hover:text-brand-700'
+                  isActive ? 'bg-brand-600 text-white' : 'text-ink-secondary hover:bg-brand-50 hover:text-brand-700'
                 }`
               }
             >

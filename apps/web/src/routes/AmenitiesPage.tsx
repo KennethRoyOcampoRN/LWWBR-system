@@ -2,6 +2,7 @@ import { AMENITY_CATEGORY_KEYS, type AmenityCategoryKey, type AmenityRequestStat
 import { Fragment, useEffect, useState, type FormEvent } from 'react';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList, SkeletonTableRows } from '../components/Skeleton.js';
+import { PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { AMENITY_REQUEST_STATUS_CLASSES, AMENITY_REQUEST_STATUS_LABELS } from '../lib/amenityRequestStyle.js';
 import { api, ApiRequestError } from '../lib/api.js';
@@ -371,14 +372,14 @@ export function AmenitiesPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-lg font-semibold">Amenities</h1>
-        <p className="text-sm text-gray-500">
+        <h1 className={PAGE_TITLE}>Amenities</h1>
+        <p className="text-sm text-ink-muted">
           The lendable-equipment catalogue, plus request/approve/issue/return tracking — game consoles, videoke,
           board games, outdoor gear.
         </p>
       </div>
 
-      {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
+      {deleteError && <p role="alert" className="text-sm text-danger-600">{deleteError}</p>}
       {items === 'loading' && (
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -394,7 +395,7 @@ export function AmenitiesPage() {
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
             <thead>
-              <tr className="text-left text-xs font-medium uppercase text-gray-500">
+              <tr className="text-left text-xs font-medium uppercase text-ink-muted">
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">Category</th>
                 <th className="py-2 pr-4">Asset tag</th>
@@ -429,14 +430,14 @@ export function AmenitiesPage() {
                           <button
                             type="button"
                             onClick={() => (editingId === item.id ? cancelEdit() : startEdit(item))}
-                            className="text-xs font-medium text-blue-700 hover:underline"
+                            className="text-xs font-medium text-brand-700 hover:underline"
                           >
                             {editingId === item.id ? 'Close' : 'Edit'}
                           </button>
                           <button
                             type="button"
                             onClick={() => void toggleActive(item)}
-                            className="text-xs font-medium text-blue-700 hover:underline"
+                            className="text-xs font-medium text-brand-700 hover:underline"
                           >
                             {item.isActive ? 'Deactivate' : 'Reactivate'}
                           </button>
@@ -454,7 +455,7 @@ export function AmenitiesPage() {
                             <button
                               type="button"
                               onClick={() => void deleteItem(item)}
-                              className="text-xs font-medium text-red-700 hover:underline"
+                              className="text-xs font-medium text-danger-600 hover:underline"
                             >
                               Delete
                             </button>
@@ -467,9 +468,9 @@ export function AmenitiesPage() {
                     <tr>
                       <td colSpan={canManage ? 9 : 8} className="bg-gray-50 p-3">
                         <form onSubmit={(e) => void submitEdit(e, item.id)} className="flex flex-col gap-3">
-                          {editError && <p role="alert" className="text-sm text-red-700">{editError}</p>}
+                          {editError && <p role="alert" className="text-sm text-danger-600">{editError}</p>}
                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Name
                               <input
                                 required
@@ -478,7 +479,7 @@ export function AmenitiesPage() {
                                 className="rounded border border-gray-300 px-2 py-1 text-sm"
                               />
                             </label>
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Category
                               <select
                                 value={editCategory}
@@ -492,7 +493,7 @@ export function AmenitiesPage() {
                                 ))}
                               </select>
                             </label>
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Asset tag (optional)
                               <input
                                 value={editAssetTag}
@@ -500,7 +501,7 @@ export function AmenitiesPage() {
                                 className="rounded border border-gray-300 px-2 py-1 text-sm"
                               />
                             </label>
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Total quantity
                               <input
                                 required
@@ -511,7 +512,7 @@ export function AmenitiesPage() {
                                 className="rounded border border-gray-300 px-2 py-1 text-sm"
                               />
                             </label>
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Condition
                               <input
                                 required
@@ -520,7 +521,7 @@ export function AmenitiesPage() {
                                 className="rounded border border-gray-300 px-2 py-1 text-sm"
                               />
                             </label>
-                            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+                            <label className="flex items-center gap-2 text-xs font-medium text-ink-secondary">
                               <input
                                 type="checkbox"
                                 checked={editRequiresDeposit}
@@ -529,7 +530,7 @@ export function AmenitiesPage() {
                               Requires a deposit
                             </label>
                             {editRequiresDeposit && (
-                              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                                 Deposit amount (₱, informational only)
                                 <input
                                   type="number"
@@ -541,7 +542,7 @@ export function AmenitiesPage() {
                                 />
                               </label>
                             )}
-                            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                               Rental price (₱, optional)
                               <input
                                 type="number"
@@ -554,7 +555,7 @@ export function AmenitiesPage() {
                             </label>
                           </div>
                           <div className="flex flex-col gap-2">
-                            <span className="text-xs font-medium text-gray-600">Photo</span>
+                            <span className="text-xs font-medium text-ink-secondary">Photo</span>
                             {editPhoto && <img src={editPhoto.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
                             <input
                               type="file"
@@ -570,7 +571,7 @@ export function AmenitiesPage() {
                                 type="button"
                                 onClick={() => setEditPhoto(null)}
                                 disabled={editPhotoUploading}
-                                className="w-fit text-xs font-medium text-red-700 hover:underline"
+                                className="w-fit text-xs font-medium text-danger-600 hover:underline"
                               >
                                 Remove photo
                               </button>
@@ -587,7 +588,7 @@ export function AmenitiesPage() {
                             <button
                               type="button"
                               onClick={cancelEdit}
-                              className="w-fit rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700"
+                              className="w-fit rounded border border-gray-300 px-4 py-2 text-sm font-medium text-ink-secondary"
                             >
                               Cancel
                             </button>
@@ -605,10 +606,10 @@ export function AmenitiesPage() {
 
       {canManage && (
         <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-          <h2 className="text-sm font-semibold text-gray-700">Add an item</h2>
-          {formError && <p role="alert" className="text-sm text-red-700">{formError}</p>}
+          <h2 className={SECTION_TITLE}>Add an item</h2>
+          {formError && <p role="alert" className="text-sm text-danger-600">{formError}</p>}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Name
               <input
                 required
@@ -617,7 +618,7 @@ export function AmenitiesPage() {
                 className="rounded border border-gray-300 px-2 py-1 text-sm"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Category
               <select
                 value={category}
@@ -631,7 +632,7 @@ export function AmenitiesPage() {
                 ))}
               </select>
             </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Asset tag (optional)
               <input
                 value={assetTag}
@@ -639,7 +640,7 @@ export function AmenitiesPage() {
                 className="rounded border border-gray-300 px-2 py-1 text-sm"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Total quantity
               <input
                 required
@@ -650,7 +651,7 @@ export function AmenitiesPage() {
                 className="rounded border border-gray-300 px-2 py-1 text-sm"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Condition
               <input
                 required
@@ -659,7 +660,7 @@ export function AmenitiesPage() {
                 className="rounded border border-gray-300 px-2 py-1 text-sm"
               />
             </label>
-            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+            <label className="flex items-center gap-2 text-xs font-medium text-ink-secondary">
               <input
                 type="checkbox"
                 checked={requiresDeposit}
@@ -668,7 +669,7 @@ export function AmenitiesPage() {
               Requires a deposit
             </label>
             {requiresDeposit && (
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Deposit amount (₱, informational only)
                 <input
                   type="number"
@@ -680,7 +681,7 @@ export function AmenitiesPage() {
                 />
               </label>
             )}
-            <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+            <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
               Rental price (₱, optional)
               <input
                 type="number"
@@ -693,7 +694,7 @@ export function AmenitiesPage() {
             </label>
           </div>
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-gray-600">Photo (optional)</span>
+            <span className="text-xs font-medium text-ink-secondary">Photo (optional)</span>
             {photo && <img src={photo.url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />}
             <input
               type="file"
@@ -707,7 +708,7 @@ export function AmenitiesPage() {
                 type="button"
                 onClick={() => setPhoto(null)}
                 disabled={photoUploading}
-                className="w-fit text-xs font-medium text-red-700 hover:underline"
+                className="w-fit text-xs font-medium text-danger-600 hover:underline"
               >
                 Remove photo
               </button>
@@ -724,7 +725,7 @@ export function AmenitiesPage() {
       )}
 
       <div className="border-t border-gray-200 pt-6">
-        <h2 className="mb-2 text-sm font-semibold text-gray-700">Requests</h2>
+        <h2 className={`mb-2 ${SECTION_TITLE}`}>Requests</h2>
 
         {requests === 'loading' && <SkeletonList />}
         {requests === 'error' && <p role="alert">Could not load amenity requests.</p>}
@@ -736,8 +737,8 @@ export function AmenitiesPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="font-medium">{req.referenceNo}</span> — {req.itemName} x{req.qty}
-                    {req.unit && <span className="ml-2 text-xs text-gray-500">for {req.unit.code}</span>}
-                    <span className="ml-2 text-xs text-gray-500">requested by {req.requestedBy.fullName}</span>
+                    {req.unit && <span className="ml-2 text-xs text-ink-muted">for {req.unit.code}</span>}
+                    <span className="ml-2 text-xs text-ink-muted">requested by {req.requestedBy.fullName}</span>
                   </div>
                   <span
                     className={`rounded border px-2 py-0.5 text-xs font-semibold ${AMENITY_REQUEST_STATUS_CLASSES[req.status]}`}
@@ -746,9 +747,9 @@ export function AmenitiesPage() {
                   </span>
                 </div>
                 {req.dueBackAt && (req.status === 'ISSUED' || req.status === 'OVERDUE') && (
-                  <p className="mt-1 text-xs text-gray-500">Due back {new Date(req.dueBackAt).toLocaleString()}</p>
+                  <p className="mt-1 text-xs text-ink-muted">Due back {new Date(req.dueBackAt).toLocaleString()}</p>
                 )}
-                {req.notes && <p className="mt-1 text-xs text-gray-600">&quot;{req.notes}&quot;</p>}
+                {req.notes && <p className="mt-1 text-xs text-ink-secondary">&quot;{req.notes}&quot;</p>}
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   {req.status === 'REQUESTED' && canApprove && (
@@ -763,7 +764,7 @@ export function AmenitiesPage() {
                       <button
                         type="button"
                         onClick={() => void changeStatus(req.id, { toStatus: 'CANCELLED' })}
-                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700"
+                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-ink-secondary"
                       >
                         Cancel
                       </button>
@@ -782,7 +783,7 @@ export function AmenitiesPage() {
                     <button
                       type="button"
                       onClick={() => void changeStatus(req.id, { toStatus: 'CANCELLED' })}
-                      className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700"
+                      className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-ink-secondary"
                     >
                       Cancel
                     </button>
@@ -800,8 +801,8 @@ export function AmenitiesPage() {
 
                 {actionPanel?.id === req.id && actionPanel.action === 'issue' && (
                   <div className="mt-3 flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3">
-                    {actionError && <p role="alert" className="text-xs text-red-700">{actionError}</p>}
-                    <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                    {actionError && <p role="alert" className="text-xs text-danger-600">{actionError}</p>}
+                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                       Due back
                       <input
                         type="datetime-local"
@@ -811,7 +812,7 @@ export function AmenitiesPage() {
                       />
                     </label>
                     {req.amenityItem?.requiresDeposit && (
-                      <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+                      <label className="flex items-center gap-2 text-xs font-medium text-ink-secondary">
                         <input
                           type="checkbox"
                           checked={depositCollected}
@@ -831,7 +832,7 @@ export function AmenitiesPage() {
                       <button
                         type="button"
                         onClick={() => setActionPanel(null)}
-                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700"
+                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-ink-secondary"
                       >
                         Cancel
                       </button>
@@ -841,8 +842,8 @@ export function AmenitiesPage() {
 
                 {actionPanel?.id === req.id && actionPanel.action === 'return' && (
                   <div className="mt-3 flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3">
-                    {actionError && <p role="alert" className="text-xs text-red-700">{actionError}</p>}
-                    <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+                    {actionError && <p role="alert" className="text-xs text-danger-600">{actionError}</p>}
+                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                       Condition on return (optional)
                       <input
                         value={conditionOnReturn}
@@ -861,14 +862,14 @@ export function AmenitiesPage() {
                       <button
                         type="button"
                         onClick={() => void submitReturn(req, 'LOST_DAMAGED')}
-                        className="rounded border border-red-300 px-3 py-1 text-xs font-medium text-red-700"
+                        className="rounded border border-danger-600/30 px-3 py-1 text-xs font-medium text-danger-600"
                       >
                         Mark lost/damaged
                       </button>
                       <button
                         type="button"
                         onClick={() => setActionPanel(null)}
-                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700"
+                        className="rounded border border-gray-300 px-3 py-1 text-xs font-medium text-ink-secondary"
                       >
                         Cancel
                       </button>
@@ -885,10 +886,10 @@ export function AmenitiesPage() {
             onSubmit={(e) => void handleCreateRequest(e)}
             className="mt-4 flex flex-col gap-3 rounded border border-gray-200 p-4"
           >
-            <h3 className="text-sm font-semibold text-gray-700">Request an item</h3>
-            {requestFormError && <p role="alert" className="text-sm text-red-700">{requestFormError}</p>}
+            <h3 className="text-sm font-semibold text-ink-secondary">Request an item</h3>
+            {requestFormError && <p role="alert" className="text-sm text-danger-600">{requestFormError}</p>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Item
                 <select
                   required
@@ -909,7 +910,7 @@ export function AmenitiesPage() {
                       ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Quantity
                 <input
                   required
@@ -920,7 +921,7 @@ export function AmenitiesPage() {
                   className="rounded border border-gray-300 px-2 py-1 text-sm"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary">
                 Room (optional — leave blank for property use)
                 <select
                   value={requestUnitId}
@@ -935,7 +936,7 @@ export function AmenitiesPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-gray-600 sm:col-span-2">
+              <label className="flex flex-col gap-1 text-xs font-medium text-ink-secondary sm:col-span-2">
                 Notes (optional)
                 <input
                   value={requestNotes}

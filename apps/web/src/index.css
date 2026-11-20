@@ -1,3 +1,28 @@
+/* Visual redesign, round 2 (spec.md §13 decision 39/40): self-hosted
+   IBM Plex — never a Google Fonts <link>, since this app caches itself
+   for offline use (spec §11 M6) and a runtime font request would
+   silently fail offline. @fontsource ships the woff2 files directly in
+   the npm package, so Vite bundles them as local build assets, same as
+   any other imported file — nothing fetched from a CDN at runtime.
+   Plex Sans carries every word on screen; Plex Mono is reserved for
+   money and room codes specifically — the two things in this app read
+   at speed, where digit alignment (its tabular lining figures) and
+   unambiguous character shapes (a monospace 1/l/I are drawn distinctly)
+   earn their place. Latin subset only — every weight actually used by
+   the type scale below, nothing unused. */
+@import '@fontsource/ibm-plex-sans/latin-400.css';
+@import '@fontsource/ibm-plex-sans/latin-500.css';
+@import '@fontsource/ibm-plex-sans/latin-600.css';
+@import '@fontsource/ibm-plex-sans/latin-700.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  }
+}

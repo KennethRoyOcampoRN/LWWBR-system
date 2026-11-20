@@ -1,6 +1,11 @@
 import { PERMISSION_SCOPES, type PermissionKey, type PermissionScope } from '@lwwbr/shared';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Button } from '../components/Button.js';
+import { Card } from '../components/Card.js';
+import { Field, INPUT_CLASSES } from '../components/Field.js';
+import { PageHeader } from '../components/PageHeader.js';
 import { SkeletonList } from '../components/Skeleton.js';
+import { BODY, CAPTION, SECTION_TITLE } from '../components/typography.js';
 import { api, ApiRequestError } from '../lib/api.js';
 
 interface RoleRow {
@@ -42,46 +47,37 @@ function NewRoleForm({ onCreated }: { onCreated: (role: RoleRow) => void }) {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="self-start rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white">
+      <Button type="button" onClick={() => setOpen(true)} className="self-start">
         + New role
-      </button>
+      </Button>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Key (UPPER_SNAKE_CASE)
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Key (UPPER_SNAKE_CASE)">
           <input
-            className="rounded border border-gray-300 px-2 py-1"
+            className={INPUT_CLASSES}
             value={key}
             onChange={(e) => setKey(e.target.value.toUpperCase())}
             required
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Label
-          <input
-            className="rounded border border-gray-300 px-2 py-1"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            required
-          />
-        </label>
+        </Field>
+        <Field label="Label">
+          <input className={INPUT_CLASSES} value={label} onChange={(e) => setLabel(e.target.value)} required />
+        </Field>
       </div>
       {error && (
-        <p role="alert" className="text-sm text-red-600">
+        <p role="alert" className="text-sm font-medium text-danger-600">
           {error}
         </p>
       )}
       <div className="flex gap-2">
-        <button type="submit" className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white">
-          Create
-        </button>
-        <button type="button" onClick={() => setOpen(false)} className="rounded px-3 py-2 text-sm text-gray-600">
+        <Button type="submit">Create</Button>
+        <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -136,13 +132,13 @@ function PermissionEditor({
     <div className="flex flex-col gap-4">
       {grouped.map(([group, items]) => (
         <div key={group}>
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">{group}</p>
+          <p className={`mb-1 ${CAPTION} font-semibold uppercase tracking-wide`}>{group}</p>
           <div className="flex flex-col gap-1">
             {items.map((p) => (
-              <div key={p.key} className="flex items-center justify-between gap-2 text-sm">
-                <span>{p.key}</span>
+              <div key={p.key} className="flex items-center justify-between gap-2 border-b border-gray-100 py-1.5 text-sm">
+                <span className="font-mono text-xs text-ink-secondary">{p.key}</span>
                 <select
-                  className="rounded border border-gray-300 px-2 py-1 text-xs"
+                  className={`${INPUT_CLASSES} text-xs`}
                   value={grants[p.key] ?? 'NONE'}
                   onChange={(e) =>
                     setGrants((prev) => ({ ...prev, [p.key]: e.target.value as PermissionScope | 'NONE' }))
@@ -160,21 +156,22 @@ function PermissionEditor({
         </div>
       ))}
       {error && (
-        <p role="alert" className="text-sm text-red-600">
+        <p role="alert" className="text-sm font-medium text-danger-600">
           {error}
         </p>
       )}
-      <button
-        onClick={() => void save()}
-        disabled={saving}
-        className="self-start rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-      >
+      <Button type="button" onClick={() => void save()} disabled={saving} className="self-start">
         Save permissions
-      </button>
+      </Button>
     </div>
   );
 }
 
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20):
+// converted from hand-typed headings/buttons/inputs to the shared
+// primitives (PageHeader, Button, Field/INPUT_CLASSES, Card, the type
+// scale) — this page had two responsive breakpoints before this round
+// and none of its own colors routed through the brand/semantic tokens.
 export function RolesPage() {
   const [roles, setRoles] = useState<RoleRow[] | 'loading' | 'error'>('loading');
   const [permissions, setPermissions] = useState<PermissionRow[]>([]);
@@ -203,8 +200,8 @@ export function RolesPage() {
   const selectedRole = Array.isArray(roles) ? roles.find((r) => r.id === selectedRoleId) : undefined;
 
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">Roles</h1>
+    <div className="flex flex-col gap-6">
+      <PageHeader title="Roles" description="Who can do what — grouped permissions per role." />
 
       <NewRoleForm onCreated={handleRoleCreated} />
 
@@ -218,24 +215,27 @@ export function RolesPage() {
               <li key={role.id}>
                 <button
                   onClick={() => setSelectedRoleId(role.id)}
-                  className={`w-full rounded px-3 py-2 text-left text-sm ${
-                    selectedRoleId === role.id ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    selectedRoleId === role.id ? 'bg-brand-600 text-white' : 'text-ink-secondary hover:bg-brand-50 hover:text-brand-700'
                   }`}
                 >
                   {role.label}
-                  {!role.isSystem && <span className="ml-1 text-xs text-gray-400">(custom)</span>}
+                  {!role.isSystem && <span className="ml-1 text-xs opacity-70">(custom)</span>}
                 </button>
               </li>
             ))}
           </ul>
 
-          <div className="flex-1">
+          <Card className="flex-1">
             {selectedRole ? (
-              <PermissionEditor role={selectedRole} permissions={permissions} onSaved={handlePermissionsSaved} />
+              <>
+                <h2 className={`mb-3 ${SECTION_TITLE}`}>{selectedRole.label}</h2>
+                <PermissionEditor role={selectedRole} permissions={permissions} onSaved={handlePermissionsSaved} />
+              </>
             ) : (
-              <p className="text-sm text-gray-500">Select a role to edit its permissions.</p>
+              <p className={BODY}>Select a role to edit its permissions.</p>
             )}
-          </div>
+          </Card>
         </div>
       )}
     </div>

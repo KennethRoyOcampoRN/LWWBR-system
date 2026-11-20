@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
@@ -200,14 +200,22 @@ describe('App', () => {
     expect(screen.queryByRole('link', { name: 'Users' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('link', { name: 'Sessions' }));
 
-    await waitFor(() => expect(screen.getByText('2.2.2.2')).toBeInTheDocument());
-    expect(screen.getByText('1.1.1.1')).toBeInTheDocument();
+    // Visual redesign round 2 (spec.md §13 decision 40): Sessions now
+    // renders through DataTable, which puts a desktop table and a
+    // mobile card list both in the DOM at once (CSS, not a conditional
+    // mount, picks which one a real browser shows) — a bare getByText
+    // would match each session's IP twice. Scoped to the table (same
+    // convention DataTable's own comment recommends), there's exactly
+    // one match per session.
+    const table = await screen.findByRole('table');
+    await waitFor(() => expect(within(table).getByText('2.2.2.2')).toBeInTheDocument());
+    expect(within(table).getByText('1.1.1.1')).toBeInTheDocument();
 
-    const revokeButtons = screen.getAllByRole('button', { name: /revoke/i });
-    await user.click(revokeButtons[1] as HTMLElement);
+    const otherRow = within(table).getByText('2.2.2.2').closest('tr') as HTMLElement;
+    await user.click(within(otherRow).getByRole('button', { name: /revoke/i }));
 
-    await waitFor(() => expect(screen.queryByText('2.2.2.2')).not.toBeInTheDocument());
-    expect(screen.getByText('1.1.1.1')).toBeInTheDocument();
+    await waitFor(() => expect(within(table).queryByText('2.2.2.2')).not.toBeInTheDocument());
+    expect(within(table).getByText('1.1.1.1')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/auth/sessions/session_other/revoke'), expect.anything());
   });
 

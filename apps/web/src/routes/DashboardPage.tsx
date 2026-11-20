@@ -14,6 +14,7 @@ import {
   IconUtensils,
 } from '../components/icons.js';
 import { SkeletonCard, SkeletonList } from '../components/Skeleton.js';
+import { BODY, PAGE_TITLE, SECTION_TITLE } from '../components/typography.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api } from '../lib/api.js';
 import { loadDashboardSnapshot, saveDashboardSnapshot } from '../lib/dashboardCache.js';
@@ -126,48 +127,64 @@ function formatDuration(minutes: number): string {
 type KpiVariant =
   'hero-brand' | 'hero-danger' | 'success' | 'warning' | 'danger' | 'info' | 'accent';
 
+// Visual redesign, round 2 (spec.md §13 decision 40, 2026-11-20): `card`
+// no longer carries a shadow (see Card.tsx's own comment — flat,
+// hairline-bordered content is the system now, elevation reserved for
+// something genuinely floating). `border` is new: the two `hero-*`
+// variants keep a borderless, full-bleed gradient fill — a deliberate,
+// content-level emphasis choice for the one or two tiles meant to read
+// as the headline of the strip, not the page-wide decorative wash the
+// client's brief was about — every other variant gets the same flat
+// hairline every other card in the app now uses.
 const KPI_VARIANT_CLASSES: Record<
   KpiVariant,
-  { card: string; iconBadge: string; value: string; label: string }
+  { card: string; border: string; iconBadge: string; value: string; label: string }
 > = {
   'hero-brand': {
     card: 'bg-brand-gradient',
+    border: 'border border-transparent',
     iconBadge: 'bg-white/20 text-white',
     value: 'text-white',
     label: 'text-white/80',
   },
   'hero-danger': {
     card: 'bg-danger-gradient',
+    border: 'border border-transparent',
     iconBadge: 'bg-white/20 text-white',
     value: 'text-white',
     label: 'text-white/80',
   },
   success: {
     card: 'bg-white',
+    border: 'border border-gray-200',
     iconBadge: 'bg-success-50 text-success-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   warning: {
     card: 'bg-white',
+    border: 'border border-gray-200',
     iconBadge: 'bg-warning-50 text-warning-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   danger: {
     card: 'bg-white',
+    border: 'border border-gray-200',
     iconBadge: 'bg-danger-50 text-danger-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   info: {
     card: 'bg-white',
+    border: 'border border-gray-200',
     iconBadge: 'bg-info-50 text-info-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
   },
   accent: {
     card: 'bg-white',
+    border: 'border border-gray-200',
     iconBadge: 'bg-accent-50 text-accent-600',
     value: 'text-ink',
     label: 'text-ink-secondary',
@@ -209,17 +226,23 @@ function KpiCard({
         <Icon className="h-5 w-5" />
       </span>
       <div>
-        <p className={`text-2xl font-semibold ${classes.value}`}>{value}</p>
+        {/* Same figure treatment as NUMERIC_KPI (typography.ts) — mono,
+            tabular, semibold — without that constant's own baked-in
+            ink color, since a hero-variant tile needs white text over
+            its gradient fill; `classes.value` supplies the only color
+            utility here so it's never fighting an equal-specificity
+            class for which one wins. */}
+        <p className={`font-mono text-2xl font-semibold tabular-nums ${classes.value}`}>{value}</p>
         <p className={`text-xs font-medium ${classes.label}`}>{label}</p>
       </div>
     </>
   );
-  const className = `flex flex-col gap-3 rounded-2xl p-4 shadow-card transition-shadow ${classes.card}`;
+  const className = `flex flex-col gap-3 rounded-xl p-4 transition-colors ${classes.card} ${classes.border}`;
   if (to) {
     return (
       <Link
         to={to}
-        className={`${className} hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}
+        className={`${className} hover:border-brand-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600`}
       >
         {content}
       </Link>
@@ -339,17 +362,12 @@ export function CommandCenter() {
   return (
     <div className="flex flex-col gap-8">
       <div>
-        <h1 className="text-xl font-semibold leading-tight text-ink">Command Center</h1>
-        <p className="text-sm leading-relaxed text-ink-secondary">
-          Every card here is live from real data.
-        </p>
+        <h1 className={PAGE_TITLE}>Command Center</h1>
+        <p className={BODY}>Every card here is live from real data.</p>
       </div>
 
       {cachedAt && (
-        <div
-          role="status"
-          className="rounded-2xl bg-warning-50 p-4 text-sm leading-relaxed text-warning-600 shadow-card"
-        >
+        <div role="status" className="rounded-xl border border-warning-600/30 bg-warning-50 p-4 text-sm leading-relaxed text-warning-600">
           Offline — showing the last known board as of {new Date(cachedAt).toLocaleString()}.
           Read-only; nothing below can be actioned until the connection returns.
         </div>
@@ -459,8 +477,8 @@ export function CommandCenter() {
         <ErrorBoundary
           fallback={(_error, reset) => <WidgetError label="Attention queue" reset={reset} />}
         >
-          <section className="rounded-2xl bg-white p-4 shadow-card">
-            <h2 className="mb-3 text-sm font-semibold text-ink-secondary">Attention queue</h2>
+          <section className="rounded-xl border border-gray-200 bg-white p-4">
+            <h2 className={`mb-3 ${SECTION_TITLE}`}>Attention queue</h2>
             {dashboard === 'loading' && <SkeletonList />}
             {typeof dashboard === 'object' && (
               <ul className="flex flex-col gap-2">
@@ -581,8 +599,8 @@ export function CommandCenter() {
         <ErrorBoundary
           fallback={(_error, reset) => <WidgetError label="Live activity" reset={reset} />}
         >
-          <section className="rounded-2xl bg-white p-4 shadow-card">
-            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-secondary">
+          <section className="rounded-xl border border-gray-200 bg-white p-4">
+            <h2 className={`mb-3 flex items-center gap-2 ${SECTION_TITLE}`}>
               <IconActivity className="h-4 w-4 text-brand-600" />
               Live activity
             </h2>
@@ -625,7 +643,7 @@ export function DashboardPage() {
   if (!user?.permissions['unit:read']) {
     return (
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold leading-tight text-ink">Welcome, {user?.fullName}</h1>
+        <h1 className={PAGE_TITLE}>Welcome, {user?.fullName}</h1>
         <p className="text-sm leading-relaxed text-ink-secondary">
           Roles: {user?.roles.join(', ')}
         </p>
